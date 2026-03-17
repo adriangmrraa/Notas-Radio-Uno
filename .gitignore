@@ -1,0 +1,6 @@
+node_modules/
+.env
+/output
+node_modules
+spheric-backup-295500-8db588732c5f.json
+whisper_env/
