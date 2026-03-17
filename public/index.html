@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notas de Radio Uno</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="container">
+    <h1>Posts Radio Uno</h1>
+
+    <!-- Formulario de entrada de imagen y texto -->
+    <form id="imageForm">
+      <label for="imageInput">Seleccionar imagen</label>
+      <input type="file" id="imageInput" accept="image/*" required />
+
+      <label for="titleInput">Título del post</label>
+      <input type="text" id="titleInput" placeholder="Ingrese el título" required />
+
+      <label for="descriptionInput">Descripción del post</label>
+      <textarea id="descriptionInput" placeholder="Ingrese la descripción"></textarea>
+
+      <button type="submit">Generar post</button>
+    </form>
+
+    <div id="output">
+      <h2>Resultado:</h2>
+      <img id="generatedImage" class="generatedImage" alt="Imagen procesada" style="display: none" />
+      <a id="downloadLink" href="#" download="placa.png" style="display: none">Descargar Imagen</a>
+      <button id="sendWebhookBtn" style="display: none">Publicar en Facebook e Instagram</button>
+    </div>
+
+    <!-- Formulario para ingresar la URL de la noticia -->
+    <h2>Generar Placa desde URL</h2>
+    <form id="urlForm">
+      <label for="urlInput">URL de la noticia:</label>
+      <input type="url" id="urlInput" placeholder="Ingrese la URL de la noticia" required />
+      <button type="submit">Crear Nota</button>
+    </form>
+
+    <div id="urlOutput">
+      <h2>Resultado:</h2>
+      <img id="generatedImageUrl" class="generatedImage" src="" alt="Imagen generada desde la URL"
+        style="display: none;" />
+      <a id="downloadLink2" href="#" download="placa.png" style="display: none">Descargar Imagen</a>
+      <button id="sendWebhookBtnNuevoBoton" style="display: none">Publicar en Facebook e Instagram</button>
+    </div>
+
+    <h2>Captura y Transcripción de Audio</h2>
+    <button id="startCaptureBtn">Iniciar Captura</button>
+    <button id="stopCaptureBtn">Detener Captura</button>
+
+    <h3>Transcripción en tiempo real:</h3>
+    <!-- Aquí se mostrará la transcripción -->
+    <textarea id="transcriptionArea" rows="10"
+      style="width: 100%; border: 1px solid #ccc; padding: 10px; font-family: monospace;" readonly></textarea>
+    <!-- Botón Generar Noticia (oculto inicialmente) -->
+    <button id="generateNewsBtn" style="display: none;">Generar Noticia</button>
+    
+    <!-- Formulario de Noticia (oculto inicialmente) -->
+    <div id="newsForm" style="display: none;">
+      <label for="contextInput">Contexto:</label>
+      <textarea id="contextInput" placeholder="Ingrese el contexto de la noticia"></textarea>
+    
+      <button id="generateNewsCopyBtn" type="button">Generar Copy</button>
+    </div>
+        <!-- Contenedor para la creación de la nota (oculto inicialmente) -->
+        <div id="createNewsContainer" style="display: none;">
+          <label for="contextInput">Contexto:</label>
+          <textarea id="contextInput" placeholder="Ingrese el contexto de la noticia"></textarea>
+          <button id="generateNewsBtn" type="button">Crear Nota Periodística</button>
+        </div>
+
+  <!-- Scripts -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>
