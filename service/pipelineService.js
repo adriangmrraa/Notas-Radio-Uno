@@ -1,4 +1,4 @@
-import { captureAndTranscribe, detectSourceType } from "./transcriptionService.js";
+import { captureAudioSegment, transcribeAudio, detectSourceType } from "./transcriptionService.js";
 import { extractInsights } from "./insightService.js";
 import { searchAndEnrich } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "../scripts/cohere_Service.js";
@@ -89,20 +89,70 @@ class AutoPipeline {
 
   /**
    * Loop principal de captura y procesamiento.
+   * Emite eventos granulares para cada sub-paso.
    */
   async captureLoop() {
+    let cycleNumber = 0;
+
     while (this.running) {
       try {
-        // PASO 1: Capturar y transcribir
+        cycleNumber++;
+
+        // ─── PASO 1A: Capturar audio ───
         this.currentStep = "capturing";
         this.emit("step", { step: "capturing", message: "Capturando audio..." });
+        this.emit("detail", {
+          step: "capturing",
+          sub: "connecting",
+          message: `Conectando al stream: ${this.config.url.slice(0, 60)}...`,
+          icon: "satellite",
+        });
 
-        const result = await captureAndTranscribe(
+        const sourceType = detectSourceType(this.config.url);
+        this.emit("detail", {
+          step: "capturing",
+          sub: "source_detected",
+          message: `Tipo de fuente detectada: ${sourceType === "youtube" ? "YouTube Live" : sourceType === "radio" ? "Radio stream" : "Stream genérico"}`,
+          icon: "check",
+        });
+
+        this.emit("detail", {
+          step: "capturing",
+          sub: "recording",
+          message: `Grabando ${this.config.segmentDuration} segundos de audio con FFmpeg...`,
+          icon: "mic",
+        });
+
+        const { filePath } = await captureAudioSegment(
           this.config.url,
           this.config.segmentDuration,
         );
 
         if (!this.running) break;
+
+        this.emit("detail", {
+          step: "capturing",
+          sub: "audio_captured",
+          message: `Audio capturado correctamente (${this.config.segmentDuration}s)`,
+          icon: "check",
+        });
+
+        // ─── PASO 1B: Transcribir ───
+        this.emit("detail", {
+          step: "capturing",
+          sub: "transcribing",
+          message: "Cargando modelo Whisper y transcribiendo audio...",
+          icon: "brain",
+        });
+
+        const text = await transcribeAudio(filePath);
+
+        // Limpiar archivo de audio
+        try { fs.unlinkSync(filePath); } catch (_) {}
+
+        if (!this.running) break;
+
+        const result = { text, filePath, sourceType, timestamp: new Date().toISOString() };
 
         // Agregar al buffer
         this.transcriptionBuffer.push(result);
@@ -115,6 +165,13 @@ class AutoPipeline {
         });
         this.io.emit("history-new-transcription", dbTranscription);
 
+        this.emit("detail", {
+          step: "capturing",
+          sub: "transcription_done",
+          message: `Transcripción completada: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`,
+          icon: "check",
+        });
+
         this.emit("transcription", {
           step: "transcribed",
           text: result.text,
@@ -126,14 +183,35 @@ class AutoPipeline {
         const segmentsNeeded = Math.ceil(
           (this.config.publishInterval * 60) / this.config.segmentDuration,
         );
+        const remaining = segmentsNeeded - this.transcriptionBuffer.length;
 
         if (this.transcriptionBuffer.length >= segmentsNeeded) {
+          this.emit("detail", {
+            step: "capturing",
+            sub: "buffer_ready",
+            message: `Buffer completo (${this.transcriptionBuffer.length} segmentos). Iniciando procesamiento...`,
+            icon: "rocket",
+          });
           await this.processAndPublish();
+        } else {
+          this.emit("detail", {
+            step: "capturing",
+            sub: "buffer_waiting",
+            message: `Buffer: ${this.transcriptionBuffer.length}/${segmentsNeeded} segmentos. Faltan ${remaining} para procesar.`,
+            icon: "clock",
+          });
         }
       } catch (error) {
         this.emit("error", {
           step: this.currentStep,
           message: error.message,
+        });
+
+        this.emit("detail", {
+          step: this.currentStep,
+          sub: "retry",
+          message: `Error: ${error.message}. Reintentando en 10 segundos...`,
+          icon: "warning",
         });
 
         // Esperar antes de reintentar
@@ -146,8 +224,10 @@ class AutoPipeline {
 
   /**
    * Procesar transcripciones acumuladas y publicar.
+   * Emite eventos detallados para cada sub-operación.
    */
   async processAndPublish() {
+    const segmentCount = this.transcriptionBuffer.length;
     const fullTranscription = this.transcriptionBuffer
       .map((t) => t.text)
       .join(" ");
@@ -156,32 +236,122 @@ class AutoPipeline {
     this.transcriptionBuffer = [];
 
     try {
-      // PASO 2: Extraer insights
+      // ─── PASO 2: Extraer insights con IA ───
       this.currentStep = "analyzing";
       this.emit("step", {
         step: "analyzing",
-        message: "Extrayendo insights de la transcripción...",
+        message: "Analizando transcripción con IA...",
+      });
+
+      this.emit("detail", {
+        step: "analyzing",
+        sub: "preparing",
+        message: `Preparando ${segmentCount} segmentos (${fullTranscription.length} caracteres) para análisis...`,
+        icon: "document",
+      });
+
+      this.emit("detail", {
+        step: "analyzing",
+        sub: "calling_ai",
+        message: "Enviando a Cohere AI para extracción de insights (temas, personas, datos clave)...",
+        icon: "brain",
       });
 
       const insights = await extractInsights(fullTranscription);
-      this.emit("insights", {
-        step: "insights_extracted",
-        insights,
+
+      this.emit("detail", {
+        step: "analyzing",
+        sub: "topics_found",
+        message: `Temas detectados: ${insights.topics.length > 0 ? insights.topics.join(", ") : "ninguno específico"}`,
+        icon: "tag",
       });
 
-      // PASO 3: Buscar en internet
+      if (insights.people.length > 0) {
+        this.emit("detail", {
+          step: "analyzing",
+          sub: "people_found",
+          message: `Personas mencionadas: ${insights.people.join(", ")}`,
+          icon: "people",
+        });
+      }
+
+      if (insights.keyFacts.length > 0) {
+        this.emit("detail", {
+          step: "analyzing",
+          sub: "facts_found",
+          message: `Datos clave: ${insights.keyFacts.slice(0, 2).join(" | ")}`,
+          icon: "lightbulb",
+        });
+      }
+
+      this.emit("detail", {
+        step: "analyzing",
+        sub: "summary",
+        message: `Resumen: ${insights.summary.slice(0, 150)}${insights.summary.length > 150 ? "..." : ""}`,
+        icon: "check",
+      });
+
+      this.emit("insights", { step: "insights_extracted", insights });
+
+      // ─── PASO 3: Búsqueda web ───
       this.currentStep = "searching";
       this.emit("step", {
         step: "searching",
-        message: "Buscando información complementaria...",
+        message: "Investigando en internet...",
       });
 
       let webResults = [];
       if (insights.searchQueries.length > 0) {
+        for (let i = 0; i < Math.min(insights.searchQueries.length, 3); i++) {
+          const query = insights.searchQueries[i];
+          this.emit("detail", {
+            step: "searching",
+            sub: "query",
+            message: `Buscando: "${query}"`,
+            icon: "search",
+            index: i + 1,
+            total: Math.min(insights.searchQueries.length, 3),
+          });
+        }
+
         webResults = await searchAndEnrich(insights.searchQueries);
+
+        if (webResults.length > 0) {
+          for (const result of webResults.slice(0, 3)) {
+            this.emit("detail", {
+              step: "searching",
+              sub: "result_found",
+              message: `Encontrado: "${result.scrapedTitle || result.title}"`,
+              icon: "link",
+              url: result.url,
+            });
+          }
+
+          this.emit("detail", {
+            step: "searching",
+            sub: "scraping",
+            message: `Scrapeando contenido de ${webResults.length} artículos para enriquecer la nota...`,
+            icon: "download",
+          });
+        } else {
+          this.emit("detail", {
+            step: "searching",
+            sub: "no_results",
+            message: "No se encontraron resultados relevantes. Se continuará con la transcripción.",
+            icon: "info",
+          });
+        }
+
         this.emit("search", {
           step: "search_complete",
           resultsCount: webResults.length,
+        });
+      } else {
+        this.emit("detail", {
+          step: "searching",
+          sub: "skip",
+          message: "No se generaron queries de búsqueda. Saltando investigación web.",
+          icon: "info",
         });
       }
 
@@ -190,11 +360,34 @@ class AutoPipeline {
         .map((r) => `Fuente: ${r.title}\n${r.content || r.snippet}`)
         .join("\n\n---\n\n");
 
-      // PASO 4: Generar nota periodística
+      // ─── PASO 4: Generar nota periodística ───
       this.currentStep = "generating";
       this.emit("step", {
         step: "generating",
-        message: `Generando nota (tono: ${this.config.tone}, estructura: ${this.config.structure})...`,
+        message: "Redactando nota periodística...",
+      });
+
+      this.emit("detail", {
+        step: "generating",
+        sub: "preparing_prompt",
+        message: `Preparando prompt con tono "${this.config.tone}" y estructura "${this.config.structure}"...`,
+        icon: "edit",
+      });
+
+      if (webContext) {
+        this.emit("detail", {
+          step: "generating",
+          sub: "enriching",
+          message: `Incluyendo información de ${webResults.length} fuentes web como contexto...`,
+          icon: "merge",
+        });
+      }
+
+      this.emit("detail", {
+        step: "generating",
+        sub: "calling_ai",
+        message: "Generando texto de la nota con Cohere AI...",
+        icon: "brain",
       });
 
       const newsText = await generateNewsCopy({
@@ -205,8 +398,28 @@ class AutoPipeline {
         insights: `Resumen: ${insights.summary}\nDatos clave: ${insights.keyFacts.join(", ")}`,
       });
 
-      // Generar título
+      this.emit("detail", {
+        step: "generating",
+        sub: "note_ready",
+        message: `Nota generada (${newsText.length} caracteres). Generando título...`,
+        icon: "check",
+      });
+
+      this.emit("detail", {
+        step: "generating",
+        sub: "generating_title",
+        message: "Generando título periodístico impactante con IA...",
+        icon: "brain",
+      });
+
       const title = await generateTitle(fullTranscription, insights.summary);
+
+      this.emit("detail", {
+        step: "generating",
+        sub: "title_ready",
+        message: `Título: "${title}"`,
+        icon: "check",
+      });
 
       this.emit("note", {
         step: "note_generated",
@@ -214,25 +427,55 @@ class AutoPipeline {
         content: newsText,
       });
 
-      // PASO 5: Generar flyer
+      // ─── PASO 5: Generar flyer ───
       this.currentStep = "creating_flyer";
       this.emit("step", {
         step: "creating_flyer",
-        message: "Generando placa informativa...",
+        message: "Creando placa informativa...",
+      });
+
+      this.emit("detail", {
+        step: "creating_flyer",
+        sub: "strategy",
+        message: "Buscando imagen de fondo: primero artículos web, luego IA, fallback placeholder...",
+        icon: "image",
       });
 
       const flyerPath = await this.generateFlyer(title, webResults, insights);
+
+      this.emit("detail", {
+        step: "creating_flyer",
+        sub: "overlay",
+        message: "Aplicando overlay: resize 1080x1080, gradiente, título, logo Radio Uno...",
+        icon: "layers",
+      });
+
       this.emit("flyer", {
         step: "flyer_created",
         path: flyerPath,
+        previewUrl: `/output/${path.basename(flyerPath)}`,
       });
 
-      // PASO 6: Publicar
+      this.emit("detail", {
+        step: "creating_flyer",
+        sub: "done",
+        message: "Placa informativa lista para publicar",
+        icon: "check",
+      });
+
+      // ─── PASO 6: Publicar ───
       if (this.config.autoPublish) {
         this.currentStep = "publishing";
         this.emit("step", {
           step: "publishing",
           message: "Publicando en redes sociales...",
+        });
+
+        this.emit("detail", {
+          step: "publishing",
+          sub: "google_drive",
+          message: "Subiendo imagen a Google Drive...",
+          icon: "upload",
         });
 
         await this.publish(title, newsText, flyerPath);
@@ -254,7 +497,7 @@ class AutoPipeline {
       this.currentStep = "waiting";
       this.emit("step", {
         step: "waiting",
-        message: "Esperando próximo ciclo de captura...",
+        message: `Ciclo completado. Próxima captura en ${this.config.segmentDuration}s...`,
       });
     } catch (error) {
       this.emit("error", {
@@ -587,11 +830,29 @@ class AutoPipeline {
     try {
       const auth = await this.authorizeGoogleDrive();
       imageDriveUrl = await this.uploadToGoogleDrive(auth, flyerPath);
+      this.emit("detail", {
+        step: "publishing",
+        sub: "google_drive_done",
+        message: "Imagen subida a Google Drive correctamente",
+        icon: "check",
+      });
     } catch (error) {
       errors.push(`Google Drive: ${error.message}`);
+      this.emit("detail", {
+        step: "publishing",
+        sub: "google_drive_error",
+        message: `Error subiendo a Google Drive: ${error.message}`,
+        icon: "warning",
+      });
     }
 
-    // 2. Publicar vía webhook (Facebook + Instagram vía Make/N8N)
+    // 2. Publicar vía webhook (Make/N8N)
+    this.emit("detail", {
+      step: "publishing",
+      sub: "webhook",
+      message: "Enviando a webhook (Make.com/N8N)...",
+      icon: "send",
+    });
     try {
       await axios.post(WEBHOOK_URL_PIPELINE, {
         title,
@@ -602,22 +863,52 @@ class AutoPipeline {
         imageDriveUrl,
         source: "pipeline-autonomo",
       });
+      this.emit("detail", {
+        step: "publishing",
+        sub: "webhook_done",
+        message: "Webhook enviado correctamente",
+        icon: "check",
+      });
     } catch (error) {
       errors.push(`Webhook: ${error.message}`);
     }
 
     // 3. Publicar en Twitter
+    this.emit("detail", {
+      step: "publishing",
+      sub: "twitter",
+      message: "Publicando en Twitter...",
+      icon: "send",
+    });
     try {
       if (imageDriveUrl) {
         await postTweetNuevoBoton(title, imageDriveUrl);
+        this.emit("detail", {
+          step: "publishing",
+          sub: "twitter_done",
+          message: "Publicado en Twitter correctamente",
+          icon: "check",
+        });
       }
     } catch (error) {
       errors.push(`Twitter: ${error.message}`);
+      this.emit("detail", {
+        step: "publishing",
+        sub: "twitter_error",
+        message: `Error en Twitter: ${error.message}`,
+        icon: "warning",
+      });
     }
 
     // 4. Publicar directamente via Meta API si está conectado
     try {
       if (isMetaConnected()) {
+        this.emit("detail", {
+          step: "publishing",
+          sub: "meta",
+          message: "Publicando en Facebook e Instagram (Meta API directa)...",
+          icon: "send",
+        });
         const metaResults = await publishToAllMeta({
           title,
           content,
@@ -632,7 +923,12 @@ class AutoPipeline {
         const fbCount = metaResults.facebook.length;
         const igCount = metaResults.instagram.length;
         if (fbCount > 0 || igCount > 0) {
-          console.log(`[Pipeline] Meta: ${fbCount} FB + ${igCount} IG publicaciones`);
+          this.emit("detail", {
+            step: "publishing",
+            sub: "meta_done",
+            message: `Publicado en Meta: ${fbCount} Facebook Page(s), ${igCount} Instagram`,
+            icon: "check",
+          });
         }
       }
     } catch (error) {

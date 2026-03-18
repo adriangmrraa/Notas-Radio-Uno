@@ -262,11 +262,47 @@ const pipelineStatusDot = document.getElementById("pipelineStatusDot");
 const pipelineStatusText = document.getElementById("pipelineStatusText");
 const publishedNotesList = document.getElementById("publishedNotesList");
 
-function addLogEntry(message, type = "info") {
+// Mapeo de iconos para sub-pasos
+const DETAIL_ICONS = {
+  satellite: "\uD83D\uDCE1",
+  check: "\u2705",
+  mic: "\uD83C\uDFA4",
+  brain: "\uD83E\uDDE0",
+  document: "\uD83D\uDCC4",
+  tag: "\uD83C\uDFF7\uFE0F",
+  people: "\uD83D\uDC65",
+  lightbulb: "\uD83D\uDCA1",
+  search: "\uD83D\uDD0D",
+  link: "\uD83D\uDD17",
+  download: "\u2B07\uFE0F",
+  info: "\u2139\uFE0F",
+  edit: "\u270F\uFE0F",
+  merge: "\uD83D\uDD00",
+  image: "\uD83D\uDDBC\uFE0F",
+  layers: "\uD83C\uDF9E\uFE0F",
+  upload: "\u2B06\uFE0F",
+  send: "\uD83D\uDCE8",
+  rocket: "\uD83D\uDE80",
+  clock: "\u23F3",
+  warning: "\u26A0\uFE0F",
+};
+
+function addLogEntry(message, type = "info", icon = null) {
   const entry = document.createElement("div");
   entry.className = `log-entry log-${type}`;
   const time = new Date().toLocaleTimeString();
-  entry.textContent = `[${time}] ${message}`;
+  const iconStr = icon && DETAIL_ICONS[icon] ? DETAIL_ICONS[icon] + " " : "";
+  entry.textContent = `[${time}] ${iconStr}${message}`;
+  pipelineLog.appendChild(entry);
+  pipelineLog.scrollTop = pipelineLog.scrollHeight;
+}
+
+function addDetailEntry(message, icon = null) {
+  const entry = document.createElement("div");
+  entry.className = "log-entry log-detail";
+  const time = new Date().toLocaleTimeString();
+  const iconStr = icon && DETAIL_ICONS[icon] ? DETAIL_ICONS[icon] + " " : "   ";
+  entry.textContent = `[${time}]   ${iconStr}${message}`;
   pipelineLog.appendChild(entry);
   pipelineLog.scrollTop = pipelineLog.scrollHeight;
 }
@@ -394,68 +430,92 @@ socket.on("pipeline-update", function (data) {
       updateStepUI(data.step);
       break;
 
+    // Eventos granulares de sub-pasos (nuevo)
+    case "detail":
+      addDetailEntry(data.message, data.icon);
+      break;
+
     case "transcription":
       pipelineTranscription.value += `[${new Date(data.timestamp).toLocaleTimeString()}] ${data.text}\n\n`;
       pipelineTranscription.scrollTop = pipelineTranscription.scrollHeight;
       addLogEntry(
-        `Transcripción recibida (buffer: ${data.bufferSize} segmentos)`,
+        `Transcripción lista (buffer: ${data.bufferSize} segmentos)`,
         "info",
+        "check",
       );
       break;
 
     case "insights":
       addLogEntry(
-        `Insights: ${data.insights.summary || "Sin resumen"}`,
-        "info",
+        `Insights extraídos: ${data.insights.topics.length} temas, ${data.insights.people.length} personas, ${data.insights.keyFacts.length} datos clave`,
+        "success",
+        "lightbulb",
       );
       break;
 
     case "search":
       addLogEntry(
-        `Búsqueda web: ${data.resultsCount} resultados encontrados`,
-        "info",
+        `Investigación web completada: ${data.resultsCount} artículos recopilados`,
+        "success",
+        "search",
       );
       break;
 
     case "note":
-      addLogEntry(`Nota generada: "${data.title}"`, "success");
+      addLogEntry(`Nota generada: "${data.title}"`, "success", "edit");
+      // Mostrar preview de la nota en el log
+      if (data.content) {
+        addDetailEntry(`Preview: "${data.content.slice(0, 120)}..."`, "document");
+      }
       break;
 
     case "flyer_bg":
       if (data.source === "ai_generating") {
-        addLogEntry(
-          `Generando fondo con ${data.model === "grok" ? "Grok Image" : "Google Imagen"}...`,
-          "info",
+        addDetailEntry(
+          `Generando fondo con IA (${data.model === "grok" ? "Grok Image" : "Google Imagen"})...`,
+          "brain",
         );
+        if (data.prompt) {
+          addDetailEntry(`Prompt: "${data.prompt}"`, "edit");
+        }
       } else if (data.source === "gemini_imagen") {
-        addLogEntry("Fondo generado con Google Imagen", "success");
+        addDetailEntry("Fondo generado con Google Imagen", "check");
       } else if (data.source === "grok_image") {
-        addLogEntry("Fondo generado con Grok Image (xAI)", "success");
+        addDetailEntry("Fondo generado con Grok Image (xAI)", "check");
       } else if (data.source === "web") {
-        addLogEntry("Fondo obtenido de artículo web", "info");
+        addDetailEntry("Fondo obtenido de artículo web", "download");
       } else if (data.source === "placeholder") {
-        addLogEntry("Usando fondo placeholder (sin API de imagen configurada)", "warning");
+        addDetailEntry("Usando fondo placeholder (sin API de imagen)", "warning");
       }
       break;
 
     case "flyer":
-      addLogEntry("Placa informativa creada", "success");
+      addLogEntry("Placa informativa creada", "success", "image");
+      // Mostrar preview de la placa
+      if (data.previewUrl) {
+        const previewContainer = document.createElement("div");
+        previewContainer.className = "log-entry log-preview";
+        previewContainer.innerHTML = `<img src="${data.previewUrl}" alt="Placa" class="log-flyer-preview" />`;
+        pipelineLog.appendChild(previewContainer);
+        pipelineLog.scrollTop = pipelineLog.scrollHeight;
+      }
       break;
 
     case "published":
       addLogEntry(
         `PUBLICADO: "${data.title}" (Total: ${data.totalPublished})`,
         "success",
+        "rocket",
       );
       addPublishedNote(data.title, data.timestamp);
       break;
 
     case "error":
-      addLogEntry(`ERROR en ${data.step}: ${data.message}`, "error");
+      addLogEntry(`ERROR en ${data.step}: ${data.message}`, "error", "warning");
       break;
 
     case "publish_warnings":
-      data.warnings.forEach((w) => addLogEntry(`Advertencia: ${w}`, "warning"));
+      data.warnings.forEach((w) => addLogEntry(`Advertencia: ${w}`, "warning", "warning"));
       break;
 
     case "stopped":

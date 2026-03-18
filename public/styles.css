@@ -423,7 +423,7 @@ hr {
     border: 1px solid #333;
     border-radius: 5px;
     padding: 10px;
-    max-height: 200px;
+    max-height: 400px;
     overflow-y: auto;
     font-family: monospace;
     font-size: 12px;
@@ -438,6 +438,28 @@ hr {
 .log-success { color: #4CAF50; }
 .log-warning { color: #ff9800; }
 .log-error { color: #e94560; }
+
+.log-detail {
+    color: #7a7a9a;
+    font-size: 11px;
+    padding-left: 12px;
+    border-left: 2px solid rgba(255, 255, 255, 0.08);
+    margin-left: 4px;
+    border-bottom: none;
+}
+
+.log-preview {
+    padding: 5px 0;
+    border-bottom: none;
+}
+
+.log-flyer-preview {
+    max-width: 200px;
+    max-height: 200px;
+    border-radius: 5px;
+    border: 1px solid #333;
+    margin-top: 4px;
+}
 
 /* Transcription */
 .pipeline-transcription-container {
