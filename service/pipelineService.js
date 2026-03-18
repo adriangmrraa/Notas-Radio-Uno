@@ -209,7 +209,7 @@ class AutoPipeline {
         message: "Generando placa informativa...",
       });
 
-      const flyerPath = await this.generateFlyer(title, webResults);
+      const flyerPath = await this.generateFlyer(title, webResults, insights);
       this.emit("flyer", {
         step: "flyer_created",
         path: flyerPath,
@@ -254,12 +254,19 @@ class AutoPipeline {
 
   /**
    * Generar un flyer/placa informativa.
-   * Si hay imagen de búsqueda web la usa, si no genera una placa con fondo sólido.
+   *
+   * Estrategia para la imagen de FONDO (en orden de prioridad):
+   *   1. Imagen encontrada en artículos web scrapeados
+   *   2. Imagen generada por IA basada en los insights (si hay API key de imagen)
+   *   3. Placeholder con gradiente de colores de Radio Uno
+   *
+   * El overlay (sombra + texto + logo) SIEMPRE lo aplica processImage()
+   * con código, garantizando consistencia visual entre todas las placas.
    */
-  async generateFlyer(title, webResults) {
-    // Buscar una imagen disponible de los resultados web
+  async generateFlyer(title, webResults, insights) {
     let imagePath = null;
 
+    // Estrategia 1: Buscar imagen de artículos web scrapeados
     for (const result of webResults) {
       if (result.scrapedImage && result.scrapedImage.startsWith("http")) {
         try {
@@ -269,39 +276,143 @@ class AutoPipeline {
           });
           imagePath = path.join(outputDir, `temp_${uuidv4()}.jpg`);
           fs.writeFileSync(imagePath, Buffer.from(response.data, "binary"));
+          this.emit("flyer_bg", { source: "web", url: result.scrapedImage });
           break;
         } catch (_) {
-          // Continuar buscando otra imagen
+          // Continuar con siguiente imagen
         }
       }
     }
 
-    // Si no hay imagen, crear una imagen placeholder con fondo de color
+    // Estrategia 2: Generar fondo con IA (si no se encontró imagen web)
     if (!imagePath) {
-      imagePath = await this.createPlaceholderImage();
+      imagePath = await this.generateAIBackground(title, insights);
     }
 
-    // Usar el servicio existente de procesamiento de imagen
+    // Estrategia 3: Placeholder si todo lo anterior falló
+    if (!imagePath) {
+      imagePath = await this.createPlaceholderImage();
+      this.emit("flyer_bg", { source: "placeholder" });
+    }
+
+    // processImage() aplica SIEMPRE el mismo overlay:
+    // - Resize a 1080x1080
+    // - Gradiente oscuro de abajo hacia arriba
+    // - Caja negra semitransparente con el título (Bebas Kai 70px)
+    // - "Radio Uno Formosa" centrado (Bebas Kai 30px)
+    // - Logo 150px en esquina superior derecha
     const finalPath = await processImage(imagePath, title);
 
-    // Limpiar imagen temporal
-    try {
-      fs.unlinkSync(imagePath);
-    } catch (_) {}
+    // Limpiar imagen temporal de fondo
+    try { fs.unlinkSync(imagePath); } catch (_) {}
 
     return finalPath;
   }
 
   /**
-   * Crea una imagen placeholder cuando no hay imagen disponible.
+   * Genera una imagen de fondo usando IA basada en el tema de la nota.
+   * Soporta: OpenAI DALL-E, Stability AI, o cualquier API de generación de imágenes.
+   * Retorna la ruta al archivo generado, o null si no hay API configurada.
+   */
+  async generateAIBackground(title, insights) {
+    // OpenAI DALL-E
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const prompt = this.buildImagePrompt(title, insights);
+        this.emit("flyer_bg", { source: "ai_generating", prompt: prompt.slice(0, 100) });
+
+        const response = await axios.post(
+          "https://api.openai.com/v1/images/generations",
+          {
+            model: "dall-e-3",
+            prompt,
+            n: 1,
+            size: "1024x1024",
+            quality: "standard",
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 60000,
+          },
+        );
+
+        const imageUrl = response.data.data[0].url;
+        const imgResponse = await axios.get(imageUrl, {
+          responseType: "arraybuffer",
+          timeout: 30000,
+        });
+
+        const imagePath = path.join(outputDir, `ai_bg_${uuidv4()}.jpg`);
+        fs.writeFileSync(imagePath, Buffer.from(imgResponse.data, "binary"));
+        this.emit("flyer_bg", { source: "ai_dalle" });
+        return imagePath;
+      } catch (error) {
+        console.error("[Pipeline] Error generando fondo con DALL-E:", error.message);
+      }
+    }
+
+    // Stability AI
+    if (process.env.STABILITY_API_KEY) {
+      try {
+        const prompt = this.buildImagePrompt(title, insights);
+        this.emit("flyer_bg", { source: "ai_generating", prompt: prompt.slice(0, 100) });
+
+        const response = await axios.post(
+          "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+          {
+            text_prompts: [{ text: prompt, weight: 1 }],
+            cfg_scale: 7,
+            width: 1024,
+            height: 1024,
+            samples: 1,
+            steps: 30,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            timeout: 60000,
+          },
+        );
+
+        const base64Image = response.data.artifacts[0].base64;
+        const imagePath = path.join(outputDir, `ai_bg_${uuidv4()}.jpg`);
+        fs.writeFileSync(imagePath, Buffer.from(base64Image, "base64"));
+        this.emit("flyer_bg", { source: "ai_stability" });
+        return imagePath;
+      } catch (error) {
+        console.error("[Pipeline] Error generando fondo con Stability:", error.message);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Construye un prompt para generar una imagen de fondo apropiada para la nota.
+   * El fondo debe ser una foto/escena, NO debe contener texto ni logos
+   * (eso lo pone processImage con código).
+   */
+  buildImagePrompt(title, insights) {
+    const topics = insights?.topics?.join(", ") || "";
+    return `Fotografía periodística profesional para una noticia sobre: "${title}". ${topics ? `Temas relacionados: ${topics}.` : ""} Estilo: fotoperiodismo, imagen editorial, sin texto, sin logos, sin marcas de agua. Imagen limpia que sirva de fondo para una placa informativa de noticias. Formato cuadrado.`;
+  }
+
+  /**
+   * Crea una imagen placeholder cuando no hay imagen web ni IA disponible.
+   * Usa un gradiente con los colores de la marca Radio Uno.
    */
   async createPlaceholderImage() {
-    // Importar canvas dinámicamente
     const { createCanvas } = await import("canvas");
     const canvas = createCanvas(1080, 1080);
     const ctx = canvas.getContext("2d");
 
-    // Fondo con gradiente azul/rojo (colores de Radio Uno)
+    // Fondo con gradiente azul oscuro (colores de Radio Uno)
     const gradient = ctx.createLinearGradient(0, 0, 1080, 1080);
     gradient.addColorStop(0, "#1a1a2e");
     gradient.addColorStop(0.5, "#16213e");
