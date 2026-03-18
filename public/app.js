@@ -261,32 +261,116 @@ const pipelineTranscription = document.getElementById("pipelineTranscription");
 const pipelineStatusDot = document.getElementById("pipelineStatusDot");
 const pipelineStatusText = document.getElementById("pipelineStatusText");
 const publishedNotesList = document.getElementById("publishedNotesList");
+const activityFeed = document.getElementById("activityFeed");
 
-// Mapeo de iconos para sub-pasos
+// Mapeo de iconos
 const DETAIL_ICONS = {
-  satellite: "\uD83D\uDCE1",
-  check: "\u2705",
-  mic: "\uD83C\uDFA4",
-  brain: "\uD83E\uDDE0",
-  document: "\uD83D\uDCC4",
-  tag: "\uD83C\uDFF7\uFE0F",
-  people: "\uD83D\uDC65",
-  lightbulb: "\uD83D\uDCA1",
-  search: "\uD83D\uDD0D",
-  link: "\uD83D\uDD17",
-  download: "\u2B07\uFE0F",
-  info: "\u2139\uFE0F",
-  edit: "\u270F\uFE0F",
-  merge: "\uD83D\uDD00",
-  image: "\uD83D\uDDBC\uFE0F",
-  layers: "\uD83C\uDF9E\uFE0F",
-  upload: "\u2B06\uFE0F",
-  send: "\uD83D\uDCE8",
-  rocket: "\uD83D\uDE80",
-  clock: "\u23F3",
-  warning: "\u26A0\uFE0F",
+  satellite: "\uD83D\uDCE1", check: "\u2705", mic: "\uD83C\uDFA4",
+  brain: "\uD83E\uDDE0", document: "\uD83D\uDCC4", tag: "\uD83C\uDFF7\uFE0F",
+  people: "\uD83D\uDC65", lightbulb: "\uD83D\uDCA1", search: "\uD83D\uDD0D",
+  link: "\uD83D\uDD17", download: "\u2B07\uFE0F", info: "\u2139\uFE0F",
+  edit: "\u270F\uFE0F", merge: "\uD83D\uDD00", image: "\uD83D\uDDBC\uFE0F",
+  layers: "\uD83C\uDF9E\uFE0F", upload: "\u2B06\uFE0F", send: "\uD83D\uDCE8",
+  rocket: "\uD83D\uDE80", clock: "\u23F3", warning: "\u26A0\uFE0F",
 };
 
+// Step metadata for cards
+const STEP_META = {
+  capturing:     { icon: "\uD83C\uDFA4", label: "Captura y Transcripción" },
+  analyzing:     { icon: "\uD83D\uDD0D", label: "Análisis con IA" },
+  searching:     { icon: "\uD83C\uDF10", label: "Investigación Web" },
+  generating:    { icon: "\u270D\uFE0F", label: "Redacción de Nota" },
+  creating_flyer:{ icon: "\uD83D\uDDBC\uFE0F", label: "Creación de Placa" },
+  publishing:    { icon: "\uD83D\uDCE4", label: "Publicación en Redes" },
+};
+
+// Track current active card
+let currentActivityCard = null;
+let currentActivityStep = null;
+
+function getIcon(name) {
+  return DETAIL_ICONS[name] || "";
+}
+
+/**
+ * Creates or returns the activity card for a step.
+ * Cards flow: created (active with spinner) -> sub-steps added -> marked done (check).
+ */
+function getOrCreateCard(stepName) {
+  if (currentActivityStep === stepName && currentActivityCard) {
+    return currentActivityCard;
+  }
+
+  // Mark previous card as done
+  if (currentActivityCard && currentActivityStep !== stepName) {
+    markCardDone(currentActivityCard);
+  }
+
+  const meta = STEP_META[stepName] || { icon: "\u2699\uFE0F", label: stepName };
+
+  const card = document.createElement("div");
+  card.className = "activity-card active";
+  card.id = `activity-card-${stepName}`;
+  card.innerHTML = `
+    <div class="activity-card-header">
+      <span class="activity-card-icon">${meta.icon}</span>
+      <span class="activity-card-title">${meta.label}</span>
+      <span class="activity-card-status"><span class="spinner"></span></span>
+    </div>
+    <div class="activity-card-steps"></div>
+  `;
+
+  activityFeed.appendChild(card);
+  activityFeed.scrollTop = activityFeed.scrollHeight;
+
+  currentActivityCard = card;
+  currentActivityStep = stepName;
+  return card;
+}
+
+function markCardDone(card) {
+  if (!card) return;
+  card.classList.remove("active");
+  card.classList.add("done");
+  const statusEl = card.querySelector(".activity-card-status");
+  if (statusEl) statusEl.innerHTML = "\u2705";
+}
+
+function markCardError(card) {
+  if (!card) return;
+  card.classList.remove("active");
+  card.classList.add("error");
+  const statusEl = card.querySelector(".activity-card-status");
+  if (statusEl) statusEl.innerHTML = "\u26A0\uFE0F";
+}
+
+/**
+ * Add a sub-step line inside the current card.
+ */
+function addSubStep(card, message, icon, className) {
+  if (!card) return;
+  const stepsContainer = card.querySelector(".activity-card-steps");
+  const sub = document.createElement("div");
+  sub.className = `activity-sub-step ${className || ""}`;
+  const iconStr = icon ? getIcon(icon) : "\u2022";
+  sub.innerHTML = `<span class="sub-icon">${iconStr}</span><span class="sub-text">${message}</span>`;
+  stepsContainer.appendChild(sub);
+  activityFeed.scrollTop = activityFeed.scrollHeight;
+}
+
+/**
+ * Add an image preview inside the current card.
+ */
+function addCardPreview(card, imageUrl) {
+  if (!card || !imageUrl) return;
+  const preview = document.createElement("div");
+  preview.className = "activity-card-preview";
+  preview.innerHTML = `<img src="${imageUrl}" alt="Placa" />`;
+  card.appendChild(preview);
+  activityFeed.scrollTop = activityFeed.scrollHeight;
+}
+
+// Text log (kept as secondary, smaller log)
 function addLogEntry(message, type = "info", icon = null) {
   const entry = document.createElement("div");
   entry.className = `log-entry log-${type}`;
@@ -388,6 +472,9 @@ startPipelineBtn.addEventListener("click", () => {
         pipelineStatusText.textContent = "En ejecución";
         pipelineLog.innerHTML = "";
         pipelineTranscription.value = "";
+        activityFeed.innerHTML = "";
+        currentActivityCard = null;
+        currentActivityStep = null;
         addLogEntry("Pipeline iniciado - " + url, "success");
       } else {
         alert(data.error || "Error al iniciar el pipeline.");
@@ -425,15 +512,35 @@ socket.on("pipeline-update", function (data) {
   console.log("Pipeline update:", data);
 
   switch (data.event) {
-    case "step":
+    case "step": {
       addLogEntry(data.message, "info");
       updateStepUI(data.step);
+      // Create/switch activity card for this step
+      if (data.step && data.step !== "waiting") {
+        getOrCreateCard(data.step);
+      }
+      if (data.step === "waiting") {
+        // Mark last card done
+        if (currentActivityCard) {
+          markCardDone(currentActivityCard);
+          currentActivityCard = null;
+          currentActivityStep = null;
+        }
+      }
       break;
+    }
 
-    // Eventos granulares de sub-pasos (nuevo)
-    case "detail":
+    // Eventos granulares de sub-pasos → both log + card
+    case "detail": {
       addDetailEntry(data.message, data.icon);
+      const card = currentActivityCard;
+      if (card) {
+        const isCheck = data.icon === "check";
+        const isWarning = data.icon === "warning";
+        addSubStep(card, data.message, data.icon, isCheck ? "sub-done" : isWarning ? "sub-error" : "");
+      }
       break;
+    }
 
     case "transcription":
       pipelineTranscription.value += `[${new Date(data.timestamp).toLocaleTimeString()}] ${data.text}\n\n`;
@@ -445,13 +552,14 @@ socket.on("pipeline-update", function (data) {
       );
       break;
 
-    case "insights":
+    case "insights": {
       addLogEntry(
         `Insights extraídos: ${data.insights.topics.length} temas, ${data.insights.people.length} personas, ${data.insights.keyFacts.length} datos clave`,
         "success",
         "lightbulb",
       );
       break;
+    }
 
     case "search":
       addLogEntry(
@@ -463,41 +571,50 @@ socket.on("pipeline-update", function (data) {
 
     case "note":
       addLogEntry(`Nota generada: "${data.title}"`, "success", "edit");
-      // Mostrar preview de la nota en el log
       if (data.content) {
         addDetailEntry(`Preview: "${data.content.slice(0, 120)}..."`, "document");
       }
-      break;
-
-    case "flyer_bg":
-      if (data.source === "ai_generating") {
-        addDetailEntry(
-          `Generando fondo con IA (${data.model === "grok" ? "Grok Image" : "Google Imagen"})...`,
-          "brain",
-        );
-        if (data.prompt) {
-          addDetailEntry(`Prompt: "${data.prompt}"`, "edit");
-        }
-      } else if (data.source === "gemini_imagen") {
-        addDetailEntry("Fondo generado con Google Imagen", "check");
-      } else if (data.source === "grok_image") {
-        addDetailEntry("Fondo generado con Grok Image (xAI)", "check");
-      } else if (data.source === "web") {
-        addDetailEntry("Fondo obtenido de artículo web", "download");
-      } else if (data.source === "placeholder") {
-        addDetailEntry("Usando fondo placeholder (sin API de imagen)", "warning");
+      // Show note preview in card
+      if (currentActivityCard && data.content) {
+        addSubStep(currentActivityCard, `"${data.content.slice(0, 100)}..."`, "document", "");
       }
       break;
 
+    case "flyer_bg": {
+      const bgCard = currentActivityCard;
+      if (data.source === "ai_generating") {
+        addDetailEntry(`Generando fondo con IA (${data.model === "grok" ? "Grok Image" : "Google Imagen"})...`, "brain");
+        if (bgCard) addSubStep(bgCard, `Generando fondo con ${data.model === "grok" ? "Grok Image" : "Google Imagen"}...`, "brain", "");
+        if (data.prompt && bgCard) addSubStep(bgCard, `Prompt: "${data.prompt}"`, "edit", "");
+      } else if (data.source === "gemini_imagen") {
+        addDetailEntry("Fondo generado con Google Imagen", "check");
+        if (bgCard) addSubStep(bgCard, "Fondo generado con Google Imagen", "check", "sub-done");
+      } else if (data.source === "grok_image") {
+        addDetailEntry("Fondo generado con Grok Image (xAI)", "check");
+        if (bgCard) addSubStep(bgCard, "Fondo generado con Grok Image", "check", "sub-done");
+      } else if (data.source === "web") {
+        addDetailEntry("Fondo obtenido de artículo web", "download");
+        if (bgCard) addSubStep(bgCard, "Fondo obtenido de artículo web", "download", "sub-done");
+      } else if (data.source === "placeholder") {
+        addDetailEntry("Usando fondo placeholder", "warning");
+        if (bgCard) addSubStep(bgCard, "Usando fondo placeholder", "warning", "sub-error");
+      }
+      break;
+    }
+
     case "flyer":
       addLogEntry("Placa informativa creada", "success", "image");
-      // Mostrar preview de la placa
       if (data.previewUrl) {
+        // Log preview
         const previewContainer = document.createElement("div");
         previewContainer.className = "log-entry log-preview";
         previewContainer.innerHTML = `<img src="${data.previewUrl}" alt="Placa" class="log-flyer-preview" />`;
         pipelineLog.appendChild(previewContainer);
         pipelineLog.scrollTop = pipelineLog.scrollHeight;
+        // Card preview
+        if (currentActivityCard) {
+          addCardPreview(currentActivityCard, data.previewUrl);
+        }
       }
       break;
 
@@ -508,10 +625,21 @@ socket.on("pipeline-update", function (data) {
         "rocket",
       );
       addPublishedNote(data.title, data.timestamp);
+      // Mark publish card done
+      if (currentActivityCard) {
+        addSubStep(currentActivityCard, `Publicado: "${data.title}"`, "rocket", "sub-done");
+        markCardDone(currentActivityCard);
+        currentActivityCard = null;
+        currentActivityStep = null;
+      }
       break;
 
     case "error":
       addLogEntry(`ERROR en ${data.step}: ${data.message}`, "error", "warning");
+      if (currentActivityCard) {
+        addSubStep(currentActivityCard, `Error: ${data.message}`, "warning", "sub-error");
+        markCardError(currentActivityCard);
+      }
       break;
 
     case "publish_warnings":
@@ -523,6 +651,12 @@ socket.on("pipeline-update", function (data) {
       pipelineStatusText.textContent = "Detenido";
       startPipelineBtn.disabled = false;
       stopPipelineBtn.disabled = true;
+      // Mark any remaining card as done
+      if (currentActivityCard) {
+        markCardDone(currentActivityCard);
+        currentActivityCard = null;
+        currentActivityStep = null;
+      }
       break;
   }
 });

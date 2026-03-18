@@ -167,11 +167,17 @@
           </div>
         </div>
 
-        <!-- Live Log -->
-        <div class="pipeline-log-container">
-          <h4>Log en tiempo real:</h4>
-          <div id="pipelineLog" class="pipeline-log"></div>
+        <!-- Activity Feed (notification cards) -->
+        <div class="activity-feed-container">
+          <h4>Actividad:</h4>
+          <div id="activityFeed" class="activity-feed"></div>
         </div>
+
+        <!-- Raw Log (collapsible) -->
+        <details class="pipeline-log-details">
+          <summary class="pipeline-log-summary">Log detallado</summary>
+          <div id="pipelineLog" class="pipeline-log"></div>
+        </details>
 
         <!-- Transcripción en vivo -->
         <div class="pipeline-transcription-container">
