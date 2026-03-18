@@ -284,47 +284,55 @@ const STEP_META = {
   publishing:    { icon: "\uD83D\uDCE4", label: "Publicación en Redes" },
 };
 
-// Track current active card
-let currentActivityCard = null;
-let currentActivityStep = null;
+// Track cards - capture card persists, processing cards are separate
+let captureCard = null;       // Persistent card for capture + transcription
+let processingCard = null;    // Current card for analysis/search/generate/flyer/publish
 
 function getIcon(name) {
   return DETAIL_ICONS[name] || "";
 }
 
 /**
- * Creates or returns the activity card for a step.
- * Cards flow: created (active with spinner) -> sub-steps added -> marked done (check).
+ * Get or create the persistent capture card.
+ * Unlike processing cards, this one stays alive while the pipeline runs.
  */
-function getOrCreateCard(stepName) {
-  if (currentActivityStep === stepName && currentActivityCard) {
-    return currentActivityCard;
-  }
+function getOrCreateCaptureCard() {
+  if (captureCard) return captureCard;
 
-  // Mark previous card as done
-  if (currentActivityCard && currentActivityStep !== stepName) {
-    markCardDone(currentActivityCard);
+  const meta = STEP_META["capturing"];
+  captureCard = createCard(meta.icon, meta.label);
+  return captureCard;
+}
+
+/**
+ * Create a new processing card (for analysis, search, generate, flyer, publish).
+ * Marks the previous processing card as done.
+ */
+function getOrCreateProcessingCard(stepName, topicLabel) {
+  // Mark previous processing card as done
+  if (processingCard) {
+    markCardDone(processingCard);
   }
 
   const meta = STEP_META[stepName] || { icon: "\u2699\uFE0F", label: stepName };
+  const label = topicLabel ? `${meta.label}: ${topicLabel}` : meta.label;
+  processingCard = createCard(meta.icon, label);
+  return processingCard;
+}
 
+function createCard(icon, label) {
   const card = document.createElement("div");
   card.className = "activity-card active";
-  card.id = `activity-card-${stepName}`;
   card.innerHTML = `
     <div class="activity-card-header">
-      <span class="activity-card-icon">${meta.icon}</span>
-      <span class="activity-card-title">${meta.label}</span>
+      <span class="activity-card-icon">${icon}</span>
+      <span class="activity-card-title">${label}</span>
       <span class="activity-card-status"><span class="spinner"></span></span>
     </div>
     <div class="activity-card-steps"></div>
   `;
-
   activityFeed.appendChild(card);
   activityFeed.scrollTop = activityFeed.scrollHeight;
-
-  currentActivityCard = card;
-  currentActivityStep = stepName;
   return card;
 }
 
@@ -345,8 +353,14 @@ function markCardError(card) {
 }
 
 /**
- * Add a sub-step line inside the current card.
+ * Get the right card for a detail event based on its step.
+ * Capture details go to capture card, everything else goes to processing card.
  */
+function getCardForStep(stepName) {
+  if (stepName === "capturing") return getOrCreateCaptureCard();
+  return processingCard;
+}
+
 function addSubStep(card, message, icon, className) {
   if (!card) return;
   const stepsContainer = card.querySelector(".activity-card-steps");
@@ -358,9 +372,6 @@ function addSubStep(card, message, icon, className) {
   activityFeed.scrollTop = activityFeed.scrollHeight;
 }
 
-/**
- * Add an image preview inside the current card.
- */
 function addCardPreview(card, imageUrl) {
   if (!card || !imageUrl) return;
   const preview = document.createElement("div");
@@ -404,11 +415,17 @@ function updateStepUI(activeStep) {
     const el = document.getElementById(`step-${step}`);
     if (el) {
       el.classList.remove("active", "completed");
-      const idx = steps.indexOf(step);
-      const activeIdx = steps.indexOf(activeStep);
       if (step === activeStep) {
         el.classList.add("active");
-      } else if (activeIdx > idx) {
+      }
+      // Capturing is always active when pipeline runs
+      if (step === "capturing" && activeStep && activeStep !== "stopped") {
+        el.classList.add("active");
+      }
+      // Mark processing steps as completed once they pass
+      const activeIdx = steps.indexOf(activeStep);
+      const stepIdx = steps.indexOf(step);
+      if (activeIdx > 0 && stepIdx > 0 && stepIdx < activeIdx) {
         el.classList.add("completed");
       }
     }
@@ -470,8 +487,8 @@ startPipelineBtn.addEventListener("click", () => {
         pipelineLog.innerHTML = "";
         pipelineTranscription.value = "";
         activityFeed.innerHTML = "";
-        currentActivityCard = null;
-        currentActivityStep = null;
+        captureCard = null;
+        processingCard = null;
         addLogEntry("Pipeline iniciado - " + url, "success");
       } else {
         alert(data.error || "Error al iniciar el pipeline.");
@@ -512,29 +529,37 @@ socket.on("pipeline-update", function (data) {
     case "step": {
       addLogEntry(data.message, "info");
       updateStepUI(data.step);
-      // Create/switch activity card for this step
-      if (data.step && data.step !== "waiting") {
-        getOrCreateCard(data.step);
-      }
-      if (data.step === "waiting") {
-        // Mark last card done
-        if (currentActivityCard) {
-          markCardDone(currentActivityCard);
-          currentActivityCard = null;
-          currentActivityStep = null;
+
+      if (data.step === "capturing") {
+        // Capture card persists; just update the title text
+        const cc = getOrCreateCaptureCard();
+        const titleEl = cc.querySelector(".activity-card-title");
+        if (titleEl) titleEl.textContent = data.message;
+        // Mark any open processing card as done (analysis cycle ended)
+        if (processingCard) {
+          markCardDone(processingCard);
+          processingCard = null;
         }
+      } else if (data.step && data.step !== "waiting") {
+        // Processing step: create a new card
+        // Extract topic from message if present (format "Doing: "topic"")
+        const topicMatch = data.message.match(/["":]"?([^""]+)"?$/);
+        const topic = topicMatch ? topicMatch[1] : null;
+        getOrCreateProcessingCard(data.step, topic);
       }
       break;
     }
 
-    // Eventos granulares de sub-pasos → both log + card
+    // Granular sub-step events → route to correct card
     case "detail": {
       addDetailEntry(data.message, data.icon);
-      const card = currentActivityCard;
+      const card = getCardForStep(data.step);
       if (card) {
         const isCheck = data.icon === "check";
         const isWarning = data.icon === "warning";
-        addSubStep(card, data.message, data.icon, isCheck ? "sub-done" : isWarning ? "sub-error" : "");
+        const isInfo = data.icon === "info" || data.icon === "clock";
+        addSubStep(card, data.message, data.icon,
+          isCheck ? "sub-done" : isWarning ? "sub-error" : "");
       }
       break;
     }
@@ -543,7 +568,7 @@ socket.on("pipeline-update", function (data) {
       pipelineTranscription.value += `[${new Date(data.timestamp).toLocaleTimeString()}] ${data.text}\n\n`;
       pipelineTranscription.scrollTop = pipelineTranscription.scrollHeight;
       addLogEntry(
-        `Transcripción lista (buffer: ${data.bufferSize} segmentos)`,
+        `Transcripción lista (${data.totalMinutes || "?"} min capturados, ${data.bufferSize} chunks)`,
         "info",
         "check",
       );
@@ -551,7 +576,7 @@ socket.on("pipeline-update", function (data) {
 
     case "insights": {
       addLogEntry(
-        `Insights extraídos: ${data.insights.topics.length} temas, ${data.insights.people.length} personas, ${data.insights.keyFacts.length} datos clave`,
+        `Insights: ${data.insights.topics.length} temas, ${data.insights.people.length} personas, ${data.insights.keyFacts.length} datos`,
         "success",
         "lightbulb",
       );
@@ -560,82 +585,77 @@ socket.on("pipeline-update", function (data) {
 
     case "search":
       addLogEntry(
-        `Investigación web completada: ${data.resultsCount} artículos recopilados`,
+        `Investigación: ${data.resultsCount} artículos encontrados`,
         "success",
         "search",
       );
       break;
 
     case "note":
-      addLogEntry(`Nota generada: "${data.title}"`, "success", "edit");
+      addLogEntry(`Nota: "${data.title}"`, "success", "edit");
       if (data.content) {
         addDetailEntry(`Preview: "${data.content.slice(0, 120)}..."`, "document");
       }
-      // Show note preview in card
-      if (currentActivityCard && data.content) {
-        addSubStep(currentActivityCard, `"${data.content.slice(0, 100)}..."`, "document", "");
+      if (processingCard && data.content) {
+        addSubStep(processingCard, `"${data.content.slice(0, 100)}..."`, "document", "");
       }
       break;
 
     case "flyer_bg": {
-      const bgCard = currentActivityCard;
+      const fc = processingCard;
       if (data.source === "ai_generating") {
-        addDetailEntry(`Generando fondo con IA (${data.model === "grok" ? "Grok Image" : "Google Imagen"})...`, "brain");
-        if (bgCard) addSubStep(bgCard, `Generando fondo con ${data.model === "grok" ? "Grok Image" : "Google Imagen"}...`, "brain", "");
-        if (data.prompt && bgCard) addSubStep(bgCard, `Prompt: "${data.prompt}"`, "edit", "");
+        addDetailEntry(`Generando fondo con IA (${data.model === "grok" ? "Grok" : "Gemini"})...`, "brain");
+        if (fc) addSubStep(fc, `Generando fondo con ${data.model === "grok" ? "Grok" : "Google Imagen"}...`, "brain", "");
       } else if (data.source === "gemini_imagen") {
         addDetailEntry("Fondo generado con Google Imagen", "check");
-        if (bgCard) addSubStep(bgCard, "Fondo generado con Google Imagen", "check", "sub-done");
+        if (fc) addSubStep(fc, "Fondo generado con Google Imagen", "check", "sub-done");
       } else if (data.source === "grok_image") {
-        addDetailEntry("Fondo generado con Grok Image (xAI)", "check");
-        if (bgCard) addSubStep(bgCard, "Fondo generado con Grok Image", "check", "sub-done");
+        addDetailEntry("Fondo generado con Grok Image", "check");
+        if (fc) addSubStep(fc, "Fondo generado con Grok Image", "check", "sub-done");
       } else if (data.source === "web") {
-        addDetailEntry("Fondo obtenido de artículo web", "download");
-        if (bgCard) addSubStep(bgCard, "Fondo obtenido de artículo web", "download", "sub-done");
+        addDetailEntry("Fondo de artículo web", "download");
+        if (fc) addSubStep(fc, "Fondo obtenido de artículo web", "download", "sub-done");
       } else if (data.source === "placeholder") {
-        addDetailEntry("Usando fondo placeholder", "warning");
-        if (bgCard) addSubStep(bgCard, "Usando fondo placeholder", "warning", "sub-error");
+        addDetailEntry("Usando placeholder", "warning");
+        if (fc) addSubStep(fc, "Usando fondo placeholder", "warning", "sub-error");
       }
       break;
     }
 
     case "flyer":
-      addLogEntry("Placa informativa creada", "success", "image");
+      addLogEntry("Placa creada", "success", "image");
       if (data.previewUrl) {
-        // Log preview
         const previewContainer = document.createElement("div");
         previewContainer.className = "log-entry log-preview";
         previewContainer.innerHTML = `<img src="${data.previewUrl}" alt="Placa" class="log-flyer-preview" />`;
         pipelineLog.appendChild(previewContainer);
         pipelineLog.scrollTop = pipelineLog.scrollHeight;
-        // Card preview
-        if (currentActivityCard) {
-          addCardPreview(currentActivityCard, data.previewUrl);
-        }
+        if (processingCard) addCardPreview(processingCard, data.previewUrl);
       }
       break;
 
     case "published":
       addLogEntry(
-        `PUBLICADO: "${data.title}" (Total: ${data.totalPublished})`,
+        `PUBLICADO: "${data.title}"${data.topic ? ` [${data.topic}]` : ""} (Total: ${data.totalPublished})`,
         "success",
         "rocket",
       );
       addPublishedNote(data.title, data.timestamp);
-      // Mark publish card done
-      if (currentActivityCard) {
-        addSubStep(currentActivityCard, `Publicado: "${data.title}"`, "rocket", "sub-done");
-        markCardDone(currentActivityCard);
-        currentActivityCard = null;
-        currentActivityStep = null;
+      if (processingCard) {
+        addSubStep(processingCard, `Publicado: "${data.title}"`, "rocket", "sub-done");
+        markCardDone(processingCard);
+        processingCard = null;
       }
       break;
 
     case "error":
       addLogEntry(`ERROR en ${data.step}: ${data.message}`, "error", "warning");
-      if (currentActivityCard) {
-        addSubStep(currentActivityCard, `Error: ${data.message}`, "warning", "sub-error");
-        markCardError(currentActivityCard);
+      {
+        const errCard = getCardForStep(data.step);
+        if (errCard) {
+          addSubStep(errCard, `Error: ${data.message}`, "warning", "sub-error");
+          if (data.step !== "capturing") markCardError(errCard);
+        }
       }
       break;
 
@@ -649,11 +669,8 @@ socket.on("pipeline-update", function (data) {
       pipelineStatusText.textContent = `Detenido${stoppedInfo}`;
       startPipelineBtn.disabled = false;
       stopPipelineBtn.disabled = true;
-      if (currentActivityCard) {
-        markCardDone(currentActivityCard);
-        currentActivityCard = null;
-        currentActivityStep = null;
-      }
+      if (captureCard) { markCardDone(captureCard); captureCard = null; }
+      if (processingCard) { markCardDone(processingCard); processingCard = null; }
       break;
     }
   }
