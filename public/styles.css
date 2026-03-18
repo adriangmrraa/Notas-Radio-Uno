@@ -6,7 +6,7 @@ body {
 }
 
 .container {
-    max-width: 600px;
+    max-width: 700px;
     margin: 0 auto;
     background-color: #fff;
     padding: 20px;
@@ -25,11 +25,26 @@ form {
 }
 
 input[type="file"],
-input[type="text"] {
+input[type="text"],
+input[type="url"],
+input[type="number"],
+select {
     padding: 10px;
     font-size: 16px;
     border: 1px solid #ccc;
     border-radius: 5px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+textarea {
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: monospace;
 }
 
 button {
@@ -46,6 +61,11 @@ button:hover {
     background-color: #45a049;
 }
 
+button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
 #output {
     margin-top: 30px;
     text-align: center;
@@ -54,4 +74,260 @@ button:hover {
 .generatedImage {
     max-width: 100%;
     margin-top: 20px;
+}
+
+hr {
+    margin: 30px 0;
+    border: none;
+    border-top: 2px solid #eee;
+}
+
+/* ========================================= */
+/* PIPELINE AUTÓNOMO */
+/* ========================================= */
+
+.pipeline-section {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: white;
+    padding: 25px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+.pipeline-section h2 {
+    margin-top: 0;
+    color: #e94560;
+}
+
+.pipeline-description {
+    color: #b0b0b0;
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+
+.pipeline-config {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 20px;
+    border-radius: 8px;
+}
+
+.pipeline-section label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 14px;
+    color: #ccc;
+}
+
+.pipeline-section input,
+.pipeline-section select {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+.pipeline-section input::placeholder {
+    color: #888;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-row {
+    display: flex;
+    gap: 15px;
+}
+
+.form-row .form-group {
+    flex: 1;
+}
+
+.pipeline-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.btn-primary {
+    background-color: #e94560;
+    flex: 1;
+    font-weight: bold;
+    font-size: 18px;
+    padding: 14px;
+}
+
+.btn-primary:hover {
+    background-color: #c53050;
+}
+
+.btn-danger {
+    background-color: #555;
+    flex: 1;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background-color: #777;
+}
+
+/* Status */
+.pipeline-status {
+    margin-top: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 20px;
+    border-radius: 8px;
+}
+
+.pipeline-status h3 {
+    margin-top: 0;
+    color: #e94560;
+}
+
+.pipeline-status h4 {
+    color: #ccc;
+    margin-bottom: 8px;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #555;
+}
+
+.status-dot.active {
+    background: #4CAF50;
+    box-shadow: 0 0 8px #4CAF50;
+    animation: pulse 1.5s infinite;
+}
+
+.status-dot.stopped {
+    background: #e94560;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Pipeline Steps */
+.pipeline-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+}
+
+.step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    transition: all 0.3s ease;
+    min-width: 60px;
+}
+
+.step.active {
+    background: rgba(233, 69, 96, 0.3);
+    border: 1px solid #e94560;
+    transform: scale(1.1);
+}
+
+.step.completed {
+    background: rgba(76, 175, 80, 0.3);
+    border: 1px solid #4CAF50;
+}
+
+.step-icon {
+    font-size: 20px;
+    margin-bottom: 4px;
+}
+
+.step-label {
+    font-size: 11px;
+    color: #aaa;
+}
+
+.step.active .step-label {
+    color: #e94560;
+    font-weight: bold;
+}
+
+.step.completed .step-label {
+    color: #4CAF50;
+}
+
+.step-arrow {
+    color: #555;
+    font-size: 16px;
+}
+
+/* Log */
+.pipeline-log-container {
+    margin-top: 15px;
+}
+
+.pipeline-log {
+    background: #0a0a1a;
+    border: 1px solid #333;
+    border-radius: 5px;
+    padding: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.log-entry {
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.log-info { color: #b0b0b0; }
+.log-success { color: #4CAF50; }
+.log-warning { color: #ff9800; }
+.log-error { color: #e94560; }
+
+/* Transcription */
+.pipeline-transcription-container {
+    margin-top: 15px;
+}
+
+.pipeline-section textarea {
+    background: #0a0a1a;
+    color: #b0b0b0;
+    border: 1px solid #333;
+}
+
+/* Published notes */
+.published-note {
+    background: rgba(76, 175, 80, 0.1);
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 8px;
+}
+
+.published-note strong {
+    color: #4CAF50;
+}
+
+.published-note small {
+    color: #888;
+}
+
+/* Checkbox styling */
+.pipeline-section input[type="checkbox"] {
+    width: auto;
+    margin-right: 8px;
 }

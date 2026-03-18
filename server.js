@@ -21,7 +21,8 @@ import {
   postTweetViejoBoton,
   postTweetNuevoBoton,
 } from "./service/twitter_service.js"; // Ajusta la ruta si es necesario
-import { generateNewsCopy } from "./scripts/cohere_Service.js";
+import { generateNewsCopy, TONE_PROMPTS, STRUCTURE_PROMPTS } from "./scripts/cohere_Service.js";
+import { AutoPipeline } from "./service/pipelineService.js";
 
 // Configuración para obtener el directorio actual en ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -444,6 +445,91 @@ app.post("/generateNewsCopy", async (req, res) => {
       .status(500)
       .json({ error: "Error al generar la nota: " + error.message });
   }
+});
+
+// ===========================================
+// PIPELINE AUTÓNOMO
+// ===========================================
+
+let pipeline = null;
+
+// Iniciar pipeline autónomo
+app.post("/pipeline/start", async (req, res) => {
+  const { url, tone, structure, segmentDuration, publishInterval, autoPublish } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: "Se requiere una URL de transmisión." });
+  }
+
+  try {
+    if (pipeline && pipeline.running) {
+      return res.status(400).json({ error: "El pipeline ya está en ejecución. Detenelo primero." });
+    }
+
+    pipeline = new AutoPipeline(io);
+    await pipeline.start({
+      url,
+      tone: tone || "formal",
+      structure: structure || "completa",
+      segmentDuration: segmentDuration || 120,
+      publishInterval: publishInterval || 5,
+      autoPublish: autoPublish !== false,
+    });
+
+    res.json({
+      success: true,
+      message: "Pipeline autónomo iniciado.",
+      config: pipeline.config,
+    });
+  } catch (error) {
+    console.error("Error iniciando pipeline:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Detener pipeline
+app.post("/pipeline/stop", (req, res) => {
+  if (!pipeline || !pipeline.running) {
+    return res.status(400).json({ error: "No hay pipeline en ejecución." });
+  }
+
+  pipeline.stop();
+  res.json({
+    success: true,
+    message: "Pipeline detenido.",
+    stats: {
+      totalPublished: pipeline.publishedNotes.length,
+    },
+  });
+});
+
+// Estado del pipeline
+app.get("/pipeline/status", (req, res) => {
+  if (!pipeline) {
+    return res.json({
+      running: false,
+      currentStep: "idle",
+      bufferSize: 0,
+      totalPublished: 0,
+    });
+  }
+  res.json(pipeline.getStatus());
+});
+
+// Configuración disponible (tonos y estructuras)
+app.get("/pipeline/options", (req, res) => {
+  res.json({
+    tones: Object.keys(TONE_PROMPTS).map(key => ({
+      value: key,
+      label: key.charAt(0).toUpperCase() + key.slice(1),
+      description: TONE_PROMPTS[key],
+    })),
+    structures: Object.keys(STRUCTURE_PROMPTS).map(key => ({
+      value: key,
+      label: key.charAt(0).toUpperCase() + key.slice(1),
+      description: STRUCTURE_PROMPTS[key],
+    })),
+  });
 });
 
 // Iniciar el servidor HTTP y WebSocket en el puerto 3000

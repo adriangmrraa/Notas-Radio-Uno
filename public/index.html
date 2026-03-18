@@ -12,7 +12,136 @@
   <div class="container">
     <h1>Posts Radio Uno</h1>
 
+    <!-- ========================================= -->
+    <!-- PIPELINE AUTÓNOMO -->
+    <!-- ========================================= -->
+    <section id="pipelineSection" class="pipeline-section">
+      <h2>Pipeline Autónomo</h2>
+      <p class="pipeline-description">Pegá una URL de YouTube Live o stream de radio y el sistema automáticamente
+        transcribe, analiza, genera notas periodísticas, crea placas y publica en redes sociales.</p>
+
+      <div class="pipeline-config">
+        <div class="form-group">
+          <label for="pipelineUrl">URL de transmisión (YouTube Live, radio stream, etc.):</label>
+          <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream" required />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="pipelineTone">Tono:</label>
+            <select id="pipelineTone">
+              <option value="formal">Formal</option>
+              <option value="informal">Informal</option>
+              <option value="urgente">Urgente</option>
+              <option value="analitico">Analítico</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="pipelineStructure">Estructura:</label>
+            <select id="pipelineStructure">
+              <option value="flash">Flash informativo</option>
+              <option value="corta">Nota corta</option>
+              <option value="completa" selected>Nota completa</option>
+              <option value="cronica">Crónica</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="pipelineInterval">Publicar cada (minutos):</label>
+            <input type="number" id="pipelineInterval" value="5" min="2" max="30" />
+          </div>
+
+          <div class="form-group">
+            <label for="pipelineSegment">Duración segmento (segundos):</label>
+            <input type="number" id="pipelineSegment" value="120" min="30" max="300" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="pipelineAutoPublish" checked />
+            Publicar automáticamente en redes sociales
+          </label>
+        </div>
+
+        <div class="pipeline-actions">
+          <button id="startPipelineBtn" class="btn-primary">Iniciar Pipeline</button>
+          <button id="stopPipelineBtn" class="btn-danger" disabled>Detener Pipeline</button>
+        </div>
+      </div>
+
+      <!-- Estado del Pipeline -->
+      <div id="pipelineStatus" class="pipeline-status" style="display: none;">
+        <h3>Estado del Pipeline</h3>
+        <div class="status-indicator">
+          <span id="pipelineStatusDot" class="status-dot"></span>
+          <span id="pipelineStatusText">Inactivo</span>
+        </div>
+
+        <!-- Steps Progress -->
+        <div class="pipeline-steps">
+          <div class="step" id="step-capturing">
+            <span class="step-icon">🎙️</span>
+            <span class="step-label">Captura</span>
+          </div>
+          <div class="step-arrow">→</div>
+          <div class="step" id="step-analyzing">
+            <span class="step-icon">🔍</span>
+            <span class="step-label">Análisis</span>
+          </div>
+          <div class="step-arrow">→</div>
+          <div class="step" id="step-searching">
+            <span class="step-icon">🌐</span>
+            <span class="step-label">Búsqueda</span>
+          </div>
+          <div class="step-arrow">→</div>
+          <div class="step" id="step-generating">
+            <span class="step-icon">✍️</span>
+            <span class="step-label">Nota</span>
+          </div>
+          <div class="step-arrow">→</div>
+          <div class="step" id="step-creating_flyer">
+            <span class="step-icon">🖼️</span>
+            <span class="step-label">Flyer</span>
+          </div>
+          <div class="step-arrow">→</div>
+          <div class="step" id="step-publishing">
+            <span class="step-icon">📤</span>
+            <span class="step-label">Publicar</span>
+          </div>
+        </div>
+
+        <!-- Live Log -->
+        <div class="pipeline-log-container">
+          <h4>Log en tiempo real:</h4>
+          <div id="pipelineLog" class="pipeline-log"></div>
+        </div>
+
+        <!-- Transcripción en vivo -->
+        <div class="pipeline-transcription-container">
+          <h4>Transcripción en vivo:</h4>
+          <textarea id="pipelineTranscription" rows="6" readonly></textarea>
+        </div>
+
+        <!-- Notas publicadas -->
+        <div id="publishedNotesContainer" style="display: none;">
+          <h4>Notas publicadas:</h4>
+          <div id="publishedNotesList"></div>
+        </div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ========================================= -->
+    <!-- SECCIONES ORIGINALES -->
+    <!-- ========================================= -->
+
     <!-- Formulario de entrada de imagen y texto -->
+    <h2>Crear Placa Manual</h2>
     <form id="imageForm">
       <label for="imageInput">Seleccionar imagen</label>
       <input type="file" id="imageInput" accept="image/*" required />
@@ -54,25 +183,27 @@
     <button id="stopCaptureBtn">Detener Captura</button>
 
     <h3>Transcripción en tiempo real:</h3>
-    <!-- Aquí se mostrará la transcripción -->
     <textarea id="transcriptionArea" rows="10"
       style="width: 100%; border: 1px solid #ccc; padding: 10px; font-family: monospace;" readonly></textarea>
-    <!-- Botón Generar Noticia (oculto inicialmente) -->
     <button id="generateNewsBtn" style="display: none;">Generar Noticia</button>
-    
-    <!-- Formulario de Noticia (oculto inicialmente) -->
+
     <div id="newsForm" style="display: none;">
       <label for="contextInput">Contexto:</label>
       <textarea id="contextInput" placeholder="Ingrese el contexto de la noticia"></textarea>
-    
       <button id="generateNewsCopyBtn" type="button">Generar Copy</button>
     </div>
-        <!-- Contenedor para la creación de la nota (oculto inicialmente) -->
-        <div id="createNewsContainer" style="display: none;">
-          <label for="contextInput">Contexto:</label>
-          <textarea id="contextInput" placeholder="Ingrese el contexto de la noticia"></textarea>
-          <button id="generateNewsBtn" type="button">Crear Nota Periodística</button>
-        </div>
+
+    <div id="createNewsContainer" style="display: none;">
+      <label for="contextInput2">Contexto:</label>
+      <textarea id="contextInput2" placeholder="Ingrese el contexto de la noticia"></textarea>
+      <button id="generateNewsBtn2" type="button">Crear Nota Periodística</button>
+    </div>
+
+    <div id="newsOutput" style="display: none;">
+      <h3>Nota generada:</h3>
+      <textarea id="generatedNewsCopy" rows="8" style="width: 100%;"></textarea>
+    </div>
+  </div>
 
   <!-- Scripts -->
   <script src="/socket.io/socket.io.js"></script>
