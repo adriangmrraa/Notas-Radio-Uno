@@ -1,51 +1,54 @@
-import { CohereClient } from "cohere-ai";
-import * as dotenv from "dotenv";
-dotenv.config();
+import { chatCompletion, extractJSON } from "../scripts/aiService.js";
 
-const cohere = new CohereClient({
-  token: process.env.COHERE_API_KEY,
-});
+const SYSTEM_PROMPT = `Sos un analista de inteligencia informativa de Radio Uno Formosa. Tu trabajo es procesar transcripciones en bruto de transmisiones en vivo y extraer datos estructurados para el equipo editorial.
+
+CRITERIOS DE ANÁLISIS:
+- Priorizá la relevancia para Formosa y el NEA argentino
+- Distinguí hechos verificables de opiniones
+- Identificá personas con nombre completo y cargo cuando sea posible
+- Las búsquedas sugeridas deben ser específicas y en español argentino
+- Los datos clave deben ser citables: cifras, fechas, declaraciones textuales
+- Clasificá correctamente: un saludo al oyente NO es un tema noticioso
+
+FORMATO: Respondé SOLO en JSON válido, sin markdown ni backticks.`;
 
 /**
  * Extrae insights clave de un bloque de transcripción.
- * Retorna: { topics, people, keyFacts, searchQueries, summary }
+ * @returns {{ topics, people, keyFacts, searchQueries, summary }}
  */
 async function extractInsights(transcriptionText) {
-  const prompt = `Analiza la siguiente transcripción de una transmisión en vivo y extrae la información clave.
-
-TRANSCRIPCIÓN:
+  const userPrompt = `TRANSCRIPCIÓN:
 """
 ${transcriptionText}
 """
 
-Responde SOLO en formato JSON válido (sin markdown, sin backticks) con esta estructura exacta:
+Extraé la información clave en esta estructura JSON:
 {
-  "topics": ["tema1", "tema2"],
-  "people": ["persona1", "persona2"],
-  "keyFacts": ["dato clave 1", "dato clave 2"],
-  "searchQueries": ["búsqueda 1 para Google", "búsqueda 2 para Google"],
-  "summary": "Resumen de 2-3 oraciones de lo más relevante"
+  "topics": ["tema noticioso 1", "tema noticioso 2"],
+  "people": ["Nombre Completo - cargo/rol (si se menciona)"],
+  "keyFacts": ["dato concreto y citable 1", "dato concreto 2"],
+  "searchQueries": ["búsqueda Google específica 1", "búsqueda 2"],
+  "summary": "Resumen ejecutivo de 2-3 oraciones con los hechos principales"
 }
 
-Si la transcripción no tiene contenido noticioso claro, devuelve arrays vacíos y un summary indicándolo.`;
+Reglas:
+- "topics": solo temas con sustancia periodística (no saludos, no música, no cortes)
+- "people": nombres propios mencionados con contexto
+- "keyFacts": datos duros: cifras, fechas, declaraciones textuales, decisiones
+- "searchQueries": búsquedas que ayuden a verificar o ampliar la información (en español)
+- Si no hay contenido noticioso, devolvé arrays vacíos y un summary indicándolo`;
 
   try {
-    const response = await cohere.generate({
-      prompt,
-      model: "command-nightly",
-      max_tokens: 800,
-      temperature: 0.3,
-      k: 0,
-      stop_sequences: [],
-      return_likelihoods: "NONE",
+    const { text } = await chatCompletion({
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt,
+      temperature: 0.2,
+      maxTokens: 1000,
+      jsonMode: true,
     });
 
-    const rawText = response.generations[0].text.trim();
-
-    // Intentar parsear el JSON de la respuesta
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const insights = JSON.parse(jsonMatch[0]);
+    const insights = extractJSON(text);
+    if (insights) {
       return {
         topics: insights.topics || [],
         people: insights.people || [],
@@ -55,16 +58,15 @@ Si la transcripción no tiene contenido noticioso claro, devuelve arrays vacíos
       };
     }
 
-    // Si no se puede parsear, retornar estructura básica
     return {
       topics: [],
       people: [],
       keyFacts: [],
       searchQueries: [],
-      summary: rawText.slice(0, 200),
+      summary: text.slice(0, 200),
     };
   } catch (error) {
-    console.error("Error extrayendo insights:", error);
+    console.error("[Insights] Error:", error.message);
     throw new Error("Error al extraer insights: " + error.message);
   }
 }

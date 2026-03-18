@@ -4,26 +4,195 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Notas de Radio Uno</title>
+  <title>Radio Uno Formosa - Centro de Noticias</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
 </head>
 
 <body>
-  <div class="container">
-    <h1>Posts Radio Uno</h1>
+  <!-- ========================================= -->
+  <!-- TOP BAR -->
+  <!-- ========================================= -->
+  <header class="top-bar">
+    <div class="top-bar-inner">
+      <div class="top-bar-brand">
+        <img src="logo.png" alt="Radio Uno" class="top-bar-logo" />
+        <div>
+          <h1 class="top-bar-title">Radio Uno Formosa</h1>
+          <p class="top-bar-subtitle">Centro de Noticias Inteligente</p>
+        </div>
+      </div>
+      <div class="top-bar-badges">
+        <span class="badge badge-ai">DeepSeek AI</span>
+        <span class="badge badge-ai">Gemini</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-container">
 
     <!-- ========================================= -->
-    <!-- CONEXIÓN META (FACEBOOK + INSTAGRAM) -->
+    <!-- PIPELINE AUTÓNOMO (HERO SECTION) -->
     <!-- ========================================= -->
-    <section id="metaConnectionSection" class="meta-section">
-      <h2>Conexión Meta</h2>
-      <p class="meta-description">Conectá tu cuenta de Facebook e Instagram para publicar directamente desde esta plataforma.</p>
+    <section id="pipelineSection" class="card card-pipeline">
+      <div class="card-header">
+        <div class="card-header-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <div>
+          <h2 class="card-title">Pipeline Autónomo</h2>
+          <p class="card-description">Captura continua sin cortes + segmentación inteligente por temas con IA</p>
+        </div>
+      </div>
 
-      <!-- Estado de conexión -->
-      <div id="metaStatusContainer" class="meta-status">
-        <div class="meta-status-indicator">
+      <div class="pipeline-config">
+        <div class="form-group">
+          <label for="pipelineUrl">URL de transmisión</label>
+          <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream de radio" required />
+        </div>
+
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label for="pipelineTone">Tono</label>
+            <select id="pipelineTone">
+              <option value="formal">Formal</option>
+              <option value="informal">Informal</option>
+              <option value="urgente">Urgente</option>
+              <option value="analitico">Analítico</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="pipelineStructure">Estructura</label>
+            <select id="pipelineStructure">
+              <option value="flash">Flash informativo</option>
+              <option value="corta">Nota corta</option>
+              <option value="completa" selected>Nota completa</option>
+              <option value="cronica">Crónica</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="pipelineImageModel">Imagen IA</label>
+            <select id="pipelineImageModel">
+              <option value="gemini">Google Imagen</option>
+              <option value="grok">Grok Image (xAI)</option>
+            </select>
+            <span class="hint" id="imageModelHint">Requiere GEMINI_API_KEY en el servidor</span>
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="pipelineSegment">Duración chunk (seg)</label>
+            <input type="number" id="pipelineSegment" value="120" min="30" max="300" />
+          </div>
+          <div class="form-group form-group-checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="pipelineAutoPublish" checked />
+              <span class="checkbox-custom"></span>
+              Publicar automáticamente
+            </label>
+          </div>
+        </div>
+
+        <div class="pipeline-actions">
+          <button id="startPipelineBtn" class="btn btn-primary btn-lg">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            Iniciar Pipeline
+          </button>
+          <button id="stopPipelineBtn" class="btn btn-danger btn-lg" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
+            Detener
+          </button>
+        </div>
+      </div>
+
+      <!-- Estado del Pipeline -->
+      <div id="pipelineStatus" class="pipeline-status" style="display: none;">
+        <div class="pipeline-status-header">
+          <div class="status-indicator">
+            <span id="pipelineStatusDot" class="status-dot"></span>
+            <span id="pipelineStatusText">Inactivo</span>
+          </div>
+        </div>
+
+        <!-- Steps Progress -->
+        <div class="pipeline-steps">
+          <div class="step" id="step-capturing">
+            <div class="step-icon-wrap"><span class="step-icon">🎙️</span></div>
+            <span class="step-label">Captura</span>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step" id="step-analyzing">
+            <div class="step-icon-wrap"><span class="step-icon">🔍</span></div>
+            <span class="step-label">Análisis</span>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step" id="step-searching">
+            <div class="step-icon-wrap"><span class="step-icon">🌐</span></div>
+            <span class="step-label">Research</span>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step" id="step-generating">
+            <div class="step-icon-wrap"><span class="step-icon">✍️</span></div>
+            <span class="step-label">Nota</span>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step" id="step-creating_flyer">
+            <div class="step-icon-wrap"><span class="step-icon">🖼️</span></div>
+            <span class="step-label">Placa</span>
+          </div>
+          <div class="step-connector"></div>
+          <div class="step" id="step-publishing">
+            <div class="step-icon-wrap"><span class="step-icon">📤</span></div>
+            <span class="step-label">Publicar</span>
+          </div>
+        </div>
+
+        <!-- Activity Feed -->
+        <div class="activity-feed-container">
+          <h4 class="section-label">Actividad en tiempo real</h4>
+          <div id="activityFeed" class="activity-feed"></div>
+        </div>
+
+        <!-- Notas publicadas -->
+        <div id="publishedNotesContainer" style="display: none;">
+          <h4 class="section-label">Notas publicadas</h4>
+          <div id="publishedNotesList"></div>
+        </div>
+
+        <!-- Transcripción en vivo -->
+        <details class="collapsible">
+          <summary class="collapsible-trigger">Transcripción en vivo</summary>
+          <textarea id="pipelineTranscription" rows="8" readonly placeholder="La transcripción aparecerá aquí..."></textarea>
+        </details>
+
+        <!-- Raw Log -->
+        <details class="collapsible">
+          <summary class="collapsible-trigger">Log detallado</summary>
+          <div id="pipelineLog" class="pipeline-log"></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ========================================= -->
+    <!-- META CONNECTION -->
+    <!-- ========================================= -->
+    <section id="metaConnectionSection" class="card card-meta">
+      <div class="card-header">
+        <div class="card-header-icon card-header-icon-meta">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="card-title">Conexión Meta</h2>
+          <p class="card-description">Facebook e Instagram para publicación directa</p>
+        </div>
+        <div class="meta-status-inline">
           <span id="metaStatusDot" class="status-dot"></span>
-          <span id="metaStatusText">Verificando conexión...</span>
+          <span id="metaStatusText">Verificando...</span>
         </div>
       </div>
 
@@ -34,260 +203,167 @@
           <div id="metaIgList" class="meta-assets-list"></div>
         </div>
         <div class="meta-actions">
-          <button id="metaDisconnectBtn" class="btn-meta-disconnect">Desconectar Meta</button>
+          <button id="metaDisconnectBtn" class="btn btn-ghost btn-sm">Desconectar</button>
         </div>
       </div>
 
       <!-- Botón de conexión -->
       <div id="metaConnectContainer" style="display: none;">
-        <button id="metaConnectBtn" class="btn-meta-connect">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="white" style="vertical-align: middle; margin-right: 8px;">
+        <button id="metaConnectBtn" class="btn btn-meta">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
             <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
           </svg>
           Conectar con Meta
         </button>
-        <p class="meta-hint">Se abrirá un popup para autorizar permisos de publicación en Facebook e Instagram.</p>
+        <p class="hint hint-center">Se abrirá un popup para autorizar permisos</p>
       </div>
 
       <!-- Permisos faltantes -->
-      <div id="metaPermissionsWarning" class="meta-warning" style="display: none;">
+      <div id="metaPermissionsWarning" class="alert alert-warning" style="display: none;">
         <strong>Permisos faltantes:</strong>
         <ul id="metaMissingPermissions"></ul>
       </div>
     </section>
 
     <!-- ========================================= -->
-    <!-- PIPELINE AUTÓNOMO -->
+    <!-- HERRAMIENTAS MANUALES -->
     <!-- ========================================= -->
-    <section id="pipelineSection" class="pipeline-section">
-      <h2>Pipeline Autónomo</h2>
-      <p class="pipeline-description">Pegá una URL de YouTube Live o stream de radio. El sistema captura audio en paralelo sin perder un segundo,
-        transcribe continuamente, y usa IA para detectar cuándo cambia el tema. Cuando un tema concluye,
-        genera notas periodísticas y placas automáticamente.</p>
+    <section class="card">
+      <details class="collapsible-section">
+        <summary class="card-header card-header-clickable">
+          <div class="card-header-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18m-9-9h18"></path></svg>
+          </div>
+          <div>
+            <h2 class="card-title">Herramientas Manuales</h2>
+            <p class="card-description">Crear placas, capturar audio y generar notas manualmente</p>
+          </div>
+          <svg class="chevron-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </summary>
 
-      <div class="pipeline-config">
-        <div class="form-group">
-          <label for="pipelineUrl">URL de transmisión (YouTube Live, radio stream, etc.):</label>
-          <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream" required />
-        </div>
+        <div class="manual-tools-content">
+          <!-- Crear Placa Manual -->
+          <div class="tool-section">
+            <h3 class="tool-title">Crear Placa Manual</h3>
+            <form id="imageForm">
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label for="imageInput">Imagen</label>
+                  <input type="file" id="imageInput" accept="image/*" required />
+                </div>
+                <div class="form-group">
+                  <label for="titleInput">Título del post</label>
+                  <input type="text" id="titleInput" placeholder="Título" required />
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="descriptionInput">Descripción</label>
+                <textarea id="descriptionInput" placeholder="Descripción del post" rows="3"></textarea>
+              </div>
+              <button type="submit" class="btn btn-secondary">Generar Post</button>
+            </form>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label for="pipelineTone">Tono:</label>
-            <select id="pipelineTone">
-              <option value="formal">Formal</option>
-              <option value="informal">Informal</option>
-              <option value="urgente">Urgente</option>
-              <option value="analitico">Analítico</option>
-            </select>
+            <div id="output" class="tool-output">
+              <img id="generatedImage" class="preview-image" alt="Imagen procesada" style="display: none" />
+              <div class="output-actions">
+                <a id="downloadLink" href="#" download="placa.png" class="btn btn-ghost btn-sm" style="display: none">Descargar</a>
+                <button id="sendWebhookBtn" class="btn btn-secondary btn-sm" style="display: none">Publicar</button>
+              </div>
+            </div>
           </div>
 
-          <div class="form-group">
-            <label for="pipelineStructure">Estructura:</label>
-            <select id="pipelineStructure">
-              <option value="flash">Flash informativo</option>
-              <option value="corta">Nota corta</option>
-              <option value="completa" selected>Nota completa</option>
-              <option value="cronica">Crónica</option>
-            </select>
+          <!-- Generar desde URL -->
+          <div class="tool-section">
+            <h3 class="tool-title">Generar Placa desde URL</h3>
+            <form id="urlForm">
+              <div class="form-group">
+                <label for="urlInput">URL de la noticia</label>
+                <input type="url" id="urlInput" placeholder="https://..." required />
+              </div>
+              <button type="submit" class="btn btn-secondary">Crear Nota</button>
+            </form>
+
+            <div id="urlOutput" class="tool-output">
+              <img id="generatedImageUrl" class="preview-image" src="" alt="Imagen generada" style="display: none" />
+              <div class="output-actions">
+                <a id="downloadLink2" href="#" download="placa.png" class="btn btn-ghost btn-sm" style="display: none">Descargar</a>
+                <button id="sendWebhookBtnNuevoBoton" class="btn btn-secondary btn-sm" style="display: none">Publicar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Captura de Audio -->
+          <div class="tool-section">
+            <h3 class="tool-title">Captura de Audio</h3>
+            <div class="audio-controls">
+              <button id="startCaptureBtn" class="btn btn-secondary">Iniciar Captura</button>
+              <button id="stopCaptureBtn" class="btn btn-ghost" disabled>Detener</button>
+            </div>
+            <textarea id="transcriptionArea" rows="6" readonly placeholder="Transcripción en tiempo real..."></textarea>
+            <button id="generateNewsBtn" class="btn btn-ghost btn-sm" style="display: none;">Generar Noticia</button>
+
+            <div id="newsForm" style="display: none;">
+              <div class="form-group">
+                <label for="contextInput">Contexto</label>
+                <textarea id="contextInput" placeholder="Contexto de la noticia" rows="3"></textarea>
+              </div>
+              <button id="generateNewsCopyBtn" type="button" class="btn btn-secondary btn-sm">Generar Copy</button>
+            </div>
+
+            <div id="createNewsContainer" style="display: none;">
+              <div class="form-group">
+                <label for="contextInput2">Contexto</label>
+                <textarea id="contextInput2" placeholder="Contexto de la noticia" rows="3"></textarea>
+              </div>
+              <button id="generateNewsBtn2" type="button" class="btn btn-secondary btn-sm">Crear Nota</button>
+            </div>
+
+            <div id="newsOutput" style="display: none;">
+              <h4 class="section-label">Nota generada</h4>
+              <textarea id="generatedNewsCopy" rows="8"></textarea>
+            </div>
           </div>
         </div>
-
-        <div class="form-group">
-          <label for="pipelineImageModel">Modelo de imagen para flyer:</label>
-          <select id="pipelineImageModel">
-            <option value="gemini">Google Imagen (Gemini)</option>
-            <option value="grok">Grok Image (xAI)</option>
-          </select>
-          <span class="model-hint" id="imageModelHint">Requiere GEMINI_API_KEY en el servidor</span>
-        </div>
-
-        <div class="form-group">
-          <label for="pipelineSegment">Duración de cada chunk de audio (segundos):</label>
-          <input type="number" id="pipelineSegment" value="120" min="30" max="300" />
-          <span class="model-hint">El sistema captura en paralelo sin perder audio. La IA decide cuándo publicar según los temas detectados.</span>
-        </div>
-
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="pipelineAutoPublish" checked />
-            Publicar automáticamente en redes sociales
-          </label>
-        </div>
-
-        <div class="pipeline-actions">
-          <button id="startPipelineBtn" class="btn-primary">Iniciar Pipeline</button>
-          <button id="stopPipelineBtn" class="btn-danger" disabled>Detener Pipeline</button>
-        </div>
-      </div>
-
-      <!-- Estado del Pipeline -->
-      <div id="pipelineStatus" class="pipeline-status" style="display: none;">
-        <h3>Estado del Pipeline</h3>
-        <div class="status-indicator">
-          <span id="pipelineStatusDot" class="status-dot"></span>
-          <span id="pipelineStatusText">Inactivo</span>
-        </div>
-
-        <!-- Steps Progress -->
-        <div class="pipeline-steps">
-          <div class="step" id="step-capturing">
-            <span class="step-icon">🎙️</span>
-            <span class="step-label">Captura</span>
-          </div>
-          <div class="step-arrow">→</div>
-          <div class="step" id="step-analyzing">
-            <span class="step-icon">🔍</span>
-            <span class="step-label">Análisis</span>
-          </div>
-          <div class="step-arrow">→</div>
-          <div class="step" id="step-searching">
-            <span class="step-icon">🌐</span>
-            <span class="step-label">Búsqueda</span>
-          </div>
-          <div class="step-arrow">→</div>
-          <div class="step" id="step-generating">
-            <span class="step-icon">✍️</span>
-            <span class="step-label">Nota</span>
-          </div>
-          <div class="step-arrow">→</div>
-          <div class="step" id="step-creating_flyer">
-            <span class="step-icon">🖼️</span>
-            <span class="step-label">Flyer</span>
-          </div>
-          <div class="step-arrow">→</div>
-          <div class="step" id="step-publishing">
-            <span class="step-icon">📤</span>
-            <span class="step-label">Publicar</span>
-          </div>
-        </div>
-
-        <!-- Activity Feed (notification cards) -->
-        <div class="activity-feed-container">
-          <h4>Actividad:</h4>
-          <div id="activityFeed" class="activity-feed"></div>
-        </div>
-
-        <!-- Raw Log (collapsible) -->
-        <details class="pipeline-log-details">
-          <summary class="pipeline-log-summary">Log detallado</summary>
-          <div id="pipelineLog" class="pipeline-log"></div>
-        </details>
-
-        <!-- Transcripción en vivo -->
-        <div class="pipeline-transcription-container">
-          <h4>Transcripción en vivo:</h4>
-          <textarea id="pipelineTranscription" rows="6" readonly></textarea>
-        </div>
-
-        <!-- Notas publicadas -->
-        <div id="publishedNotesContainer" style="display: none;">
-          <h4>Notas publicadas:</h4>
-          <div id="publishedNotesList"></div>
-        </div>
-      </div>
+      </details>
     </section>
 
-    <hr />
-
     <!-- ========================================= -->
-    <!-- SECCIONES ORIGINALES -->
+    <!-- HISTORIAL -->
     <!-- ========================================= -->
-
-    <!-- Formulario de entrada de imagen y texto -->
-    <h2>Crear Placa Manual</h2>
-    <form id="imageForm">
-      <label for="imageInput">Seleccionar imagen</label>
-      <input type="file" id="imageInput" accept="image/*" required />
-
-      <label for="titleInput">Título del post</label>
-      <input type="text" id="titleInput" placeholder="Ingrese el título" required />
-
-      <label for="descriptionInput">Descripción del post</label>
-      <textarea id="descriptionInput" placeholder="Ingrese la descripción"></textarea>
-
-      <button type="submit">Generar post</button>
-    </form>
-
-    <div id="output">
-      <h2>Resultado:</h2>
-      <img id="generatedImage" class="generatedImage" alt="Imagen procesada" style="display: none" />
-      <a id="downloadLink" href="#" download="placa.png" style="display: none">Descargar Imagen</a>
-      <button id="sendWebhookBtn" style="display: none">Publicar en Facebook e Instagram</button>
-    </div>
-
-    <!-- Formulario para ingresar la URL de la noticia -->
-    <h2>Generar Placa desde URL</h2>
-    <form id="urlForm">
-      <label for="urlInput">URL de la noticia:</label>
-      <input type="url" id="urlInput" placeholder="Ingrese la URL de la noticia" required />
-      <button type="submit">Crear Nota</button>
-    </form>
-
-    <div id="urlOutput">
-      <h2>Resultado:</h2>
-      <img id="generatedImageUrl" class="generatedImage" src="" alt="Imagen generada desde la URL"
-        style="display: none;" />
-      <a id="downloadLink2" href="#" download="placa.png" style="display: none">Descargar Imagen</a>
-      <button id="sendWebhookBtnNuevoBoton" style="display: none">Publicar en Facebook e Instagram</button>
-    </div>
-
-    <h2>Captura y Transcripción de Audio</h2>
-    <button id="startCaptureBtn">Iniciar Captura</button>
-    <button id="stopCaptureBtn">Detener Captura</button>
-
-    <h3>Transcripción en tiempo real:</h3>
-    <textarea id="transcriptionArea" rows="10"
-      style="width: 100%; border: 1px solid #ccc; padding: 10px; font-family: monospace;" readonly></textarea>
-    <button id="generateNewsBtn" style="display: none;">Generar Noticia</button>
-
-    <div id="newsForm" style="display: none;">
-      <label for="contextInput">Contexto:</label>
-      <textarea id="contextInput" placeholder="Ingrese el contexto de la noticia"></textarea>
-      <button id="generateNewsCopyBtn" type="button">Generar Copy</button>
-    </div>
-
-    <div id="createNewsContainer" style="display: none;">
-      <label for="contextInput2">Contexto:</label>
-      <textarea id="contextInput2" placeholder="Ingrese el contexto de la noticia"></textarea>
-      <button id="generateNewsBtn2" type="button">Crear Nota Periodística</button>
-    </div>
-
-    <div id="newsOutput" style="display: none;">
-      <h3>Nota generada:</h3>
-      <textarea id="generatedNewsCopy" rows="8" style="width: 100%;"></textarea>
-    </div>
-
-    <hr />
-
-    <!-- ========================================= -->
-    <!-- HISTORIAL PERSISTENTE -->
-    <!-- ========================================= -->
-    <section id="historySection" class="history-section">
-      <h2>Historial</h2>
-      <p class="history-description">Todo lo generado se guarda en la base de datos. Los nuevos items aparecen en tiempo real.</p>
-
-      <!-- Tabs -->
-      <div class="history-tabs">
-        <button class="history-tab active" data-tab="publications">Publicaciones <span id="pubCount" class="history-count">0</span></button>
-        <button class="history-tab" data-tab="transcriptions">Transcripciones <span id="transCount" class="history-count">0</span></button>
+    <section id="historySection" class="card">
+      <div class="card-header">
+        <div class="card-header-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        </div>
+        <div>
+          <h2 class="card-title">Historial</h2>
+          <p class="card-description">Publicaciones y transcripciones guardadas</p>
+        </div>
       </div>
 
-      <!-- Publicaciones -->
+      <div class="history-tabs">
+        <button class="history-tab active" data-tab="publications">
+          Publicaciones <span id="pubCount" class="tab-count">0</span>
+        </button>
+        <button class="history-tab" data-tab="transcriptions">
+          Transcripciones <span id="transCount" class="tab-count">0</span>
+        </button>
+      </div>
+
       <div id="tab-publications" class="history-tab-content active">
         <div id="publicationsList" class="history-list"></div>
-        <button id="loadMorePubs" class="btn-load-more" style="display: none;">Cargar más</button>
-        <p id="noPubsMessage" class="history-empty">No hay publicaciones aún.</p>
+        <button id="loadMorePubs" class="btn btn-ghost btn-block" style="display: none;">Cargar más</button>
+        <p id="noPubsMessage" class="empty-state">No hay publicaciones aún</p>
       </div>
 
-      <!-- Transcripciones -->
       <div id="tab-transcriptions" class="history-tab-content" style="display: none;">
         <div id="transcriptionsList" class="history-list"></div>
-        <button id="loadMoreTrans" class="btn-load-more" style="display: none;">Cargar más</button>
-        <p id="noTransMessage" class="history-empty">No hay transcripciones aún.</p>
+        <button id="loadMoreTrans" class="btn btn-ghost btn-block" style="display: none;">Cargar más</button>
+        <p id="noTransMessage" class="empty-state">No hay transcripciones aún</p>
       </div>
     </section>
-  </div>
+
+  </main>
 
   <!-- Scripts -->
   <script src="/socket.io/socket.io.js"></script>

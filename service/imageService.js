@@ -38,11 +38,24 @@ async function processImage(imagePath, title) {
     gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, 1080, 1080);
-    registerFont(
+    // Registrar fuente: buscar en el proyecto primero, luego fallback a sistema
+    const fontPaths = [
+      path.join(__dirname, "..", "fonts", "BebasKai.ttf"),
+      path.join(__dirname, "..", "public", "BebasKai.ttf"),
       "C:\\Users\\adria\\AppData\\Local\\Microsoft\\Windows\\Fonts\\BebasKai.ttf",
-      { family: "Bebas Kai" }
-    );
-    ctx.font = 'bold 70px "Bebas Kai"';
+    ];
+    let fontRegistered = false;
+    for (const fp of fontPaths) {
+      try {
+        const { existsSync } = await import("fs");
+        if (existsSync(fp)) {
+          registerFont(fp, { family: "Bebas Kai" });
+          fontRegistered = true;
+          break;
+        }
+      } catch (_) {}
+    }
+    ctx.font = fontRegistered ? 'bold 70px "Bebas Kai"' : 'bold 60px "Arial Black", "Impact", sans-serif';
     ctx.fillStyle = "white";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -69,7 +82,7 @@ async function processImage(imagePath, title) {
     lines.forEach((line, index) => {
       ctx.fillText(line, 540, yOffset + index * 60);
     });
-    ctx.font = 'bold 30px "Bebas Kai"';
+    ctx.font = fontRegistered ? 'bold 30px "Bebas Kai"' : 'bold 28px "Arial Black", "Impact", sans-serif';
     ctx.fillStyle = "white";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
