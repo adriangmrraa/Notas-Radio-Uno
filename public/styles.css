@@ -83,6 +83,147 @@ hr {
 }
 
 /* ========================================= */
+/* META CONNECTION */
+/* ========================================= */
+
+.meta-section {
+    background: linear-gradient(135deg, #1877F2 0%, #0d5bc6 50%, #0a47a0 100%);
+    color: white;
+    padding: 25px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+.meta-section h2 {
+    margin-top: 0;
+    color: white;
+}
+
+.meta-description {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+
+.meta-status {
+    margin-bottom: 15px;
+}
+
+.meta-status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.meta-status-indicator .status-dot.warning {
+    background: #ff9800;
+    box-shadow: 0 0 8px #ff9800;
+    animation: pulse 1.5s infinite;
+}
+
+.btn-meta-connect {
+    background-color: #1877F2;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 14px 24px;
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 8px;
+    cursor: pointer;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.btn-meta-connect:hover {
+    background-color: #166fe5;
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.btn-meta-disconnect {
+    background-color: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 8px 16px;
+    font-size: 13px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-meta-disconnect:hover {
+    background-color: rgba(255, 0, 0, 0.3);
+    border-color: rgba(255, 100, 100, 0.5);
+}
+
+.meta-hint {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.6);
+    margin-top: 8px;
+    text-align: center;
+}
+
+.meta-assets {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.meta-assets h4 {
+    color: rgba(255, 255, 255, 0.9);
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.meta-assets-list + .meta-assets-list {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.meta-asset-item {
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    margin-bottom: 4px;
+    font-size: 14px;
+}
+
+.meta-asset-icon {
+    margin-right: 6px;
+}
+
+.meta-actions {
+    text-align: right;
+}
+
+.meta-warning {
+    background: rgba(255, 152, 0, 0.2);
+    border: 1px solid rgba(255, 152, 0, 0.5);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 15px;
+    font-size: 13px;
+}
+
+.meta-warning strong {
+    color: #ff9800;
+}
+
+.meta-warning ul {
+    margin: 5px 0 0 20px;
+    padding: 0;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+/* ========================================= */
 /* PIPELINE AUTÓNOMO */
 /* ========================================= */
 

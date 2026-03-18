@@ -1,9 +1,256 @@
 // =============================================
-// PIPELINE AUTÓNOMO
+// META CONNECTION (Facebook + Instagram)
 // =============================================
 
 const socket = io();
 console.log("Conexión WebSocket establecida");
+
+// Variables de configuración Meta (inyectadas desde el servidor o configuradas aquí)
+const META_APP_ID = window.META_APP_ID || "";
+const META_CONFIG_ID = window.META_CONFIG_ID || "";
+
+let fbSdkReady = false;
+
+// Cargar Facebook SDK (inspirado en useFacebookSdk de Platform ROI)
+function loadFacebookSdk() {
+  return new Promise((resolve) => {
+    if (window.FB) {
+      fbSdkReady = true;
+      resolve(true);
+      return;
+    }
+
+    // Timeout de 5 segundos
+    const timeout = setTimeout(() => {
+      console.warn("[Meta] Facebook SDK timeout - no se pudo cargar");
+      resolve(false);
+    }, 5000);
+
+    window.fbAsyncInit = function () {
+      clearTimeout(timeout);
+      FB.init({
+        appId: META_APP_ID,
+        cookie: true,
+        xfbml: false,
+        version: "v22.0",
+      });
+      fbSdkReady = true;
+      console.log("[Meta] Facebook SDK inicializado");
+      resolve(true);
+    };
+
+    // Cargar script
+    const script = document.createElement("script");
+    script.src = "https://connect.facebook.net/es_LA/sdk.js";
+    script.async = true;
+    script.defer = true;
+    script.crossOrigin = "anonymous";
+    document.head.appendChild(script);
+  });
+}
+
+// Verificar estado de conexión Meta
+async function checkMetaStatus() {
+  try {
+    const response = await fetch("/meta/status");
+    const status = await response.json();
+    updateMetaUI(status);
+    return status;
+  } catch (error) {
+    console.error("[Meta] Error verificando estado:", error);
+    updateMetaUI({ connected: false });
+  }
+}
+
+// Actualizar UI según estado de conexión Meta
+function updateMetaUI(status) {
+  const statusDot = document.getElementById("metaStatusDot");
+  const statusText = document.getElementById("metaStatusText");
+  const assetsContainer = document.getElementById("metaAssetsContainer");
+  const connectContainer = document.getElementById("metaConnectContainer");
+  const pagesList = document.getElementById("metaPagesList");
+  const igList = document.getElementById("metaIgList");
+
+  if (status.connected) {
+    statusDot.className = "status-dot active";
+    statusText.textContent = "Conectado a Meta";
+    assetsContainer.style.display = "block";
+    connectContainer.style.display = "none";
+
+    // Mostrar pages conectadas
+    pagesList.innerHTML = "";
+    if (status.pages && status.pages.length > 0) {
+      const header = document.createElement("h4");
+      header.textContent = "Facebook Pages:";
+      pagesList.appendChild(header);
+      status.pages.forEach((page) => {
+        const el = document.createElement("div");
+        el.className = "meta-asset-item";
+        el.innerHTML = `<span class="meta-asset-icon">📘</span> ${page.name}`;
+        pagesList.appendChild(el);
+      });
+    }
+
+    // Mostrar IG accounts conectadas
+    igList.innerHTML = "";
+    if (status.instagramAccounts && status.instagramAccounts.length > 0) {
+      const header = document.createElement("h4");
+      header.textContent = "Instagram:";
+      igList.appendChild(header);
+      status.instagramAccounts.forEach((ig) => {
+        const el = document.createElement("div");
+        el.className = "meta-asset-item";
+        el.innerHTML = `<span class="meta-asset-icon">📸</span> ${ig.name || ig.username}${ig.username ? " (@" + ig.username + ")" : ""}`;
+        igList.appendChild(el);
+      });
+    }
+
+    // Mostrar expiración del token si existe
+    if (status.expiresAt) {
+      const expiresDate = new Date(status.expiresAt);
+      const daysLeft = Math.ceil((expiresDate - new Date()) / (1000 * 60 * 60 * 24));
+      if (daysLeft > 0 && daysLeft < 10) {
+        statusText.textContent = `Conectado a Meta (token expira en ${daysLeft} días)`;
+        statusDot.className = "status-dot warning";
+      }
+    }
+  } else {
+    statusDot.className = "status-dot";
+    statusText.textContent = "No conectado";
+    assetsContainer.style.display = "none";
+    connectContainer.style.display = "block";
+  }
+}
+
+// Handler para el botón "Conectar con Meta"
+function handleMetaConnect() {
+  if (!fbSdkReady) {
+    alert("El SDK de Facebook no se pudo cargar. Verificá tu conexión a internet y que META_APP_ID esté configurado.");
+    return;
+  }
+
+  // Abrir popup de Meta Login (igual que Platform ROI MetaSettings.tsx)
+  const loginOptions = {
+    scope: "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish,pages_show_list",
+    return_scopes: true,
+  };
+
+  // Si hay config_id, usar Facebook Login for Business
+  if (META_CONFIG_ID) {
+    loginOptions.config_id = META_CONFIG_ID;
+    loginOptions.response_type = "code";
+  }
+
+  FB.login(function (response) {
+    if (response.authResponse) {
+      const { accessToken, code } = response.authResponse;
+      connectMetaWithBackend({ accessToken, code });
+    } else {
+      console.log("[Meta] Usuario canceló el login");
+    }
+  }, loginOptions);
+}
+
+// Enviar token al backend para intercambio y almacenamiento
+async function connectMetaWithBackend({ accessToken, code }) {
+  const connectBtn = document.getElementById("metaConnectBtn");
+  const originalText = connectBtn.innerHTML;
+  connectBtn.disabled = true;
+  connectBtn.innerHTML = "Conectando...";
+
+  try {
+    const response = await fetch("/meta/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accessToken,
+        code,
+        redirectUri: window.location.origin,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      updateMetaUI({
+        connected: true,
+        pages: data.assets.pages,
+        instagramAccounts: data.assets.instagramAccounts,
+      });
+
+      // Mostrar advertencia de permisos faltantes si hay
+      if (data.permissions && data.permissions.missing && data.permissions.missing.length > 0) {
+        const warningEl = document.getElementById("metaPermissionsWarning");
+        const listEl = document.getElementById("metaMissingPermissions");
+        listEl.innerHTML = data.permissions.missing
+          .map((p) => `<li>${p}</li>`)
+          .join("");
+        warningEl.style.display = "block";
+      }
+
+      alert(`Meta conectado con éxito!\n\nPages: ${data.assets.pages.length}\nInstagram: ${data.assets.instagramAccounts.length}`);
+    } else {
+      alert("Error al conectar: " + (data.error || "Error desconocido"));
+    }
+  } catch (error) {
+    console.error("[Meta] Error conectando:", error);
+    alert("Error de conexión: " + error.message);
+  } finally {
+    connectBtn.disabled = false;
+    connectBtn.innerHTML = originalText;
+  }
+}
+
+// Handler para desconectar
+async function handleMetaDisconnect() {
+  if (!confirm("¿Seguro que querés desconectar Meta? Las publicaciones ya no se enviarán directamente a Facebook e Instagram.")) {
+    return;
+  }
+
+  try {
+    const response = await fetch("/meta/disconnect", { method: "POST" });
+    const data = await response.json();
+    if (data.success) {
+      updateMetaUI({ connected: false });
+      document.getElementById("metaPermissionsWarning").style.display = "none";
+    }
+  } catch (error) {
+    console.error("[Meta] Error desconectando:", error);
+    alert("Error al desconectar: " + error.message);
+  }
+}
+
+// Inicializar Meta
+(async function initMeta() {
+  // Cargar config del servidor
+  try {
+    const configResponse = await fetch("/meta/config");
+    if (configResponse.ok) {
+      const config = await configResponse.json();
+      window.META_APP_ID = config.appId || "";
+      window.META_CONFIG_ID = config.configId || "";
+    }
+  } catch (_) {}
+
+  // Cargar SDK si hay app ID
+  if (window.META_APP_ID) {
+    await loadFacebookSdk();
+  }
+
+  // Verificar estado de conexión
+  await checkMetaStatus();
+
+  // Event listeners
+  const connectBtn = document.getElementById("metaConnectBtn");
+  if (connectBtn) connectBtn.addEventListener("click", handleMetaConnect);
+
+  const disconnectBtn = document.getElementById("metaDisconnectBtn");
+  if (disconnectBtn) disconnectBtn.addEventListener("click", handleMetaDisconnect);
+})();
+
+// =============================================
+// PIPELINE AUTÓNOMO
+// =============================================
 
 // Pipeline elements
 const startPipelineBtn = document.getElementById("startPipelineBtn");

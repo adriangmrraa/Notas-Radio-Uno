@@ -4,6 +4,8 @@ import { searchAndEnrich } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "../scripts/cohere_Service.js";
 import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitter_service.js";
+import { publishToAllMeta } from "./metaPublishService.js";
+import { isMetaConnected } from "./databaseService.js";
 import { google } from "googleapis";
 import axios from "axios";
 import fs from "fs";
@@ -602,6 +604,30 @@ class AutoPipeline {
       }
     } catch (error) {
       errors.push(`Twitter: ${error.message}`);
+    }
+
+    // 4. Publicar directamente via Meta API si está conectado
+    try {
+      if (isMetaConnected()) {
+        const metaResults = await publishToAllMeta({
+          title,
+          content,
+          imageUrl: imageDriveUrl,
+          imagePath: flyerPath,
+        });
+        if (metaResults.errors.length > 0) {
+          metaResults.errors.forEach((e) => {
+            errors.push(`Meta ${e.platform} (${e.pageName || e.accountName}): ${e.error}`);
+          });
+        }
+        const fbCount = metaResults.facebook.length;
+        const igCount = metaResults.instagram.length;
+        if (fbCount > 0 || igCount > 0) {
+          console.log(`[Pipeline] Meta: ${fbCount} FB + ${igCount} IG publicaciones`);
+        }
+      }
+    } catch (error) {
+      errors.push(`Meta API: ${error.message}`);
     }
 
     if (errors.length > 0) {

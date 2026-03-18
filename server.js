@@ -11,6 +11,10 @@ import { google } from "googleapis";
 import * as dotenv from "dotenv";
 
 dotenv.config();
+
+// Inicializar base de datos SQLite para credenciales encriptadas
+initDatabase();
+
 import axios from "axios";
 import { exec } from "child_process";
 import http from "http";
@@ -23,6 +27,15 @@ import {
 } from "./service/twitter_service.js"; // Ajusta la ruta si es necesario
 import { generateNewsCopy, TONE_PROMPTS, STRUCTURE_PROMPTS } from "./scripts/cohere_Service.js";
 import { AutoPipeline } from "./service/pipelineService.js";
+import { initDatabase } from "./service/databaseService.js";
+import {
+  exchangeToken,
+  discoverAssets,
+  getConnectionStatus,
+  disconnectMeta,
+  checkPermissions,
+} from "./service/metaAuthService.js";
+import { publishToAllMeta } from "./service/metaPublishService.js";
 
 // Configuración para obtener el directorio actual en ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -271,9 +284,27 @@ app.post("/sendWebhook", async (req, res) => {
       );
     }
 
+    // Publicar directamente via Meta API si está conectado
+    let metaResults = null;
+    try {
+      const metaStatus = getConnectionStatus();
+      if (metaStatus.connected) {
+        metaResults = await publishToAllMeta({
+          title,
+          content: description,
+          imageUrl: imageDriveUrl,
+          imagePath: finalImagePath,
+        });
+        console.log("[Meta] Publicación directa completada:", metaResults);
+      }
+    } catch (metaError) {
+      console.error("Error publicando en Meta (Viejo Botón):", metaError.message);
+    }
+
     res.json({
       success: true,
       message: "Webhook enviado con éxito.",
+      metaResults,
     });
   } catch (error) {
     console.error("Error al enviar el webhook:", error);
@@ -341,9 +372,27 @@ app.post("/sendWebhookNuevoBoton", async (req, res) => {
       );
     }
 
+    // Publicar directamente via Meta API si está conectado
+    let metaResults = null;
+    try {
+      const metaStatus = getConnectionStatus();
+      if (metaStatus.connected) {
+        metaResults = await publishToAllMeta({
+          title,
+          content,
+          imageUrl: imageDriveUrl,
+          imagePath: finalImagePath,
+        });
+        console.log("[Meta] Publicación directa completada:", metaResults);
+      }
+    } catch (metaError) {
+      console.error("Error publicando en Meta (Nuevo Botón):", metaError.message);
+    }
+
     res.json({
       success: true,
       message: "Webhook enviado con éxito (Nuevo Botón)",
+      metaResults,
     });
   } catch (error) {
     console.error("Error al enviar el webhook (Nuevo Botón):", error);
@@ -444,6 +493,99 @@ app.post("/generateNewsCopy", async (req, res) => {
     res
       .status(500)
       .json({ error: "Error al generar la nota: " + error.message });
+  }
+});
+
+// ===========================================
+// META (FACEBOOK + INSTAGRAM) - OAuth & Publishing
+// ===========================================
+
+// Configuración Meta para frontend (solo IDs públicos, sin secrets)
+app.get("/meta/config", (req, res) => {
+  res.json({
+    appId: process.env.META_APP_ID || "",
+    configId: process.env.META_CONFIG_ID || "",
+  });
+});
+
+// Estado de conexión Meta
+app.get("/meta/status", (req, res) => {
+  try {
+    const status = getConnectionStatus();
+    res.json(status);
+  } catch (error) {
+    console.error("Error obteniendo estado de Meta:", error);
+    res.status(500).json({ connected: false, error: error.message });
+  }
+});
+
+// Conectar Meta: recibe code o access_token del popup de FB.login()
+app.post("/meta/connect", async (req, res) => {
+  const { code, accessToken, redirectUri } = req.body;
+
+  if (!code && !accessToken) {
+    return res.status(400).json({ error: "Se requiere code o accessToken del popup de Meta" });
+  }
+
+  try {
+    // 1. Intercambiar por long-lived token
+    const { longLivedToken, expiresIn } = await exchangeToken({
+      code,
+      accessToken,
+      redirectUri,
+    });
+
+    // 2. Verificar permisos
+    const permissions = await checkPermissions(longLivedToken);
+
+    // 3. Descubrir assets (Pages, IG accounts)
+    const assets = await discoverAssets(longLivedToken);
+
+    // 4. Respuesta sanitizada (sin tokens - igual que Platform ROI)
+    res.json({
+      success: true,
+      connected: true,
+      expiresIn,
+      permissions,
+      assets,
+    });
+  } catch (error) {
+    console.error("Error conectando Meta:", error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: error.response?.data?.error?.message || error.message,
+    });
+  }
+});
+
+// Desconectar Meta
+app.post("/meta/disconnect", (req, res) => {
+  try {
+    const result = disconnectMeta();
+    res.json(result);
+  } catch (error) {
+    console.error("Error desconectando Meta:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Publicar directamente via Meta API (alternativa a webhooks)
+app.post("/meta/publish", async (req, res) => {
+  const { title, content, imageUrl, imagePath } = req.body;
+
+  if (!title) {
+    return res.status(400).json({ error: "Se requiere al menos un título" });
+  }
+
+  try {
+    const results = await publishToAllMeta({ title, content, imageUrl, imagePath });
+    res.json({
+      success: true,
+      results,
+    });
+  } catch (error) {
+    console.error("Error publicando en Meta:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
