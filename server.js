@@ -455,7 +455,7 @@ let pipeline = null;
 
 // Iniciar pipeline autónomo
 app.post("/pipeline/start", async (req, res) => {
-  const { url, tone, structure, segmentDuration, publishInterval, autoPublish } = req.body;
+  const { url, tone, structure, imageModel, segmentDuration, publishInterval, autoPublish } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: "Se requiere una URL de transmisión." });
@@ -471,6 +471,7 @@ app.post("/pipeline/start", async (req, res) => {
       url,
       tone: tone || "formal",
       structure: structure || "completa",
+      imageModel: imageModel || "gemini",
       segmentDuration: segmentDuration || 120,
       publishInterval: publishInterval || 5,
       autoPublish: autoPublish !== false,

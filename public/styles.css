@@ -326,6 +326,15 @@ hr {
     color: #888;
 }
 
+/* Model hint */
+.model-hint {
+    display: block;
+    font-size: 11px;
+    color: #888;
+    margin-top: 4px;
+    font-style: italic;
+}
+
 /* Checkbox styling */
 .pipeline-section input[type="checkbox"] {
     width: auto;

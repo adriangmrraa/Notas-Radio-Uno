@@ -37,6 +37,7 @@ class AutoPipeline {
       url: "",
       tone: "formal",
       structure: "completa",
+      imageModel: "gemini", // "gemini" o "grok"
       segmentDuration: 120, // segundos por segmento de audio
       publishInterval: 5, // cada cuántos minutos publicar (acumulando transcripciones)
       autoPublish: true,
@@ -286,7 +287,7 @@ class AutoPipeline {
 
     // Estrategia 2: Generar fondo con IA (si no se encontró imagen web)
     if (!imagePath) {
-      imagePath = await this.generateAIBackground(title, insights);
+      imagePath = await this.generateAIBackground(title, insights, webResults);
     }
 
     // Estrategia 3: Placeholder si todo lo anterior falló
@@ -310,97 +311,235 @@ class AutoPipeline {
   }
 
   /**
-   * Genera una imagen de fondo usando IA basada en el tema de la nota.
-   * Soporta: OpenAI DALL-E, Stability AI, o cualquier API de generación de imágenes.
+   * Genera una imagen de fondo usando IA.
+   * Usa el modelo seleccionado por el usuario: "gemini" (Google Imagen) o "grok" (xAI).
    * Retorna la ruta al archivo generado, o null si no hay API configurada.
    */
-  async generateAIBackground(title, insights) {
-    // OpenAI DALL-E
-    if (process.env.OPENAI_API_KEY) {
-      try {
-        const prompt = this.buildImagePrompt(title, insights);
-        this.emit("flyer_bg", { source: "ai_generating", prompt: prompt.slice(0, 100) });
+  async generateAIBackground(title, insights, webResults) {
+    const prompt = this.buildImagePrompt(title, insights, webResults);
+    const selectedModel = this.config.imageModel || "gemini";
 
-        const response = await axios.post(
-          "https://api.openai.com/v1/images/generations",
-          {
-            model: "dall-e-3",
-            prompt,
-            n: 1,
-            size: "1024x1024",
-            quality: "standard",
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 60000,
-          },
-        );
+    this.emit("flyer_bg", {
+      source: "ai_generating",
+      model: selectedModel,
+      prompt: prompt.slice(0, 150),
+    });
 
-        const imageUrl = response.data.data[0].url;
-        const imgResponse = await axios.get(imageUrl, {
-          responseType: "arraybuffer",
-          timeout: 30000,
-        });
+    // Intentar con el modelo seleccionado primero, fallback al otro
+    const strategies = selectedModel === "gemini"
+      ? [() => this.generateWithGemini(prompt), () => this.generateWithGrok(prompt)]
+      : [() => this.generateWithGrok(prompt), () => this.generateWithGemini(prompt)];
 
-        const imagePath = path.join(outputDir, `ai_bg_${uuidv4()}.jpg`);
-        fs.writeFileSync(imagePath, Buffer.from(imgResponse.data, "binary"));
-        this.emit("flyer_bg", { source: "ai_dalle" });
-        return imagePath;
-      } catch (error) {
-        console.error("[Pipeline] Error generando fondo con DALL-E:", error.message);
-      }
-    }
-
-    // Stability AI
-    if (process.env.STABILITY_API_KEY) {
-      try {
-        const prompt = this.buildImagePrompt(title, insights);
-        this.emit("flyer_bg", { source: "ai_generating", prompt: prompt.slice(0, 100) });
-
-        const response = await axios.post(
-          "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
-          {
-            text_prompts: [{ text: prompt, weight: 1 }],
-            cfg_scale: 7,
-            width: 1024,
-            height: 1024,
-            samples: 1,
-            steps: 30,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            timeout: 60000,
-          },
-        );
-
-        const base64Image = response.data.artifacts[0].base64;
-        const imagePath = path.join(outputDir, `ai_bg_${uuidv4()}.jpg`);
-        fs.writeFileSync(imagePath, Buffer.from(base64Image, "base64"));
-        this.emit("flyer_bg", { source: "ai_stability" });
-        return imagePath;
-      } catch (error) {
-        console.error("[Pipeline] Error generando fondo con Stability:", error.message);
-      }
+    for (const strategy of strategies) {
+      const result = await strategy();
+      if (result) return result;
     }
 
     return null;
   }
 
   /**
-   * Construye un prompt para generar una imagen de fondo apropiada para la nota.
-   * El fondo debe ser una foto/escena, NO debe contener texto ni logos
-   * (eso lo pone processImage con código).
+   * Genera imagen de fondo con Google Imagen 4 (Gemini API).
+   * Env: GEMINI_API_KEY
    */
-  buildImagePrompt(title, insights) {
-    const topics = insights?.topics?.join(", ") || "";
-    return `Fotografía periodística profesional para una noticia sobre: "${title}". ${topics ? `Temas relacionados: ${topics}.` : ""} Estilo: fotoperiodismo, imagen editorial, sin texto, sin logos, sin marcas de agua. Imagen limpia que sirva de fondo para una placa informativa de noticias. Formato cuadrado.`;
+  async generateWithGemini(prompt) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return null;
+
+    try {
+      const response = await axios.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict",
+        {
+          instances: [{ prompt }],
+          parameters: {
+            sampleCount: 1,
+            aspectRatio: "1:1",
+          },
+        },
+        {
+          headers: {
+            "x-goog-api-key": apiKey,
+            "Content-Type": "application/json",
+          },
+          timeout: 60000,
+        },
+      );
+
+      const prediction = response.data.predictions?.[0];
+      if (!prediction?.bytesBase64Encoded) {
+        console.error("[Pipeline] Gemini Imagen: respuesta sin imagen");
+        return null;
+      }
+
+      const imagePath = path.join(outputDir, `ai_bg_gemini_${uuidv4()}.png`);
+      fs.writeFileSync(imagePath, Buffer.from(prediction.bytesBase64Encoded, "base64"));
+      this.emit("flyer_bg", { source: "gemini_imagen" });
+      return imagePath;
+    } catch (error) {
+      console.error("[Pipeline] Error generando fondo con Gemini Imagen:", error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Genera imagen de fondo con xAI Grok Image.
+   * Env: XAI_API_KEY
+   * Modelos: grok-2-image, grok-imagine-image
+   */
+  async generateWithGrok(prompt) {
+    const apiKey = process.env.XAI_API_KEY;
+    if (!apiKey) return null;
+
+    try {
+      const response = await axios.post(
+        "https://api.x.ai/v1/images/generations",
+        {
+          model: "grok-2-image",
+          prompt,
+          n: 1,
+          response_format: "b64_json",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 60000,
+        },
+      );
+
+      const imageData = response.data.data?.[0];
+      if (!imageData?.b64_json) {
+        console.error("[Pipeline] Grok Image: respuesta sin imagen");
+        return null;
+      }
+
+      const imagePath = path.join(outputDir, `ai_bg_grok_${uuidv4()}.jpg`);
+      fs.writeFileSync(imagePath, Buffer.from(imageData.b64_json, "base64"));
+      this.emit("flyer_bg", {
+        source: "grok_image",
+        revisedPrompt: imageData.revised_prompt || "",
+      });
+      return imagePath;
+    } catch (error) {
+      console.error("[Pipeline] Error generando fondo con Grok Image:", error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Construye un prompt estratégico para la imagen de fondo basándose en:
+   * - Título de la nota
+   * - Insights extraídos (personas, temas, datos clave)
+   * - Información del research web
+   *
+   * Reglas:
+   * - Si se menciona una personalidad/político → debe aparecer esa persona
+   * - Si la noticia es sobre un evento dramático → la imagen lo refleja
+   * - Si se habla de un país/lugar → la imagen referencia ese lugar + tema
+   * - NUNCA debe incluir texto, logos ni marcas de agua (eso lo pone processImage)
+   */
+  buildImagePrompt(title, insights, webResults) {
+    const parts = [];
+
+    // Base: fotografía periodística
+    parts.push("Fotografía periodística profesional de alta calidad, estilo editorial de agencia de noticias.");
+
+    // Personas mencionadas: si hay políticos, figuras públicas, que aparezcan
+    if (insights?.people?.length > 0) {
+      const people = insights.people.slice(0, 3).join(", ");
+      parts.push(`La imagen debe mostrar o representar a: ${people}.`);
+    }
+
+    // Temas: mapear temas a elementos visuales concretos
+    if (insights?.topics?.length > 0) {
+      const topicVisuals = insights.topics.map((topic) => {
+        const t = topic.toLowerCase();
+        // Mapeo de temas a elementos visuales para que el prompt sea más concreto
+        if (t.includes("bomb") || t.includes("explos") || t.includes("atentado")) {
+          return "explosión, humo, escena de emergencia";
+        }
+        if (t.includes("eleccio") || t.includes("voto") || t.includes("democra")) {
+          return "urna de votación, acto electoral, multitud política";
+        }
+        if (t.includes("economía") || t.includes("dólar") || t.includes("inflación")) {
+          return "gráficos financieros, billetes, bolsa de valores";
+        }
+        if (t.includes("deport") || t.includes("fútbol") || t.includes("mundial")) {
+          return "estadio de fútbol, jugadores en acción";
+        }
+        if (t.includes("salud") || t.includes("hospital") || t.includes("pandemia")) {
+          return "hospital, personal médico, equipamiento sanitario";
+        }
+        if (t.includes("educación") || t.includes("escuela") || t.includes("universidad")) {
+          return "aula, estudiantes, campus universitario";
+        }
+        if (t.includes("seguridad") || t.includes("polic") || t.includes("crimen")) {
+          return "patrulla policial, cinta de seguridad, escena policial";
+        }
+        if (t.includes("clima") || t.includes("inundac") || t.includes("tormenta")) {
+          return "tormenta, inundación, fenómeno climático extremo";
+        }
+        if (t.includes("tecnolog") || t.includes("inteligencia artificial") || t.includes("digital")) {
+          return "tecnología futurista, pantallas digitales, innovación";
+        }
+        return topic; // Usar el tema tal cual si no hay mapeo
+      });
+      parts.push(`Elementos visuales principales: ${topicVisuals.join(", ")}.`);
+    }
+
+    // Datos clave: enriquecer el contexto visual
+    if (insights?.keyFacts?.length > 0) {
+      const contextFact = insights.keyFacts[0];
+      parts.push(`Contexto de la noticia: ${contextFact}.`);
+    }
+
+    // Información de búsqueda web: extraer ubicaciones geográficas
+    if (webResults?.length > 0) {
+      const contextSnippets = webResults
+        .slice(0, 2)
+        .map((r) => r.snippet || r.scrapedTitle || "")
+        .filter(Boolean)
+        .join(" ");
+      if (contextSnippets) {
+        parts.push(`Información adicional para contexto visual: ${contextSnippets.slice(0, 200)}.`);
+      }
+    }
+
+    // Detección de países/regiones para referencia visual geográfica
+    const titleLower = title.toLowerCase();
+    const geoMappings = {
+      "estados unidos": "Washington DC, bandera estadounidense, Capitolio",
+      "eeuu": "Washington DC, bandera estadounidense, Casa Blanca",
+      "argentina": "Buenos Aires, Casa Rosada, bandera argentina",
+      "formosa": "ciudad de Formosa, paisaje del litoral argentino",
+      "brasil": "Brasilia, paisaje brasileño, bandera de Brasil",
+      "china": "Beijing, arquitectura china, bandera de China",
+      "rusia": "Moscú, Kremlin, paisaje ruso",
+      "europa": "Bruselas, Parlamento Europeo, bandera de la UE",
+      "ucrania": "Kiev, paisaje ucraniano",
+      "israel": "Jerusalén, paisaje de Medio Oriente",
+      "venezuela": "Caracas, paisaje venezolano",
+    };
+
+    for (const [geo, visual] of Object.entries(geoMappings)) {
+      if (titleLower.includes(geo) || insights?.summary?.toLowerCase().includes(geo)) {
+        parts.push(`Referencia geográfica: la imagen debe evocar ${visual}.`);
+        break;
+      }
+    }
+
+    // Tema principal de la noticia
+    parts.push(`Tema de la noticia: "${title}".`);
+
+    // Restricciones técnicas (SIEMPRE)
+    parts.push(
+      "IMPORTANTE: La imagen NO debe contener texto, letras, palabras, logos, ni marcas de agua. " +
+      "Debe ser una imagen limpia que funcione como fondo para una placa informativa de noticias. " +
+      "Formato cuadrado 1:1. Colores que permitan superponer texto blanco con buena legibilidad."
+    );
+
+    return parts.join(" ");
   }
 
   /**

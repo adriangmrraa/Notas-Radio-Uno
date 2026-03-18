@@ -57,6 +57,17 @@ function addPublishedNote(title, timestamp) {
   publishedNotesList.prepend(noteEl);
 }
 
+// Image model hint toggle
+const imageModelSelect = document.getElementById("pipelineImageModel");
+const imageModelHint = document.getElementById("imageModelHint");
+const modelHints = {
+  gemini: "Requiere GEMINI_API_KEY en el servidor",
+  grok: "Requiere XAI_API_KEY en el servidor",
+};
+imageModelSelect.addEventListener("change", () => {
+  imageModelHint.textContent = modelHints[imageModelSelect.value] || "";
+});
+
 // Iniciar Pipeline
 startPipelineBtn.addEventListener("click", () => {
   const url = document.getElementById("pipelineUrl").value;
@@ -69,6 +80,7 @@ startPipelineBtn.addEventListener("click", () => {
     url,
     tone: document.getElementById("pipelineTone").value,
     structure: document.getElementById("pipelineStructure").value,
+    imageModel: document.getElementById("pipelineImageModel").value,
     publishInterval: parseInt(
       document.getElementById("pipelineInterval").value,
     ),
@@ -160,6 +172,23 @@ socket.on("pipeline-update", function (data) {
 
     case "note":
       addLogEntry(`Nota generada: "${data.title}"`, "success");
+      break;
+
+    case "flyer_bg":
+      if (data.source === "ai_generating") {
+        addLogEntry(
+          `Generando fondo con ${data.model === "grok" ? "Grok Image" : "Google Imagen"}...`,
+          "info",
+        );
+      } else if (data.source === "gemini_imagen") {
+        addLogEntry("Fondo generado con Google Imagen", "success");
+      } else if (data.source === "grok_image") {
+        addLogEntry("Fondo generado con Grok Image (xAI)", "success");
+      } else if (data.source === "web") {
+        addLogEntry("Fondo obtenido de artículo web", "info");
+      } else if (data.source === "placeholder") {
+        addLogEntry("Usando fondo placeholder (sin API de imagen configurada)", "warning");
+      }
       break;
 
     case "flyer":

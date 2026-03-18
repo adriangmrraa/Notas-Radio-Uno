@@ -48,6 +48,15 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label for="pipelineImageModel">Modelo de imagen para flyer:</label>
+          <select id="pipelineImageModel">
+            <option value="gemini">Google Imagen (Gemini)</option>
+            <option value="grok">Grok Image (xAI)</option>
+          </select>
+          <span class="model-hint" id="imageModelHint">Requiere GEMINI_API_KEY en el servidor</span>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="pipelineInterval">Publicar cada (minutos):</label>
