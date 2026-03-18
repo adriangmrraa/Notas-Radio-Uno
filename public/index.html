@@ -61,8 +61,9 @@
     <!-- ========================================= -->
     <section id="pipelineSection" class="pipeline-section">
       <h2>Pipeline Autónomo</h2>
-      <p class="pipeline-description">Pegá una URL de YouTube Live o stream de radio y el sistema automáticamente
-        transcribe, analiza, genera notas periodísticas, crea placas y publica en redes sociales.</p>
+      <p class="pipeline-description">Pegá una URL de YouTube Live o stream de radio. El sistema captura audio en paralelo sin perder un segundo,
+        transcribe continuamente, y usa IA para detectar cuándo cambia el tema. Cuando un tema concluye,
+        genera notas periodísticas y placas automáticamente.</p>
 
       <div class="pipeline-config">
         <div class="form-group">
@@ -101,16 +102,10 @@
           <span class="model-hint" id="imageModelHint">Requiere GEMINI_API_KEY en el servidor</span>
         </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label for="pipelineInterval">Publicar cada (minutos):</label>
-            <input type="number" id="pipelineInterval" value="5" min="2" max="30" />
-          </div>
-
-          <div class="form-group">
-            <label for="pipelineSegment">Duración segmento (segundos):</label>
-            <input type="number" id="pipelineSegment" value="120" min="30" max="300" />
-          </div>
+        <div class="form-group">
+          <label for="pipelineSegment">Duración de cada chunk de audio (segundos):</label>
+          <input type="number" id="pipelineSegment" value="120" min="30" max="300" />
+          <span class="model-hint">El sistema captura en paralelo sin perder audio. La IA decide cuándo publicar según los temas detectados.</span>
         </div>
 
         <div class="form-group">

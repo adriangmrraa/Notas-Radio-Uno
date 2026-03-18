@@ -6,6 +6,7 @@ import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitter_service.js";
 import { publishToAllMeta } from "./metaPublishService.js";
 import { isMetaConnected, createPublication, createTranscription } from "./databaseService.js";
+import { analyzeTopicSegments, extractSegmentText } from "./topicService.js";
 import { google } from "googleapis";
 import axios from "axios";
 import fs from "fs";
@@ -28,31 +29,49 @@ const WEBHOOK_URL_PIPELINE =
 
 /**
  * Clase principal del pipeline autónomo.
- * Conecta todos los servicios en un flujo continuo:
- * URL → Captura → Transcripción → Insights → Búsqueda → Nota → Flyer → Publicación
+ *
+ * Arquitectura de captura continua sin cortes:
+ *   - Mientras un chunk se transcribe, el siguiente ya se está grabando (paralelo)
+ *   - No se pierde ni un segundo de audio
+ *   - La transcripción completa se acumula cronológicamente
+ *
+ * Segmentación inteligente por temas:
+ *   - Cada N chunks, IA analiza la transcripción acumulada
+ *   - Detecta temas/segmentos distintos
+ *   - Publica solo cuando un tema CONCLUYÓ (pasaron a otro asunto)
+ *   - Decide cuántas notas/placas hacer por cada tema
+ *   - No usa intervalos fijos; es 100% basado en contenido
  */
 class AutoPipeline {
   constructor(io) {
-    this.io = io; // Socket.IO para emitir progreso
+    this.io = io;
     this.running = false;
     this.config = {
       url: "",
       tone: "formal",
       structure: "completa",
-      imageModel: "gemini", // "gemini" o "grok"
-      segmentDuration: 120, // segundos por segmento de audio
-      publishInterval: 5, // cada cuántos minutos publicar (acumulando transcripciones)
+      imageModel: "gemini",
+      segmentDuration: 120, // segundos por chunk de audio
       autoPublish: true,
     };
-    this.transcriptionBuffer = [];
+
+    // Transcripción acumulada completa (toda la transmisión)
+    this.fullTranscription = "";
+    // Chunks individuales con timestamps
+    this.chunks = [];
+    // Temas ya publicados (para no repetir)
+    this.publishedTopics = [];
     this.publishedNotes = [];
+    // Cuántos chunks entre cada análisis de temas
+    this.chunksPerAnalysis = 3;
+    this.chunksSinceLastAnalysis = 0;
+    // Estado
     this.currentStep = "idle";
     this.captureTimeout = null;
+    // Proceso de publicación en curso (para no bloquear captura)
+    this.publishingInProgress = false;
   }
 
-  /**
-   * Emitir evento de progreso a todos los clientes conectados.
-   */
   emit(event, data) {
     this.io.emit("pipeline-update", {
       event,
@@ -62,9 +81,6 @@ class AutoPipeline {
     console.log(`[Pipeline] ${event}:`, JSON.stringify(data).slice(0, 200));
   }
 
-  /**
-   * Iniciar el pipeline autónomo.
-   */
   async start(config) {
     if (this.running) {
       throw new Error("El pipeline ya está en ejecución.");
@@ -72,7 +88,10 @@ class AutoPipeline {
 
     this.config = { ...this.config, ...config };
     this.running = true;
-    this.transcriptionBuffer = [];
+    this.fullTranscription = "";
+    this.chunks = [];
+    this.publishedTopics = [];
+    this.chunksSinceLastAnalysis = 0;
     this.currentStep = "starting";
 
     const sourceType = detectSourceType(this.config.url);
@@ -81,428 +100,380 @@ class AutoPipeline {
       sourceType,
       tone: this.config.tone,
       structure: this.config.structure,
+      mode: "continuous-smart",
     });
 
-    // Iniciar el ciclo de captura
-    this.captureLoop();
+    this.emit("detail", {
+      step: "capturing",
+      sub: "mode",
+      message: "Modo inteligente: captura continua sin cortes + segmentación por temas con IA",
+      icon: "brain",
+    });
+
+    // Iniciar captura continua con overlap
+    this.continuousCaptureLoop();
   }
 
   /**
-   * Loop principal de captura y procesamiento.
-   * Emite eventos granulares para cada sub-paso.
+   * Loop de captura continua CON OVERLAP.
+   *
+   * Arquitectura:
+   *   Chunk 1: [=======GRAB=======][===TRANSCRIBE===]
+   *   Chunk 2:                     [=======GRAB=======][===TRANSCRIBE===]
+   *   Chunk 3:                                         [=======GRAB=======]...
+   *
+   * Mientras se transcribe el chunk N, el chunk N+1 ya se está grabando.
+   * No se pierde ni un segundo de audio.
    */
-  async captureLoop() {
-    let cycleNumber = 0;
+  async continuousCaptureLoop() {
+    let chunkNumber = 0;
+    let pendingTranscription = null; // Promesa de transcripción en paralelo
 
     while (this.running) {
       try {
-        cycleNumber++;
+        chunkNumber++;
 
-        // ─── PASO 1A: Capturar audio ───
+        // ─── CAPTURAR AUDIO ───
         this.currentStep = "capturing";
-        this.emit("step", { step: "capturing", message: "Capturando audio..." });
-        this.emit("detail", {
-          step: "capturing",
-          sub: "connecting",
-          message: `Conectando al stream: ${this.config.url.slice(0, 60)}...`,
-          icon: "satellite",
-        });
-
-        const sourceType = detectSourceType(this.config.url);
-        this.emit("detail", {
-          step: "capturing",
-          sub: "source_detected",
-          message: `Tipo de fuente detectada: ${sourceType === "youtube" ? "YouTube Live" : sourceType === "radio" ? "Radio stream" : "Stream genérico"}`,
-          icon: "check",
-        });
+        if (chunkNumber === 1) {
+          this.emit("step", { step: "capturing", message: "Capturando audio..." });
+          this.emit("detail", {
+            step: "capturing", sub: "connecting",
+            message: `Conectando al stream: ${this.config.url.slice(0, 60)}...`,
+            icon: "satellite",
+          });
+        }
 
         this.emit("detail", {
-          step: "capturing",
-          sub: "recording",
-          message: `Grabando ${this.config.segmentDuration} segundos de audio con FFmpeg...`,
+          step: "capturing", sub: "recording",
+          message: `Chunk #${chunkNumber}: grabando ${this.config.segmentDuration}s de audio...`,
           icon: "mic",
         });
 
+        // Capturar audio de este chunk
         const { filePath } = await captureAudioSegment(
           this.config.url,
           this.config.segmentDuration,
         );
-
         if (!this.running) break;
 
         this.emit("detail", {
-          step: "capturing",
-          sub: "audio_captured",
-          message: `Audio capturado correctamente (${this.config.segmentDuration}s)`,
+          step: "capturing", sub: "audio_captured",
+          message: `Chunk #${chunkNumber} capturado (${this.config.segmentDuration}s)`,
           icon: "check",
         });
 
-        // ─── PASO 1B: Transcribir ───
+        // ─── RESOLVER TRANSCRIPCIÓN ANTERIOR (si hay) ───
+        if (pendingTranscription) {
+          this.emit("detail", {
+            step: "capturing", sub: "waiting_prev",
+            message: `Esperando transcripción del chunk #${chunkNumber - 1}...`,
+            icon: "clock",
+          });
+
+          const prevResult = await pendingTranscription;
+          if (prevResult && this.running) {
+            this.onChunkTranscribed(prevResult, chunkNumber - 1);
+          }
+        }
+
+        // ─── TRANSCRIBIR EN BACKGROUND ───
+        // Lanzar transcripción de este chunk (NO await, se resuelve en el próximo ciclo)
         this.emit("detail", {
-          step: "capturing",
-          sub: "transcribing",
-          message: "Cargando modelo Whisper y transcribiendo audio...",
+          step: "capturing", sub: "transcribing",
+          message: `Transcribiendo chunk #${chunkNumber} con Whisper (en paralelo con próxima captura)...`,
           icon: "brain",
         });
 
-        const text = await transcribeAudio(filePath);
-
-        // Limpiar archivo de audio
-        try { fs.unlinkSync(filePath); } catch (_) {}
-
-        if (!this.running) break;
-
-        const result = { text, filePath, sourceType, timestamp: new Date().toISOString() };
-
-        // Agregar al buffer
-        this.transcriptionBuffer.push(result);
-
-        // Persistir transcripción en DB
-        const dbTranscription = createTranscription({
-          text: result.text,
-          source: "pipeline",
-          durationSeconds: this.config.segmentDuration,
-        });
-        this.io.emit("history-new-transcription", dbTranscription);
-
-        this.emit("detail", {
-          step: "capturing",
-          sub: "transcription_done",
-          message: `Transcripción completada: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`,
-          icon: "check",
-        });
-
-        this.emit("transcription", {
-          step: "transcribed",
-          text: result.text,
-          timestamp: result.timestamp,
-          bufferSize: this.transcriptionBuffer.length,
-        });
-
-        // Verificar si es momento de procesar y publicar
-        const segmentsNeeded = Math.ceil(
-          (this.config.publishInterval * 60) / this.config.segmentDuration,
-        );
-        const remaining = segmentsNeeded - this.transcriptionBuffer.length;
-
-        if (this.transcriptionBuffer.length >= segmentsNeeded) {
+        const currentFilePath = filePath;
+        const currentChunkNumber = chunkNumber;
+        pendingTranscription = transcribeAudio(currentFilePath).then((text) => {
+          try { fs.unlinkSync(currentFilePath); } catch (_) {}
+          return { text, timestamp: new Date().toISOString(), chunkNumber: currentChunkNumber };
+        }).catch((error) => {
           this.emit("detail", {
-            step: "capturing",
-            sub: "buffer_ready",
-            message: `Buffer completo (${this.transcriptionBuffer.length} segmentos). Iniciando procesamiento...`,
-            icon: "rocket",
+            step: "capturing", sub: "transcribe_error",
+            message: `Error transcribiendo chunk #${currentChunkNumber}: ${error.message}`,
+            icon: "warning",
           });
-          await this.processAndPublish();
-        } else {
-          this.emit("detail", {
-            step: "capturing",
-            sub: "buffer_waiting",
-            message: `Buffer: ${this.transcriptionBuffer.length}/${segmentsNeeded} segmentos. Faltan ${remaining} para procesar.`,
-            icon: "clock",
-          });
-        }
+          try { fs.unlinkSync(currentFilePath); } catch (_) {}
+          return null;
+        });
+
       } catch (error) {
-        this.emit("error", {
-          step: this.currentStep,
-          message: error.message,
-        });
-
+        this.emit("error", { step: "capturing", message: error.message });
         this.emit("detail", {
-          step: this.currentStep,
-          sub: "retry",
-          message: `Error: ${error.message}. Reintentando en 10 segundos...`,
+          step: "capturing", sub: "retry",
+          message: `Error en captura: ${error.message}. Reintentando en 5s...`,
           icon: "warning",
         });
-
-        // Esperar antes de reintentar
-        if (this.running) {
-          await this.sleep(10000);
-        }
+        if (this.running) await this.sleep(5000);
       }
+    }
+
+    // Resolver última transcripción pendiente
+    if (pendingTranscription) {
+      const lastResult = await pendingTranscription;
+      if (lastResult) this.onChunkTranscribed(lastResult, chunkNumber);
     }
   }
 
   /**
-   * Procesar transcripciones acumuladas y publicar.
-   * Emite eventos detallados para cada sub-operación.
+   * Callback cuando un chunk se transcribe exitosamente.
+   * Acumula la transcripción y decide si analizar temas.
    */
-  async processAndPublish() {
-    const segmentCount = this.transcriptionBuffer.length;
-    const fullTranscription = this.transcriptionBuffer
-      .map((t) => t.text)
-      .join(" ");
+  onChunkTranscribed(result, chunkNumber) {
+    // Acumular transcripción completa
+    this.fullTranscription += (this.fullTranscription ? " " : "") + result.text;
+    this.chunks.push(result);
 
-    // Limpiar buffer
-    this.transcriptionBuffer = [];
+    // Persistir en DB
+    const dbTranscription = createTranscription({
+      text: result.text,
+      source: "pipeline",
+      durationSeconds: this.config.segmentDuration,
+    });
+    this.io.emit("history-new-transcription", dbTranscription);
+
+    this.emit("detail", {
+      step: "capturing", sub: "transcription_done",
+      message: `Chunk #${chunkNumber} transcrito: "${result.text.slice(0, 80)}${result.text.length > 80 ? "..." : ""}"`,
+      icon: "check",
+    });
+
+    this.emit("transcription", {
+      step: "transcribed",
+      text: result.text,
+      timestamp: result.timestamp,
+      bufferSize: this.chunks.length,
+      totalMinutes: Math.round((this.chunks.length * this.config.segmentDuration) / 60),
+    });
+
+    // Incrementar contador y verificar si es momento de analizar temas
+    this.chunksSinceLastAnalysis++;
+
+    if (this.chunksSinceLastAnalysis >= this.chunksPerAnalysis && !this.publishingInProgress) {
+      this.chunksSinceLastAnalysis = 0;
+      // Lanzar análisis en background (no bloquea la captura)
+      this.analyzeAndPublish(result.text);
+    }
+  }
+
+  /**
+   * Analiza temas con IA y publica si hay temas completados.
+   * Se ejecuta en background, no bloquea la captura.
+   */
+  async analyzeAndPublish(latestChunk) {
+    if (this.publishingInProgress) return;
 
     try {
-      // ─── PASO 2: Extraer insights con IA ───
+      // ─── ANÁLISIS DE TEMAS ───
       this.currentStep = "analyzing";
-      this.emit("step", {
-        step: "analyzing",
-        message: "Analizando transcripción con IA...",
-      });
+      this.emit("step", { step: "analyzing", message: "Analizando estructura temática..." });
 
+      const totalMinutes = Math.round((this.chunks.length * this.config.segmentDuration) / 60);
       this.emit("detail", {
-        step: "analyzing",
-        sub: "preparing",
-        message: `Preparando ${segmentCount} segmentos (${fullTranscription.length} caracteres) para análisis...`,
-        icon: "document",
-      });
-
-      this.emit("detail", {
-        step: "analyzing",
-        sub: "calling_ai",
-        message: "Enviando a Cohere AI para extracción de insights (temas, personas, datos clave)...",
+        step: "analyzing", sub: "topic_analysis",
+        message: `Analizando ${totalMinutes} minutos de transcripción (${this.fullTranscription.length} caracteres)...`,
         icon: "brain",
       });
 
-      const insights = await extractInsights(fullTranscription);
+      const analysis = await analyzeTopicSegments(
+        this.fullTranscription,
+        latestChunk,
+        this.publishedTopics,
+      );
 
-      this.emit("detail", {
-        step: "analyzing",
-        sub: "topics_found",
-        message: `Temas detectados: ${insights.topics.length > 0 ? insights.topics.join(", ") : "ninguno específico"}`,
-        icon: "tag",
-      });
-
-      if (insights.people.length > 0) {
+      // Reportar segmentos detectados
+      for (const seg of analysis.segments) {
+        const statusIcon = seg.status === "completed" ? "check" : "clock";
+        const newsworthyText = seg.newsworthy ? " [noticioso]" : " [no noticioso]";
         this.emit("detail", {
-          step: "analyzing",
-          sub: "people_found",
-          message: `Personas mencionadas: ${insights.people.join(", ")}`,
-          icon: "people",
+          step: "analyzing", sub: "segment",
+          message: `Tema: "${seg.topic}" - ${seg.status === "completed" ? "COMPLETADO" : "en curso"}${newsworthyText}`,
+          icon: statusIcon,
         });
       }
 
-      if (insights.keyFacts.length > 0) {
+      if (analysis.ongoingTopic) {
         this.emit("detail", {
-          step: "analyzing",
-          sub: "facts_found",
-          message: `Datos clave: ${insights.keyFacts.slice(0, 2).join(" | ")}`,
-          icon: "lightbulb",
+          step: "analyzing", sub: "ongoing",
+          message: `Tema en curso: "${analysis.ongoingTopic}" - seguimos escuchando...`,
+          icon: "clock",
         });
       }
 
       this.emit("detail", {
-        step: "analyzing",
-        sub: "summary",
-        message: `Resumen: ${insights.summary.slice(0, 150)}${insights.summary.length > 150 ? "..." : ""}`,
-        icon: "check",
+        step: "analyzing", sub: "recommendation",
+        message: `Decisión: ${analysis.recommendation === "publish" ? "PUBLICAR" : "ESPERAR"} - ${analysis.reason}`,
+        icon: analysis.recommendation === "publish" ? "rocket" : "clock",
       });
 
-      this.emit("insights", { step: "insights_extracted", insights });
+      // ─── PUBLICAR SI HAY TEMAS COMPLETADOS ───
+      if (analysis.recommendation === "publish" && analysis.completedSegments.length > 0) {
+        this.publishingInProgress = true;
 
-      // ─── PASO 3: Búsqueda web ───
-      this.currentStep = "searching";
-      this.emit("step", {
-        step: "searching",
-        message: "Investigando en internet...",
-      });
+        this.emit("detail", {
+          step: "analyzing", sub: "publishing_start",
+          message: `${analysis.completedSegments.length} tema(s) completado(s) detectado(s). Generando notas...`,
+          icon: "rocket",
+        });
 
-      let webResults = [];
-      if (insights.searchQueries.length > 0) {
-        for (let i = 0; i < Math.min(insights.searchQueries.length, 3); i++) {
-          const query = insights.searchQueries[i];
-          this.emit("detail", {
-            step: "searching",
-            sub: "query",
-            message: `Buscando: "${query}"`,
-            icon: "search",
-            index: i + 1,
-            total: Math.min(insights.searchQueries.length, 3),
-          });
-        }
-
-        webResults = await searchAndEnrich(insights.searchQueries);
-
-        if (webResults.length > 0) {
-          for (const result of webResults.slice(0, 3)) {
-            this.emit("detail", {
-              step: "searching",
-              sub: "result_found",
-              message: `Encontrado: "${result.scrapedTitle || result.title}"`,
-              icon: "link",
-              url: result.url,
+        for (const segment of analysis.completedSegments) {
+          if (!this.running) break;
+          try {
+            await this.processTopicSegment(segment);
+            this.publishedTopics.push(segment.topic);
+          } catch (error) {
+            this.emit("error", {
+              step: "generating",
+              message: `Error procesando tema "${segment.topic}": ${error.message}`,
             });
           }
-
-          this.emit("detail", {
-            step: "searching",
-            sub: "scraping",
-            message: `Scrapeando contenido de ${webResults.length} artículos para enriquecer la nota...`,
-            icon: "download",
-          });
-        } else {
-          this.emit("detail", {
-            step: "searching",
-            sub: "no_results",
-            message: "No se encontraron resultados relevantes. Se continuará con la transcripción.",
-            icon: "info",
-          });
         }
 
-        this.emit("search", {
-          step: "search_complete",
-          resultsCount: webResults.length,
-        });
-      } else {
-        this.emit("detail", {
-          step: "searching",
-          sub: "skip",
-          message: "No se generaron queries de búsqueda. Saltando investigación web.",
-          icon: "info",
-        });
+        this.publishingInProgress = false;
       }
 
-      // Preparar contexto web
-      const webContext = webResults
-        .map((r) => `Fuente: ${r.title}\n${r.content || r.snippet}`)
-        .join("\n\n---\n\n");
-
-      // ─── PASO 4: Generar nota periodística ───
-      this.currentStep = "generating";
+      // Volver a estado de captura
+      this.currentStep = "capturing";
       this.emit("step", {
-        step: "generating",
-        message: "Redactando nota periodística...",
+        step: "capturing",
+        message: `Escuchando... (${totalMinutes} min capturados, ${this.publishedNotes.length} notas publicadas)`,
       });
 
-      this.emit("detail", {
-        step: "generating",
-        sub: "preparing_prompt",
-        message: `Preparando prompt con tono "${this.config.tone}" y estructura "${this.config.structure}"...`,
-        icon: "edit",
-      });
+    } catch (error) {
+      this.publishingInProgress = false;
+      this.emit("error", { step: "analyzing", message: error.message });
+      this.currentStep = "capturing";
+    }
+  }
 
-      if (webContext) {
+  /**
+   * Procesa un segmento temático completado: genera nota + placa + publica.
+   */
+  async processTopicSegment(segment) {
+    const segmentText = extractSegmentText(this.fullTranscription, segment);
+    const transcriptionForNote = segmentText || segment.summary;
+
+    // ─── INSIGHTS ───
+    this.emit("detail", {
+      step: "analyzing", sub: "segment_insights",
+      message: `Extrayendo insights del tema: "${segment.topic}"...`,
+      icon: "brain",
+    });
+
+    const insights = await extractInsights(transcriptionForNote);
+
+    // ─── BÚSQUEDA WEB ───
+    this.currentStep = "searching";
+    this.emit("step", { step: "searching", message: `Investigando: "${segment.topic}"` });
+
+    let webResults = [];
+    if (insights.searchQueries.length > 0) {
+      for (const query of insights.searchQueries.slice(0, 3)) {
         this.emit("detail", {
-          step: "generating",
-          sub: "enriching",
-          message: `Incluyendo información de ${webResults.length} fuentes web como contexto...`,
-          icon: "merge",
+          step: "searching", sub: "query",
+          message: `Buscando: "${query}"`,
+          icon: "search",
         });
       }
+      webResults = await searchAndEnrich(insights.searchQueries);
+      this.emit("detail", {
+        step: "searching", sub: "results",
+        message: `${webResults.length} artículos encontrados`,
+        icon: webResults.length > 0 ? "check" : "info",
+      });
+    }
+
+    const webContext = webResults
+      .map((r) => `Fuente: ${r.title}\n${r.content || r.snippet}`)
+      .join("\n\n---\n\n");
+
+    // ─── GENERAR NOTA ───
+    this.currentStep = "generating";
+    this.emit("step", { step: "generating", message: `Redactando nota: "${segment.topic}"` });
+
+    this.emit("detail", {
+      step: "generating", sub: "calling_ai",
+      message: `Generando nota con tono "${this.config.tone}" y estructura "${this.config.structure}"...`,
+      icon: "brain",
+    });
+
+    const newsText = await generateNewsCopy({
+      transcription: transcriptionForNote,
+      tone: this.config.tone,
+      structure: this.config.structure,
+      webContext,
+      insights: `Resumen: ${insights.summary}\nDatos clave: ${insights.keyFacts.join(", ")}`,
+    });
+
+    this.emit("detail", {
+      step: "generating", sub: "generating_title",
+      message: "Generando título periodístico...",
+      icon: "brain",
+    });
+
+    const title = await generateTitle(transcriptionForNote, insights.summary);
+
+    this.emit("detail", {
+      step: "generating", sub: "title_ready",
+      message: `Título: "${title}"`,
+      icon: "check",
+    });
+
+    this.emit("note", { step: "note_generated", title, content: newsText });
+
+    // ─── GENERAR FLYER ───
+    this.currentStep = "creating_flyer";
+    this.emit("step", { step: "creating_flyer", message: `Creando placa: "${title}"` });
+
+    this.emit("detail", {
+      step: "creating_flyer", sub: "strategy",
+      message: "Buscando imagen de fondo...",
+      icon: "image",
+    });
+
+    const flyerPath = await this.generateFlyer(title, webResults, insights);
+
+    this.emit("detail", {
+      step: "creating_flyer", sub: "overlay",
+      message: "Aplicando overlay: resize 1080x1080, gradiente, título, logo...",
+      icon: "layers",
+    });
+
+    this.emit("flyer", {
+      step: "flyer_created",
+      path: flyerPath,
+      previewUrl: `/output/${path.basename(flyerPath)}`,
+    });
+
+    // ─── PUBLICAR ───
+    if (this.config.autoPublish) {
+      this.currentStep = "publishing";
+      this.emit("step", { step: "publishing", message: `Publicando: "${title}"` });
 
       this.emit("detail", {
-        step: "generating",
-        sub: "calling_ai",
-        message: "Generando texto de la nota con Cohere AI...",
-        icon: "brain",
+        step: "publishing", sub: "google_drive",
+        message: "Subiendo imagen a Google Drive...",
+        icon: "upload",
       });
 
-      const newsText = await generateNewsCopy({
-        transcription: fullTranscription,
-        tone: this.config.tone,
-        structure: this.config.structure,
-        webContext,
-        insights: `Resumen: ${insights.summary}\nDatos clave: ${insights.keyFacts.join(", ")}`,
-      });
+      await this.publish(title, newsText, flyerPath);
 
-      this.emit("detail", {
-        step: "generating",
-        sub: "note_ready",
-        message: `Nota generada (${newsText.length} caracteres). Generando título...`,
-        icon: "check",
-      });
-
-      this.emit("detail", {
-        step: "generating",
-        sub: "generating_title",
-        message: "Generando título periodístico impactante con IA...",
-        icon: "brain",
-      });
-
-      const title = await generateTitle(fullTranscription, insights.summary);
-
-      this.emit("detail", {
-        step: "generating",
-        sub: "title_ready",
-        message: `Título: "${title}"`,
-        icon: "check",
-      });
-
-      this.emit("note", {
-        step: "note_generated",
+      this.publishedNotes.push({
         title,
         content: newsText,
+        flyerPath,
+        topic: segment.topic,
+        timestamp: new Date().toISOString(),
       });
 
-      // ─── PASO 5: Generar flyer ───
-      this.currentStep = "creating_flyer";
-      this.emit("step", {
-        step: "creating_flyer",
-        message: "Creando placa informativa...",
-      });
-
-      this.emit("detail", {
-        step: "creating_flyer",
-        sub: "strategy",
-        message: "Buscando imagen de fondo: primero artículos web, luego IA, fallback placeholder...",
-        icon: "image",
-      });
-
-      const flyerPath = await this.generateFlyer(title, webResults, insights);
-
-      this.emit("detail", {
-        step: "creating_flyer",
-        sub: "overlay",
-        message: "Aplicando overlay: resize 1080x1080, gradiente, título, logo Radio Uno...",
-        icon: "layers",
-      });
-
-      this.emit("flyer", {
-        step: "flyer_created",
-        path: flyerPath,
-        previewUrl: `/output/${path.basename(flyerPath)}`,
-      });
-
-      this.emit("detail", {
-        step: "creating_flyer",
-        sub: "done",
-        message: "Placa informativa lista para publicar",
-        icon: "check",
-      });
-
-      // ─── PASO 6: Publicar ───
-      if (this.config.autoPublish) {
-        this.currentStep = "publishing";
-        this.emit("step", {
-          step: "publishing",
-          message: "Publicando en redes sociales...",
-        });
-
-        this.emit("detail", {
-          step: "publishing",
-          sub: "google_drive",
-          message: "Subiendo imagen a Google Drive...",
-          icon: "upload",
-        });
-
-        await this.publish(title, newsText, flyerPath);
-
-        this.publishedNotes.push({
-          title,
-          content: newsText,
-          flyerPath,
-          timestamp: new Date().toISOString(),
-        });
-
-        this.emit("published", {
-          step: "published",
-          title,
-          totalPublished: this.publishedNotes.length,
-        });
-      }
-
-      this.currentStep = "waiting";
-      this.emit("step", {
-        step: "waiting",
-        message: `Ciclo completado. Próxima captura en ${this.config.segmentDuration}s...`,
-      });
-    } catch (error) {
-      this.emit("error", {
-        step: this.currentStep,
-        message: error.message,
+      this.emit("published", {
+        step: "published",
+        title,
+        topic: segment.topic,
+        totalPublished: this.publishedNotes.length,
       });
     }
   }
@@ -995,8 +966,11 @@ class AutoPipeline {
     if (this.captureTimeout) {
       clearTimeout(this.captureTimeout);
     }
+    const totalMinutes = Math.round((this.chunks.length * this.config.segmentDuration) / 60);
     this.emit("stopped", {
       totalPublished: this.publishedNotes.length,
+      totalMinutes,
+      publishedTopics: this.publishedTopics,
     });
   }
 
@@ -1008,9 +982,12 @@ class AutoPipeline {
       running: this.running,
       currentStep: this.currentStep,
       config: this.config,
-      bufferSize: this.transcriptionBuffer.length,
+      chunksTranscribed: this.chunks.length,
+      totalMinutes: Math.round((this.chunks.length * this.config.segmentDuration) / 60),
+      transcriptionLength: this.fullTranscription.length,
+      publishedTopics: this.publishedTopics,
       totalPublished: this.publishedNotes.length,
-      publishedNotes: this.publishedNotes.slice(-10), // Últimas 10
+      publishedNotes: this.publishedNotes.slice(-10),
     };
   }
 

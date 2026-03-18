@@ -448,9 +448,6 @@ startPipelineBtn.addEventListener("click", () => {
     tone: document.getElementById("pipelineTone").value,
     structure: document.getElementById("pipelineStructure").value,
     imageModel: document.getElementById("pipelineImageModel").value,
-    publishInterval: parseInt(
-      document.getElementById("pipelineInterval").value,
-    ),
     segmentDuration: parseInt(
       document.getElementById("pipelineSegment").value,
     ),
@@ -646,18 +643,19 @@ socket.on("pipeline-update", function (data) {
       data.warnings.forEach((w) => addLogEntry(`Advertencia: ${w}`, "warning", "warning"));
       break;
 
-    case "stopped":
+    case "stopped": {
       pipelineStatusDot.className = "status-dot stopped";
-      pipelineStatusText.textContent = "Detenido";
+      const stoppedInfo = data.totalMinutes ? ` (${data.totalMinutes} min, ${data.totalPublished} notas)` : "";
+      pipelineStatusText.textContent = `Detenido${stoppedInfo}`;
       startPipelineBtn.disabled = false;
       stopPipelineBtn.disabled = true;
-      // Mark any remaining card as done
       if (currentActivityCard) {
         markCardDone(currentActivityCard);
         currentActivityCard = null;
         currentActivityStep = null;
       }
       break;
+    }
   }
 });
 
@@ -668,7 +666,7 @@ setInterval(() => {
     .then((data) => {
       if (data.running) {
         pipelineStatusDot.className = "status-dot active";
-        pipelineStatusText.textContent = `En ejecución - ${data.currentStep}`;
+        pipelineStatusText.textContent = `En ejecución - ${data.totalMinutes || 0} min capturados, ${data.totalPublished || 0} notas publicadas`;
       }
     })
     .catch(() => {});
