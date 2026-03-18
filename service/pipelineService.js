@@ -62,6 +62,8 @@ class AutoPipeline {
     // Temas ya publicados (para no repetir)
     this.publishedTopics = [];
     this.publishedNotes = [];
+    // Temas pendientes de confirmación (detectados como "completed" pero sin confirmar)
+    this.pendingConfirmation = [];
     // Cuántos chunks entre cada análisis de temas
     this.chunksPerAnalysis = 3;
     this.chunksSinceLastAnalysis = 0;
@@ -91,6 +93,7 @@ class AutoPipeline {
     this.fullTranscription = "";
     this.chunks = [];
     this.publishedTopics = [];
+    this.pendingConfirmation = [];
     this.chunksSinceLastAnalysis = 0;
     this.currentStep = "starting";
 
@@ -282,18 +285,45 @@ class AutoPipeline {
         this.fullTranscription,
         latestChunk,
         this.publishedTopics,
+        this.pendingConfirmation,
       );
 
       // Reportar segmentos detectados
       for (const seg of analysis.segments) {
         const statusIcon = seg.status === "completed" ? "check" : "clock";
         const newsworthyText = seg.newsworthy ? " [noticioso]" : " [no noticioso]";
+        const confidenceText = seg.confidence ? ` (confianza: ${seg.confidence})` : "";
         this.emit("detail", {
           step: "analyzing", sub: "segment",
-          message: `Tema: "${seg.topic}" - ${seg.status === "completed" ? "COMPLETADO" : "en curso"}${newsworthyText}`,
+          message: `Tema: "${seg.topic}" - ${seg.status === "completed" ? "COMPLETADO" : "en curso"}${newsworthyText}${confidenceText}`,
           icon: statusIcon,
         });
       }
+
+      // Reportar temas retomados (falsos positivos evitados)
+      if (analysis.retakenTopics && analysis.retakenTopics.length > 0) {
+        for (const topic of analysis.retakenTopics) {
+          this.emit("detail", {
+            step: "analyzing", sub: "retaken",
+            message: `Tema "${topic}" retomado por los hablantes - era solo un desvío temporal, no se publica`,
+            icon: "info",
+          });
+        }
+      }
+
+      // Reportar temas pendientes de confirmación
+      if (analysis.newPendingConfirmation && analysis.newPendingConfirmation.length > 0) {
+        for (const topic of analysis.newPendingConfirmation) {
+          this.emit("detail", {
+            step: "analyzing", sub: "pending",
+            message: `Tema "${topic}" posiblemente completado - esperando confirmación en el próximo análisis`,
+            icon: "clock",
+          });
+        }
+      }
+
+      // Actualizar lista de pendientes de confirmación
+      this.pendingConfirmation = analysis.newPendingConfirmation || [];
 
       if (analysis.ongoingTopic) {
         this.emit("detail", {
@@ -309,7 +339,7 @@ class AutoPipeline {
         icon: analysis.recommendation === "publish" ? "rocket" : "clock",
       });
 
-      // ─── PUBLICAR SI HAY TEMAS COMPLETADOS ───
+      // ─── PUBLICAR SI HAY TEMAS CONFIRMADOS ───
       if (analysis.recommendation === "publish" && analysis.completedSegments.length > 0) {
         this.publishingInProgress = true;
 
