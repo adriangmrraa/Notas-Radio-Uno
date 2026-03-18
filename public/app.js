@@ -708,3 +708,236 @@ fetch("/get-transcriptions")
 socket.on("receive-transcription-update", function (newTranscription) {
   addTranscriptionToArea(newTranscription);
 });
+
+// =============================================
+// HISTORIAL PERSISTENTE
+// =============================================
+
+let pubOffset = 0;
+let transOffset = 0;
+const PAGE_SIZE = 20;
+
+// Tabs
+document.querySelectorAll(".history-tab").forEach((tab) => {
+  tab.addEventListener("click", function () {
+    document.querySelectorAll(".history-tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".history-tab-content").forEach((c) => {
+      c.classList.remove("active");
+      c.style.display = "none";
+    });
+    this.classList.add("active");
+    const target = document.getElementById(`tab-${this.dataset.tab}`);
+    target.classList.add("active");
+    target.style.display = "block";
+  });
+});
+
+// Crear card de publicación
+function createPublicationCard(pub) {
+  const card = document.createElement("div");
+  card.className = "history-card";
+  card.dataset.id = pub.id;
+
+  const badgeClass = pub.source === "pipeline" ? "badge-pipeline" : pub.source === "url" ? "badge-url" : "badge-manual";
+  const badgeLabel = pub.source === "pipeline" ? "Pipeline" : pub.source === "url" ? "URL" : "Manual";
+  const date = new Date(pub.created_at + "Z").toLocaleString();
+  const contentPreview = pub.content ? pub.content.slice(0, 200) + (pub.content.length > 200 ? "..." : "") : "";
+  const imageHtml = pub.image_url
+    ? `<img src="${pub.image_url}" class="history-card-image" alt="Placa" onerror="this.style.display='none'" />`
+    : pub.image_path
+      ? `<img src="/output/${pub.image_path.split('/').pop()}" class="history-card-image" alt="Placa" onerror="this.style.display='none'" />`
+      : "";
+
+  card.innerHTML = `
+    <div class="history-card-header">
+      <span class="history-card-title">${escapeHtml(pub.title)}</span>
+      <button class="history-card-delete" title="Eliminar" onclick="deleteHistoryItem('publication', ${pub.id})">&times;</button>
+    </div>
+    ${imageHtml}
+    ${contentPreview ? `<div class="history-card-content">${escapeHtml(contentPreview)}</div>` : ""}
+    <div class="history-card-meta">
+      <span class="history-card-badge ${badgeClass}">${badgeLabel}</span>
+      <span>${date}</span>
+    </div>
+  `;
+
+  return card;
+}
+
+// Crear card de transcripción
+function createTranscriptionCard(trans) {
+  const card = document.createElement("div");
+  card.className = "history-card";
+  card.dataset.id = trans.id;
+
+  const badgeClass = trans.source === "pipeline" ? "badge-pipeline" : "badge-manual";
+  const badgeLabel = trans.source === "pipeline" ? "Pipeline" : "Manual";
+  const date = new Date(trans.created_at + "Z").toLocaleString();
+  const textPreview = trans.text.slice(0, 300) + (trans.text.length > 300 ? "..." : "");
+  const durationText = trans.duration_seconds ? ` | ${trans.duration_seconds}s` : "";
+
+  card.innerHTML = `
+    <div class="history-card-header">
+      <span class="history-card-title">${escapeHtml(trans.audio_file || "Transcripción")}</span>
+      <button class="history-card-delete" title="Eliminar" onclick="deleteHistoryItem('transcription', ${trans.id})">&times;</button>
+    </div>
+    <div class="history-card-text">${escapeHtml(textPreview)}</div>
+    <div class="history-card-meta">
+      <span class="history-card-badge ${badgeClass}">${badgeLabel}</span>
+      <span>${date}${durationText}</span>
+    </div>
+  `;
+
+  return card;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Cargar publicaciones
+async function loadPublications(append = false) {
+  try {
+    const response = await fetch(`/history/publications?limit=${PAGE_SIZE}&offset=${append ? pubOffset : 0}`);
+    const data = await response.json();
+
+    document.getElementById("pubCount").textContent = data.total;
+    const list = document.getElementById("publicationsList");
+    const noMsg = document.getElementById("noPubsMessage");
+    const loadMore = document.getElementById("loadMorePubs");
+
+    if (!append) {
+      list.innerHTML = "";
+      pubOffset = 0;
+    }
+
+    if (data.publications.length === 0 && !append) {
+      noMsg.style.display = "block";
+      loadMore.style.display = "none";
+      return;
+    }
+
+    noMsg.style.display = "none";
+    data.publications.forEach((pub) => {
+      list.appendChild(createPublicationCard(pub));
+    });
+
+    pubOffset += data.publications.length;
+    loadMore.style.display = pubOffset < data.total ? "block" : "none";
+  } catch (error) {
+    console.error("Error cargando publicaciones:", error);
+  }
+}
+
+// Cargar transcripciones
+async function loadTranscriptions(append = false) {
+  try {
+    const response = await fetch(`/history/transcriptions?limit=${PAGE_SIZE}&offset=${append ? transOffset : 0}`);
+    const data = await response.json();
+
+    document.getElementById("transCount").textContent = data.total;
+    const list = document.getElementById("transcriptionsList");
+    const noMsg = document.getElementById("noTransMessage");
+    const loadMore = document.getElementById("loadMoreTrans");
+
+    if (!append) {
+      list.innerHTML = "";
+      transOffset = 0;
+    }
+
+    if (data.transcriptions.length === 0 && !append) {
+      noMsg.style.display = "block";
+      loadMore.style.display = "none";
+      return;
+    }
+
+    noMsg.style.display = "none";
+    data.transcriptions.forEach((trans) => {
+      list.appendChild(createTranscriptionCard(trans));
+    });
+
+    transOffset += data.transcriptions.length;
+    loadMore.style.display = transOffset < data.total ? "block" : "none";
+  } catch (error) {
+    console.error("Error cargando transcripciones:", error);
+  }
+}
+
+// Eliminar item del historial
+async function deleteHistoryItem(type, id) {
+  if (!confirm("¿Eliminar este item del historial?")) return;
+
+  const endpoint = type === "publication" ? "publications" : "transcriptions";
+  try {
+    const response = await fetch(`/history/${endpoint}/${id}`, { method: "DELETE" });
+    if (response.ok) {
+      const card = document.querySelector(`.history-card[data-id="${id}"]`);
+      if (card) {
+        card.style.transition = "opacity 0.3s, transform 0.3s";
+        card.style.opacity = "0";
+        card.style.transform = "translateX(20px)";
+        setTimeout(() => card.remove(), 300);
+      }
+    }
+  } catch (error) {
+    console.error("Error eliminando:", error);
+  }
+}
+
+// Exponer globalmente para onclick handlers
+window.deleteHistoryItem = deleteHistoryItem;
+
+// Load more buttons
+document.getElementById("loadMorePubs").addEventListener("click", () => loadPublications(true));
+document.getElementById("loadMoreTrans").addEventListener("click", () => loadTranscriptions(true));
+
+// WebSocket: nueva publicación en tiempo real
+socket.on("history-new-publication", function (pub) {
+  const list = document.getElementById("publicationsList");
+  document.getElementById("noPubsMessage").style.display = "none";
+
+  const card = createPublicationCard(pub);
+  card.classList.add("new-item");
+  list.prepend(card);
+  pubOffset++;
+
+  // Actualizar contador
+  const countEl = document.getElementById("pubCount");
+  countEl.textContent = parseInt(countEl.textContent) + 1;
+});
+
+// WebSocket: nueva transcripción en tiempo real
+socket.on("history-new-transcription", function (trans) {
+  const list = document.getElementById("transcriptionsList");
+  document.getElementById("noTransMessage").style.display = "none";
+
+  const card = createTranscriptionCard(trans);
+  card.classList.add("new-item");
+  list.prepend(card);
+  transOffset++;
+
+  // Actualizar contador
+  const countEl = document.getElementById("transCount");
+  countEl.textContent = parseInt(countEl.textContent) + 1;
+});
+
+// WebSocket: item eliminado (desde otra pestaña/cliente)
+socket.on("history-delete-publication", function ({ id }) {
+  const card = document.querySelector(`#tab-publications .history-card[data-id="${id}"]`);
+  if (card) card.remove();
+  const countEl = document.getElementById("pubCount");
+  countEl.textContent = Math.max(0, parseInt(countEl.textContent) - 1);
+});
+
+socket.on("history-delete-transcription", function ({ id }) {
+  const card = document.querySelector(`#tab-transcriptions .history-card[data-id="${id}"]`);
+  if (card) card.remove();
+  const countEl = document.getElementById("transCount");
+  countEl.textContent = Math.max(0, parseInt(countEl.textContent) - 1);
+});
+
+// Cargar historial inicial
+loadPublications();
+loadTranscriptions();

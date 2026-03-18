@@ -256,6 +256,36 @@
       <h3>Nota generada:</h3>
       <textarea id="generatedNewsCopy" rows="8" style="width: 100%;"></textarea>
     </div>
+
+    <hr />
+
+    <!-- ========================================= -->
+    <!-- HISTORIAL PERSISTENTE -->
+    <!-- ========================================= -->
+    <section id="historySection" class="history-section">
+      <h2>Historial</h2>
+      <p class="history-description">Todo lo generado se guarda en la base de datos. Los nuevos items aparecen en tiempo real.</p>
+
+      <!-- Tabs -->
+      <div class="history-tabs">
+        <button class="history-tab active" data-tab="publications">Publicaciones <span id="pubCount" class="history-count">0</span></button>
+        <button class="history-tab" data-tab="transcriptions">Transcripciones <span id="transCount" class="history-count">0</span></button>
+      </div>
+
+      <!-- Publicaciones -->
+      <div id="tab-publications" class="history-tab-content active">
+        <div id="publicationsList" class="history-list"></div>
+        <button id="loadMorePubs" class="btn-load-more" style="display: none;">Cargar más</button>
+        <p id="noPubsMessage" class="history-empty">No hay publicaciones aún.</p>
+      </div>
+
+      <!-- Transcripciones -->
+      <div id="tab-transcriptions" class="history-tab-content" style="display: none;">
+        <div id="transcriptionsList" class="history-list"></div>
+        <button id="loadMoreTrans" class="btn-load-more" style="display: none;">Cargar más</button>
+        <p id="noTransMessage" class="history-empty">No hay transcripciones aún.</p>
+      </div>
+    </section>
   </div>
 
   <!-- Scripts -->

@@ -481,3 +481,217 @@ hr {
     width: auto;
     margin-right: 8px;
 }
+
+/* ========================================= */
+/* HISTORIAL */
+/* ========================================= */
+
+.history-section {
+    margin-top: 10px;
+}
+
+.history-description {
+    color: #888;
+    font-size: 14px;
+    margin-bottom: 15px;
+}
+
+.history-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #eee;
+    margin-bottom: 15px;
+}
+
+.history-tab {
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #888;
+    padding: 10px 20px;
+    font-size: 15px;
+    cursor: pointer;
+    border-radius: 0;
+    transition: all 0.2s;
+}
+
+.history-tab:hover {
+    color: #333;
+    background: #f9f9f9;
+}
+
+.history-tab.active {
+    color: #e94560;
+    border-bottom-color: #e94560;
+    font-weight: bold;
+    background: none;
+}
+
+.history-count {
+    display: inline-block;
+    background: #eee;
+    color: #666;
+    font-size: 11px;
+    font-weight: normal;
+    padding: 1px 7px;
+    border-radius: 10px;
+    margin-left: 4px;
+}
+
+.history-tab.active .history-count {
+    background: #e94560;
+    color: white;
+}
+
+.history-tab-content {
+    display: none;
+}
+
+.history-tab-content.active {
+    display: block;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.history-empty {
+    color: #aaa;
+    text-align: center;
+    padding: 30px 0;
+    font-style: italic;
+}
+
+/* Publication card */
+.history-card {
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 15px;
+    position: relative;
+    transition: all 0.2s;
+    animation: slideIn 0.3s ease;
+}
+
+.history-card:hover {
+    border-color: #ddd;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.history-card.new-item {
+    animation: highlightNew 1.5s ease;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes highlightNew {
+    0% { background: #fff9e6; border-color: #ffd700; }
+    100% { background: #fafafa; border-color: #eee; }
+}
+
+.history-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+}
+
+.history-card-title {
+    font-weight: bold;
+    font-size: 15px;
+    color: #333;
+    flex: 1;
+    margin-right: 10px;
+}
+
+.history-card-delete {
+    background: none;
+    border: none;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0 4px;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.history-card-delete:hover {
+    color: #e94560;
+    background: none;
+}
+
+.history-card-content {
+    color: #666;
+    font-size: 13px;
+    line-height: 1.5;
+    max-height: 80px;
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.history-card-image {
+    max-width: 120px;
+    max-height: 80px;
+    border-radius: 5px;
+    float: right;
+    margin-left: 10px;
+    margin-bottom: 5px;
+}
+
+.history-card-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: #aaa;
+    align-items: center;
+    clear: both;
+}
+
+.history-card-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.badge-pipeline { background: #e8f5e9; color: #2e7d32; }
+.badge-manual { background: #e3f2fd; color: #1565c0; }
+.badge-url { background: #fff3e0; color: #e65100; }
+
+/* Transcription card */
+.history-card-text {
+    color: #555;
+    font-size: 13px;
+    line-height: 1.5;
+    max-height: 100px;
+    overflow: hidden;
+    font-family: monospace;
+    background: #f5f5f5;
+    padding: 8px 10px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.btn-load-more {
+    width: 100%;
+    background: #f0f0f0;
+    color: #666;
+    border: 1px solid #ddd;
+    padding: 10px;
+    font-size: 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 10px;
+}
+
+.btn-load-more:hover {
+    background: #e8e8e8;
+    color: #333;
+}

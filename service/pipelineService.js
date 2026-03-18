@@ -5,7 +5,7 @@ import { generateNewsCopy, generateTitle } from "../scripts/cohere_Service.js";
 import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitter_service.js";
 import { publishToAllMeta } from "./metaPublishService.js";
-import { isMetaConnected } from "./databaseService.js";
+import { isMetaConnected, createPublication, createTranscription } from "./databaseService.js";
 import { google } from "googleapis";
 import axios from "axios";
 import fs from "fs";
@@ -106,6 +106,15 @@ class AutoPipeline {
 
         // Agregar al buffer
         this.transcriptionBuffer.push(result);
+
+        // Persistir transcripción en DB
+        const dbTranscription = createTranscription({
+          text: result.text,
+          source: "pipeline",
+          durationSeconds: this.config.segmentDuration,
+        });
+        this.io.emit("history-new-transcription", dbTranscription);
+
         this.emit("transcription", {
           step: "transcribed",
           text: result.text,
@@ -629,6 +638,17 @@ class AutoPipeline {
     } catch (error) {
       errors.push(`Meta API: ${error.message}`);
     }
+
+    // Persistir publicación en DB
+    const dbPublication = createPublication({
+      title,
+      content,
+      imagePath: flyerPath,
+      imageUrl: imageDriveUrl || null,
+      source: "pipeline",
+      publishResults: { errors },
+    });
+    this.io.emit("history-new-publication", dbPublication);
 
     if (errors.length > 0) {
       console.error("[Pipeline] Errores de publicación:", errors);

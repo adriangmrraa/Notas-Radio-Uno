@@ -27,7 +27,17 @@ import {
 } from "./service/twitter_service.js"; // Ajusta la ruta si es necesario
 import { generateNewsCopy, TONE_PROMPTS, STRUCTURE_PROMPTS } from "./scripts/cohere_Service.js";
 import { AutoPipeline } from "./service/pipelineService.js";
-import { initDatabase } from "./service/databaseService.js";
+import {
+  initDatabase,
+  createPublication,
+  getAllPublications,
+  deletePublication,
+  countPublications,
+  createTranscription,
+  getAllTranscriptions,
+  deleteTranscription,
+  countTranscriptions,
+} from "./service/databaseService.js";
 import {
   exchangeToken,
   discoverAssets,
@@ -132,8 +142,16 @@ function save_transcription_to_json(file_path, transcription_text) {
   fs.writeFileSync(transcription_file, JSON.stringify(data, null, 4), "utf-8");
   console.log("Transcripciones guardadas:", data);
 
+  // Persistir en la base de datos
+  const dbTranscription = createTranscription({
+    text: transcription_text,
+    audioFile: audio_filename,
+    source: "manual",
+  });
+
   // Emitir el evento a todos los clientes WebSocket conectados
-  io.emit("receive-transcription-update", newTranscription); // Emitir la nueva transcripción
+  io.emit("receive-transcription-update", newTranscription);
+  io.emit("history-new-transcription", dbTranscription);
   console.log(
     "Emitiendo nueva transcripción a los clientes:",
     newTranscription,
@@ -301,10 +319,22 @@ app.post("/sendWebhook", async (req, res) => {
       console.error("Error publicando en Meta (Viejo Botón):", metaError.message);
     }
 
+    // Persistir publicación en la DB
+    const publication = createPublication({
+      title,
+      content: description,
+      imagePath: finalImagePath,
+      imageUrl: imageDriveUrl,
+      source: "manual",
+      publishResults: metaResults,
+    });
+    io.emit("history-new-publication", publication);
+
     res.json({
       success: true,
       message: "Webhook enviado con éxito.",
       metaResults,
+      publication,
     });
   } catch (error) {
     console.error("Error al enviar el webhook:", error);
@@ -389,10 +419,22 @@ app.post("/sendWebhookNuevoBoton", async (req, res) => {
       console.error("Error publicando en Meta (Nuevo Botón):", metaError.message);
     }
 
+    // Persistir publicación en la DB
+    const publication = createPublication({
+      title,
+      content,
+      imagePath: finalImagePath,
+      imageUrl: imageDriveUrl,
+      source: "url",
+      publishResults: metaResults,
+    });
+    io.emit("history-new-publication", publication);
+
     res.json({
       success: true,
       message: "Webhook enviado con éxito (Nuevo Botón)",
       metaResults,
+      publication,
     });
   } catch (error) {
     console.error("Error al enviar el webhook (Nuevo Botón):", error);
@@ -493,6 +535,52 @@ app.post("/generateNewsCopy", async (req, res) => {
     res
       .status(500)
       .json({ error: "Error al generar la nota: " + error.message });
+  }
+});
+
+// ===========================================
+// HISTORIAL (Publicaciones + Transcripciones persistentes)
+// ===========================================
+
+// Obtener publicaciones
+app.get("/history/publications", (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = parseInt(req.query.offset) || 0;
+  const publications = getAllPublications(limit, offset);
+  const total = countPublications();
+  res.json({ publications, total });
+});
+
+// Eliminar publicación
+app.delete("/history/publications/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  const deleted = deletePublication(id);
+  if (deleted) {
+    io.emit("history-delete-publication", { id });
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Publicación no encontrada" });
+  }
+});
+
+// Obtener transcripciones
+app.get("/history/transcriptions", (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = parseInt(req.query.offset) || 0;
+  const transcriptions = getAllTranscriptions(limit, offset);
+  const total = countTranscriptions();
+  res.json({ transcriptions, total });
+});
+
+// Eliminar transcripción
+app.delete("/history/transcriptions/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  const deleted = deleteTranscription(id);
+  if (deleted) {
+    io.emit("history-delete-transcription", { id });
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Transcripción no encontrada" });
   }
 });
 

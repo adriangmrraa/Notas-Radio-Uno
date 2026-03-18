@@ -55,6 +55,32 @@ export function initDatabase() {
     )
   `);
 
+  // Tabla de publicaciones (notas periodísticas generadas)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS publications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT,
+      image_path TEXT,
+      image_url TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      publish_results TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Tabla de transcripciones de audio
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transcriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      text TEXT NOT NULL,
+      audio_file TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      duration_seconds INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   console.log("[DB] Base de datos SQLite inicializada en", DB_PATH);
   return db;
 }
@@ -204,4 +230,146 @@ export function isMetaConnected() {
 
   const assets = getAllActiveAssets();
   return assets.length > 0;
+}
+
+// ==========================================
+// CRUD de Publicaciones
+// ==========================================
+
+/**
+ * Guarda una publicación en la base de datos.
+ * @returns {object} La publicación creada con su id.
+ */
+export function createPublication({ title, content, imagePath, imageUrl, source, publishResults }) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO publications (title, content, image_path, image_url, source, publish_results, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+
+  const result = stmt.run(
+    title,
+    content || null,
+    imagePath || null,
+    imageUrl || null,
+    source || "manual",
+    publishResults ? JSON.stringify(publishResults) : null,
+  );
+
+  return getPublicationById(result.lastInsertRowid);
+}
+
+/**
+ * Obtiene una publicación por ID.
+ */
+export function getPublicationById(id) {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM publications WHERE id = ?").get(id);
+  if (!row) return null;
+  return {
+    ...row,
+    publish_results: row.publish_results ? JSON.parse(row.publish_results) : null,
+  };
+}
+
+/**
+ * Obtiene todas las publicaciones, más recientes primero.
+ */
+export function getAllPublications(limit = 50, offset = 0) {
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT * FROM publications ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .all(limit, offset);
+
+  return rows.map((row) => ({
+    ...row,
+    publish_results: row.publish_results ? JSON.parse(row.publish_results) : null,
+  }));
+}
+
+/**
+ * Elimina una publicación por ID. También borra la imagen del disco si existe.
+ */
+export function deletePublication(id) {
+  const db = getDb();
+  const row = db.prepare("SELECT image_path FROM publications WHERE id = ?").get(id);
+
+  if (row && row.image_path) {
+    try {
+      if (fs.existsSync(row.image_path)) {
+        fs.unlinkSync(row.image_path);
+      }
+    } catch (_) {}
+  }
+
+  const result = db.prepare("DELETE FROM publications WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+/**
+ * Cuenta publicaciones totales.
+ */
+export function countPublications() {
+  const db = getDb();
+  return db.prepare("SELECT COUNT(*) as count FROM publications").get().count;
+}
+
+// ==========================================
+// CRUD de Transcripciones
+// ==========================================
+
+/**
+ * Guarda una transcripción en la base de datos.
+ * @returns {object} La transcripción creada con su id.
+ */
+export function createTranscription({ text, audioFile, source, durationSeconds }) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO transcriptions (text, audio_file, source, duration_seconds, created_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `);
+
+  const result = stmt.run(
+    text,
+    audioFile || null,
+    source || "manual",
+    durationSeconds || null,
+  );
+
+  return getTranscriptionById(result.lastInsertRowid);
+}
+
+/**
+ * Obtiene una transcripción por ID.
+ */
+export function getTranscriptionById(id) {
+  const db = getDb();
+  return db.prepare("SELECT * FROM transcriptions WHERE id = ?").get(id);
+}
+
+/**
+ * Obtiene todas las transcripciones, más recientes primero.
+ */
+export function getAllTranscriptions(limit = 50, offset = 0) {
+  const db = getDb();
+  return db
+    .prepare("SELECT * FROM transcriptions ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .all(limit, offset);
+}
+
+/**
+ * Elimina una transcripción por ID.
+ */
+export function deleteTranscription(id) {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM transcriptions WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+/**
+ * Cuenta transcripciones totales.
+ */
+export function countTranscriptions() {
+  const db = getDb();
+  return db.prepare("SELECT COUNT(*) as count FROM transcriptions").get().count;
 }
