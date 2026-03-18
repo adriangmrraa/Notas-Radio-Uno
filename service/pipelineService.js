@@ -401,6 +401,14 @@ class AutoPipeline {
 
     let webResults = [];
     if (insights.searchQueries.length > 0) {
+      const hasGemini = !!process.env.GEMINI_API_KEY;
+      this.emit("detail", {
+        step: "searching", sub: "strategy",
+        message: hasGemini
+          ? "Usando Gemini con Google Search grounding (IA + búsqueda web integrada)"
+          : "Usando búsqueda tradicional + scraping de artículos",
+        icon: "brain",
+      });
       for (const query of insights.searchQueries.slice(0, 3)) {
         this.emit("detail", {
           step: "searching", sub: "query",
@@ -411,7 +419,7 @@ class AutoPipeline {
       webResults = await searchAndEnrich(insights.searchQueries);
       this.emit("detail", {
         step: "searching", sub: "results",
-        message: `${webResults.length} artículos encontrados`,
+        message: `${webResults.length} fuentes encontradas y analizadas`,
         icon: webResults.length > 0 ? "check" : "info",
       });
     }
