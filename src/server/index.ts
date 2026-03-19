@@ -18,6 +18,8 @@ import { registerHistoryRoutes } from "./routes/history.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerGenerateRoutes } from "./routes/generate.js";
 import { registerCaptureRoutes } from "./routes/capture.js";
+import { registerAgentRoutes } from "./routes/agents.js";
+import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -123,6 +125,8 @@ registerCaptureRoutes(app, io, {
   transcriptionFile: TRANSCRIPTION_FILE,
   projectRoot: PROJECT_ROOT,
 });
+registerAgentRoutes(app);
+registerPipelineConfigRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -141,6 +145,19 @@ function gracefulShutdown(): void {
 
 process.on("SIGTERM", gracefulShutdown);
 process.on("SIGINT", gracefulShutdown);
+
+// ---------------------------------------------------------------------------
+// SPA catch-all for client-side routing
+// ---------------------------------------------------------------------------
+app.get("*", (_req, res) => {
+  const indexPath = path.join(PROJECT_ROOT, "dist", "client", "index.html");
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    // In dev mode, Vite handles this
+    res.status(404).send("Not found");
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Start listening

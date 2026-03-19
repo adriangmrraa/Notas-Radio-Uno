@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useSocket } from './hooks/useSocket';
 import type {
   PipelineConfig,
@@ -102,6 +103,7 @@ function TopBar() {
           <span className="badge badge-ai">DeepSeek AI</span>
           <span className="badge badge-ai">Gemini</span>
         </div>
+        <Link to="/editor" className="btn btn-ghost btn-sm" style={{ marginLeft: 12 }}>⚡ Editor</Link>
       </div>
     </header>
   );

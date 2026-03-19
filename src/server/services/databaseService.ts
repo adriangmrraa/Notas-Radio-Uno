@@ -156,6 +156,38 @@ export function initDatabase(): Database.Database {
     )
   `);
 
+  // Tabla de agentes custom del pipeline
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      system_prompt TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      after_step TEXT NOT NULL,
+      is_enabled INTEGER NOT NULL DEFAULT 1,
+      ai_provider TEXT DEFAULT 'auto',
+      temperature REAL DEFAULT 0.5,
+      max_tokens INTEGER DEFAULT 2000,
+      tools TEXT DEFAULT '[]',
+      template_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Tabla de configuración del pipeline
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_configs (
+      id TEXT PRIMARY KEY DEFAULT 'default',
+      name TEXT NOT NULL DEFAULT 'Default Pipeline',
+      node_order TEXT NOT NULL DEFAULT '[]',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   console.log("[DB] Base de datos SQLite inicializada en", DB_PATH);
   return db;
 }
@@ -493,4 +525,112 @@ export function deleteTranscription(id: number): boolean {
 export function countTranscriptions(): number {
   const database = getDb();
   return (database.prepare("SELECT COUNT(*) as count FROM transcriptions").get() as CountRow).count;
+}
+
+// ==========================================
+// CRUD de Custom Agents
+// ==========================================
+
+export function createAgent(agent: {
+  id: string; name: string; description?: string; system_prompt: string;
+  position?: number; after_step: string; is_enabled?: boolean;
+  ai_provider?: string; temperature?: number; max_tokens?: number;
+  tools?: string[]; template_id?: string | null;
+}): any {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO custom_agents (id, name, description, system_prompt, position, after_step, is_enabled, ai_provider, temperature, max_tokens, tools, template_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    agent.id, agent.name, agent.description || '',
+    agent.system_prompt, agent.position || 0, agent.after_step,
+    agent.is_enabled !== false ? 1 : 0,
+    agent.ai_provider || 'auto', agent.temperature || 0.5,
+    agent.max_tokens || 2000, JSON.stringify(agent.tools || []),
+    agent.template_id || null
+  );
+  return getAgent(agent.id);
+}
+
+export function getAgent(id: string): any {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM custom_agents WHERE id = ?").get(id) as any;
+  if (!row) return null;
+  return { ...row, tools: JSON.parse(row.tools || '[]'), is_enabled: !!row.is_enabled };
+}
+
+export function getAllAgents(): any[] {
+  const db = getDb();
+  const rows = db.prepare("SELECT * FROM custom_agents ORDER BY after_step, position").all() as any[];
+  return rows.map(row => ({ ...row, tools: JSON.parse(row.tools || '[]'), is_enabled: !!row.is_enabled }));
+}
+
+export function updateAgent(id: string, data: Record<string, any>): any {
+  const db = getDb();
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  const allowed = ['name', 'description', 'system_prompt', 'position', 'after_step', 'is_enabled', 'ai_provider', 'temperature', 'max_tokens', 'tools', 'template_id'];
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      if (key === 'tools') {
+        fields.push(`${key} = ?`);
+        values.push(JSON.stringify(data[key]));
+      } else if (key === 'is_enabled') {
+        fields.push(`${key} = ?`);
+        values.push(data[key] ? 1 : 0);
+      } else {
+        fields.push(`${key} = ?`);
+        values.push(data[key]);
+      }
+    }
+  }
+
+  if (fields.length === 0) return getAgent(id);
+  fields.push("updated_at = datetime('now')");
+  values.push(id);
+
+  db.prepare(`UPDATE custom_agents SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getAgent(id);
+}
+
+export function deleteAgent(id: string): boolean {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM custom_agents WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+// ==========================================
+// CRUD de Pipeline Config
+// ==========================================
+
+export function getActivePipelineConfig(): any {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM pipeline_configs WHERE is_active = 1 LIMIT 1").get() as any;
+  if (!row) return null;
+  return { ...row, node_order: JSON.parse(row.node_order || '[]'), is_active: !!row.is_active };
+}
+
+export function savePipelineConfig(config: { id?: string; name?: string; node_order: string[] }): any {
+  const db = getDb();
+  const id = config.id || 'default';
+  const name = config.name || 'Default Pipeline';
+
+  db.prepare(`
+    INSERT INTO pipeline_configs (id, name, node_order, is_active, updated_at)
+    VALUES (?, ?, ?, 1, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      node_order = excluded.node_order,
+      updated_at = datetime('now')
+  `).run(id, name, JSON.stringify(config.node_order));
+
+  return getActivePipelineConfig();
+}
+
+export function resetPipelineConfig(): any {
+  const db = getDb();
+  db.prepare("DELETE FROM pipeline_configs WHERE id = 'default'").run();
+  return null;
 }
