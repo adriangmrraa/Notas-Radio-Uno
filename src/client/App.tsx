@@ -24,8 +24,8 @@ import {
 // ─── Utility ────────────────────────────────────────────────
 
 function getIcon(name?: string): string {
-  if (!name) return '\u2022';
-  return detailIcons[name] || '\u2022';
+  if (!name) return '•';
+  return detailIcons[name] || '•';
 }
 
 let cardIdCounter = 0;
@@ -172,7 +172,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
     }
     const id = nextCardId();
     processingCardIdRef.current = id;
-    const meta = stepMeta[stepName as PipelineStep] || { icon: '\u2699\uFE0F', label: stepName };
+    const meta = stepMeta[stepName as PipelineStep] || { icon: '⚙️', label: stepName };
     const label = topicLabel ? `${meta.label}: ${topicLabel}` : meta.label;
     setActivityCards(prev => [...prev, {
       id, icon: meta.icon, title: label, status: 'active', subSteps: [],
@@ -270,7 +270,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           } else if (data.source === 'grok_image') {
             addSubStepToCard(fcId, 'Fondo generado con Grok Image', 'check', 'sub-done');
           } else if (data.source === 'web') {
-            addSubStepToCard(fcId, 'Fondo obtenido de art\u00edculo web', 'download', 'sub-done');
+            addSubStepToCard(fcId, 'Fondo obtenido de artículo web', 'download', 'sub-done');
           } else if (data.source === 'placeholder') {
             addSubStepToCard(fcId, 'Usando fondo placeholder', 'warning', 'sub-error');
           }
@@ -342,7 +342,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
         .then(data => {
           if (data.running) {
             setStatusClass('active');
-            setStatusText(`En ejecuci\u00f3n - ${data.totalMinutes || 0} min capturados, ${data.totalPublished || 0} notas publicadas`);
+            setStatusText(`En ejecución - ${data.totalMinutes || 0} min capturados, ${data.totalPublished || 0} notas publicadas`);
           }
         })
         .catch(() => {});
@@ -353,7 +353,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
   // ─── Handlers ─────────────────────────────────────────────
 
   const handleStart = async () => {
-    if (!url) { alert('Ingres\u00e1 una URL de transmisi\u00f3n.'); return; }
+    if (!url) { alert('Ingresá una URL de transmisión.'); return; }
     const config: PipelineConfig = { url, tone, structure, imageModel, segmentDuration, autoPublish };
     try {
       const res = await fetch('/api/pipeline/start', {
@@ -366,7 +366,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
         setRunning(true);
         setShowStatus(true);
         setStatusClass('active');
-        setStatusText('En ejecuci\u00f3n');
+        setStatusText('En ejecución');
         setActivityCards([]);
         setTranscription('');
         setPublishedNotes([]);
@@ -400,15 +400,15 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
       <div className="card-header">
         <div className="card-header-icon"><PipelineIcon /></div>
         <div>
-          <h2 className="card-title">Pipeline Aut\u00f3nomo</h2>
-          <p className="card-description">Captura continua sin cortes + segmentaci\u00f3n inteligente por temas con IA</p>
+          <h2 className="card-title">Pipeline Autónomo</h2>
+          <p className="card-description">Captura continua sin cortes + segmentación inteligente por temas con IA</p>
         </div>
       </div>
 
       {/* Config form */}
       <div className="pipeline-config">
         <div className="form-group">
-          <label htmlFor="pipelineUrl">URL de transmisi\u00f3n</label>
+          <label htmlFor="pipelineUrl">URL de transmisión</label>
           <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream de radio"
             value={url} onChange={e => setUrl(e.target.value)} />
         </div>
@@ -420,7 +420,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
               <option value="formal">Formal</option>
               <option value="informal">Informal</option>
               <option value="urgente">Urgente</option>
-              <option value="analitico">Anal\u00edtico</option>
+              <option value="analitico">Analítico</option>
             </select>
           </div>
           <div className="form-group">
@@ -429,7 +429,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
               <option value="flash">Flash informativo</option>
               <option value="corta">Nota corta</option>
               <option value="completa">Nota completa</option>
-              <option value="cronica">Cr\u00f3nica</option>
+              <option value="cronica">Crónica</option>
             </select>
           </div>
           <div className="form-group">
@@ -444,14 +444,14 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
 
         <div className="form-grid-2">
           <div className="form-group">
-            <label htmlFor="pipelineSegment">Duraci\u00f3n chunk (seg)</label>
+            <label htmlFor="pipelineSegment">Duración chunk (seg)</label>
             <input type="number" id="pipelineSegment" value={segmentDuration}
               min={30} max={300} onChange={e => setSegmentDuration(Number(e.target.value))} />
           </div>
           <div className="form-group form-group-checkbox">
             <label className="checkbox-label">
               <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
-              Publicar autom\u00e1ticamente
+              Publicar automáticamente
             </label>
           </div>
         </div>
@@ -521,7 +521,7 @@ function StepProgress({ activeStep }: { activeStep: string }) {
 
   const shortLabels: Record<PipelineStep, string> = {
     capturing: 'Captura',
-    analyzing: 'An\u00e1lisis',
+    analyzing: 'Análisis',
     searching: 'Research',
     generating: 'Nota',
     creating_flyer: 'Placa',
@@ -564,8 +564,8 @@ function ActivityCard({ card }: { card: ActivityCardData }) {
         <span className="activity-card-title">{card.title}</span>
         <span className="activity-card-status">
           {card.status === 'active' && <span className="spinner" />}
-          {card.status === 'done' && '\u2705'}
-          {card.status === 'error' && '\u26A0\uFE0F'}
+          {card.status === 'done' && '✅'}
+          {card.status === 'error' && '⚠️'}
         </span>
       </div>
       {card.subSteps.length > 0 && (
@@ -599,10 +599,10 @@ function TranscriptionViewer({ transcription }: { transcription: string }) {
         role="button"
         tabIndex={0}
       >
-        {open ? '\u25BE' : '\u25B8'} Transcripci\u00f3n en vivo
+        {open ? '▾' : '▸'} Transcripción en vivo
       </div>
       {open && (
-        <textarea readOnly rows={8} placeholder="La transcripci\u00f3n aparecer\u00e1 aqu\u00ed..."
+        <textarea readOnly rows={8} placeholder="La transcripción aparecerá aquí..."
           value={transcription} />
       )}
     </div>
@@ -672,7 +672,7 @@ function MetaConnection() {
   };
 
   const handleDisconnect = async () => {
-    if (!confirm('\u00bfSeguro que quer\u00e9s desconectar Meta?')) return;
+    if (!confirm('¿Seguro que querés desconectar Meta?')) return;
     try {
       const res = await fetch('/api/meta/disconnect', { method: 'POST' });
       const data = await res.json();
@@ -688,7 +688,7 @@ function MetaConnection() {
   if (status.connected && status.expiresAt) {
     const daysLeft = Math.ceil((new Date(status.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     if (daysLeft > 0 && daysLeft < 10) {
-      statusLabel = `Conectado a Meta (token expira en ${daysLeft} d\u00edas)`;
+      statusLabel = `Conectado a Meta (token expira en ${daysLeft} días)`;
     }
   }
 
@@ -697,8 +697,8 @@ function MetaConnection() {
       <div className="card-header">
         <div className="card-header-icon card-header-icon-meta"><FacebookIcon /></div>
         <div>
-          <h2 className="card-title">Conexi\u00f3n Meta</h2>
-          <p className="card-description">Facebook e Instagram para publicaci\u00f3n directa</p>
+          <h2 className="card-title">Conexión Meta</h2>
+          <p className="card-description">Facebook e Instagram para publicación directa</p>
         </div>
         <div className="meta-status-inline">
           <span className={statusDotClass} />
@@ -714,7 +714,7 @@ function MetaConnection() {
                 <h4>Facebook Pages:</h4>
                 {status.pages.map(p => (
                   <div key={p.id} className="meta-asset-item">
-                    <span className="meta-asset-icon">\uD83D\uDCD8</span> {p.name}
+                    <span className="meta-asset-icon">📘</span> {p.name}
                   </div>
                 ))}
               </div>
@@ -724,7 +724,7 @@ function MetaConnection() {
                 <h4>Instagram:</h4>
                 {status.instagramAccounts.map(ig => (
                   <div key={ig.id} className="meta-asset-item">
-                    <span className="meta-asset-icon">\uD83D\uDCF8</span> {ig.name || ig.username}{ig.username ? ` (@${ig.username})` : ''}
+                    <span className="meta-asset-icon">📸</span> {ig.name || ig.username}{ig.username ? ` (@${ig.username})` : ''}
                   </div>
                 ))}
               </div>
@@ -739,7 +739,7 @@ function MetaConnection() {
           <button className="btn btn-meta" onClick={handleConnect}>
             <FacebookIcon size={18} color="white" /> Conectar con Meta
           </button>
-          <p className="hint hint-center">Se abrir\u00e1 un popup para autorizar permisos</p>
+          <p className="hint hint-center">Se abrirá un popup para autorizar permisos</p>
         </div>
       )}
     </section>
@@ -792,7 +792,7 @@ function WebhookSettingsSection() {
         <div className="card-header card-header-clickable" onClick={() => setOpen(!open)}>
           <div className="card-header-icon"><SettingsIcon /></div>
           <div>
-            <h2 className="card-title">Configuraci\u00f3n de Webhooks</h2>
+            <h2 className="card-title">Configuración de Webhooks</h2>
             <p className="card-description">Configurar URLs de webhooks para Make.com, N8N, etc.</p>
           </div>
           <ChevronIcon />
@@ -807,17 +807,17 @@ function WebhookSettingsSection() {
                   onChange={e => setWebhooks(w => ({ ...w, webhook_pipeline: e.target.value }))} />
               </div>
               <div className="form-group">
-                <label>Webhook Nuevo Bot\u00f3n</label>
+                <label>Webhook Nuevo Botón</label>
                 <input type="url" placeholder="https://..." value={webhooks.webhook_nuevo_boton}
                   onChange={e => setWebhooks(w => ({ ...w, webhook_nuevo_boton: e.target.value }))} />
               </div>
               <div className="form-group">
-                <label>Webhook Viejo Bot\u00f3n</label>
+                <label>Webhook Viejo Botón</label>
                 <input type="url" placeholder="https://..." value={webhooks.webhook_viejo_boton}
                   onChange={e => setWebhooks(w => ({ ...w, webhook_viejo_boton: e.target.value }))} />
               </div>
               <div className="form-group">
-                <label>Webhook Tercer Bot\u00f3n</label>
+                <label>Webhook Tercer Botón</label>
                 <input type="url" placeholder="https://..." value={webhooks.webhook_tercer_boton}
                   onChange={e => setWebhooks(w => ({ ...w, webhook_tercer_boton: e.target.value }))} />
               </div>
@@ -964,13 +964,13 @@ function ManualTools() {
                     <input type="file" accept="image/*" onChange={e => setFlyerImage(e.target.files?.[0] || null)} required />
                   </div>
                   <div className="form-group">
-                    <label>T\u00edtulo del post</label>
-                    <input type="text" placeholder="T\u00edtulo" value={flyerTitle} onChange={e => setFlyerTitle(e.target.value)} required />
+                    <label>Título del post</label>
+                    <input type="text" placeholder="Título" value={flyerTitle} onChange={e => setFlyerTitle(e.target.value)} required />
                   </div>
                 </div>
                 <div className="form-group">
-                  <label>Descripci\u00f3n</label>
-                  <textarea placeholder="Descripci\u00f3n del post" rows={3} value={flyerDesc} onChange={e => setFlyerDesc(e.target.value)} />
+                  <label>Descripción</label>
+                  <textarea placeholder="Descripción del post" rows={3} value={flyerDesc} onChange={e => setFlyerDesc(e.target.value)} />
                 </div>
                 <button type="submit" className="btn btn-secondary">Generar Post</button>
               </form>
@@ -1019,7 +1019,7 @@ function ManualTools() {
                 <button className="btn btn-secondary" onClick={handleStartCapture} disabled={capturing}>Iniciar Captura</button>
                 <button className="btn btn-ghost" onClick={handleStopCapture} disabled={!capturing}>Detener</button>
               </div>
-              <textarea rows={6} readOnly placeholder="Transcripci\u00f3n en tiempo real..."
+              <textarea rows={6} readOnly placeholder="Transcripción en tiempo real..."
                 value={manualTranscription} />
 
               {showNewsForm && (
@@ -1140,7 +1140,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
   }, [socket]);
 
   const deleteItem = async (type: 'publication' | 'transcription', id: number) => {
-    if (!confirm('\u00bfEliminar este item del historial?')) return;
+    if (!confirm('¿Eliminar este item del historial?')) return;
     const endpoint = type === 'publication' ? 'publications' : 'transcriptions';
     try {
       const res = await fetch(`/api/history/${endpoint}/${id}`, { method: 'DELETE' });
@@ -1187,7 +1187,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
       {activeTab === 'publications' && (
         <div>
           {publications.length === 0 ? (
-            <p className="empty-state">No hay publicaciones a\u00fan</p>
+            <p className="empty-state">No hay publicaciones aún</p>
           ) : (
             <div className="history-list">
               {publications.map(pub => (
@@ -1196,7 +1196,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
             </div>
           )}
           {pubOffset < pubTotal && (
-            <button className="btn btn-ghost btn-block" onClick={() => loadPublications(true)}>Cargar m\u00e1s</button>
+            <button className="btn btn-ghost btn-block" onClick={() => loadPublications(true)}>Cargar más</button>
           )}
         </div>
       )}
@@ -1205,7 +1205,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
       {activeTab === 'transcriptions' && (
         <div>
           {transcriptions.length === 0 ? (
-            <p className="empty-state">No hay transcripciones a\u00fan</p>
+            <p className="empty-state">No hay transcripciones aún</p>
           ) : (
             <div className="history-list">
               {transcriptions.map(trans => (
@@ -1214,7 +1214,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
             </div>
           )}
           {transOffset < transTotal && (
-            <button className="btn btn-ghost btn-block" onClick={() => loadTranscriptions(true)}>Cargar m\u00e1s</button>
+            <button className="btn btn-ghost btn-block" onClick={() => loadTranscriptions(true)}>Cargar más</button>
           )}
         </div>
       )}
@@ -1257,7 +1257,7 @@ function TranscriptionCard({ trans, onDelete }: { trans: Transcription; onDelete
   return (
     <div className="history-card">
       <div className="history-card-header">
-        <span className="history-card-title">{trans.audio_file || 'Transcripci\u00f3n'}</span>
+        <span className="history-card-title">{trans.audio_file || 'Transcripción'}</span>
         <button className="history-card-delete" title="Eliminar" onClick={onDelete}>&times;</button>
       </div>
       <div className="history-card-text">{textPreview}</div>
