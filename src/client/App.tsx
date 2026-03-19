@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { useSocket } from './hooks/useSocket';
+import { usePipelineState } from './hooks/usePipelineState';
 import type {
   PipelineConfig,
   Publication,
@@ -21,18 +21,6 @@ import {
   PIPELINE_STEPS as pipelineSteps,
   DETAIL_ICONS as detailIcons,
 } from './types';
-
-// ─── Utility ────────────────────────────────────────────────
-
-function getIcon(name?: string): string {
-  if (!name) return '•';
-  return detailIcons[name] || '•';
-}
-
-let cardIdCounter = 0;
-function nextCardId(): string {
-  return `card-${++cardIdCounter}`;
-}
 
 // ─── Inline SVG icons ───────────────────────────────────────
 
@@ -68,13 +56,13 @@ const ChevronIcon = () => (
 // ═══════════════════════════════════════════════════════════
 
 export default function App() {
-  const { socket, connected } = useSocket();
+  const { socket } = usePipelineState();
 
   return (
     <>
       <TopBar />
       <main className="main-container">
-        <PipelineControl socket={socket} />
+        <PipelineControl />
         <MetaConnection />
         <WebhookSettingsSection />
         <ManualTools />
@@ -113,8 +101,14 @@ function TopBar() {
 // PipelineControl (hero section)
 // ═══════════════════════════════════════════════════════════
 
-function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['socket'] }) {
-  // Config form
+function PipelineControl() {
+  const {
+    running, statusText, statusClass, activeStep,
+    activityCards, publishedNotes, transcription,
+    startPipeline, stopPipeline,
+  } = usePipelineState();
+
+  // Config form (local)
   const [url, setUrl] = useState('');
   const [tone, setTone] = useState('formal');
   const [structure, setStructure] = useState('completa');
@@ -122,30 +116,11 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
   const [segmentDuration, setSegmentDuration] = useState(120);
   const [autoPublish, setAutoPublish] = useState(true);
 
-  // Pipeline state
-  const [running, setRunning] = useState(false);
-  const [statusText, setStatusText] = useState('Inactivo');
-  const [statusClass, setStatusClass] = useState('');
+  // Local UI state
   const [showStatus, setShowStatus] = useState(false);
-  const [activeStep, setActiveStep] = useState<string>('');
-
-  // Activity feed
-  const [activityCards, setActivityCards] = useState<ActivityCardData[]>([]);
-  const captureCardIdRef = useRef<string | null>(null);
-  const processingCardIdRef = useRef<string | null>(null);
-  const activityFeedRef = useRef<HTMLDivElement>(null);
-
-  // Published notes
-  const [publishedNotes, setPublishedNotes] = useState<Array<{ title: string; content?: string; previewUrl?: string; timestamp: string }>>([]);
-  const [pendingNote, setPendingNote] = useState<{ title?: string; content?: string; previewUrl?: string }>({});
-  const pendingNoteRef = useRef<{ title?: string; content?: string; previewUrl?: string }>({});
-  const [selectedNote, setSelectedNote] = useState<{ title: string; content?: string; previewUrl?: string; timestamp: string } | null>(null);
-
-  // Transcription
-  const [transcription, setTranscription] = useState('');
-
-  // Lightbox
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [selectedNote, setSelectedNote] = useState<{ title: string; content?: string; previewUrl?: string; timestamp: string } | null>(null);
+  const activityFeedRef = useRef<HTMLDivElement>(null);
 
   // Image model hint
   const modelHints: Record<string, string> = {
@@ -153,204 +128,10 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
     grok: 'Requiere XAI_API_KEY en el servidor',
   };
 
-  // ─── Card helpers ─────────────────────────────────────────
-
-  const markCardStatus = useCallback((cardId: string | null, status: 'done' | 'error') => {
-    if (!cardId) return;
-    setActivityCards(prev => prev.map(c =>
-      c.id === cardId ? { ...c, status } : c
-    ));
-  }, []);
-
-  const getOrCreateCaptureCard = useCallback((): string => {
-    if (captureCardIdRef.current) return captureCardIdRef.current;
-    const id = nextCardId();
-    captureCardIdRef.current = id;
-    const meta = stepMeta.capturing;
-    setActivityCards(prev => [...prev, {
-      id, icon: meta.icon, title: meta.label, status: 'active', subSteps: [],
-    }]);
-    return id;
-  }, []);
-
-  const getOrCreateProcessingCard = useCallback((stepName: string, topicLabel?: string | null): string => {
-    // Mark previous processing card as done
-    if (processingCardIdRef.current) {
-      markCardStatus(processingCardIdRef.current, 'done');
-    }
-    const id = nextCardId();
-    processingCardIdRef.current = id;
-    const meta = stepMeta[stepName as PipelineStep] || { icon: '⚙️', label: stepName };
-    const label = topicLabel ? `${meta.label}: ${topicLabel}` : meta.label;
-    setActivityCards(prev => [...prev, {
-      id, icon: meta.icon, title: label, status: 'active', subSteps: [],
-    }]);
-    return id;
-  }, [markCardStatus]);
-
-  const addSubStepToCard = useCallback((cardId: string | null, text: string, icon?: string, className?: SubStep['className']) => {
-    if (!cardId) return;
-    setActivityCards(prev => prev.map(c =>
-      c.id === cardId
-        ? { ...c, subSteps: [...c.subSteps, { icon: getIcon(icon), text, className: className || '' }] }
-        : c
-    ));
-  }, []);
-
-  const addPreviewToCard = useCallback((cardId: string | null, previewUrl: string) => {
-    if (!cardId) return;
-    setActivityCards(prev => prev.map(c =>
-      c.id === cardId ? { ...c, previewUrl } : c
-    ));
-  }, []);
-
-  const updateCardTitle = useCallback((cardId: string | null, title: string) => {
-    if (!cardId) return;
-    setActivityCards(prev => prev.map(c =>
-      c.id === cardId ? { ...c, title } : c
-    ));
-  }, []);
-
-  // ─── Step progress ────────────────────────────────────────
-
-  const updateStepUI = useCallback((step: string) => {
-    setActiveStep(step);
-  }, []);
-
-  // ─── Socket events ───────────────────────────────────────
-
+  // Auto-show status when pipeline is running
   useEffect(() => {
-    if (!socket) return;
-
-    const handler = (data: PipelineUpdateEvent) => {
-      switch (data.event) {
-        case 'step': {
-          updateStepUI(data.step || '');
-
-          if (data.step === 'capturing') {
-            const ccId = getOrCreateCaptureCard();
-            updateCardTitle(ccId, data.message || stepMeta.capturing.label);
-            if (processingCardIdRef.current) {
-              markCardStatus(processingCardIdRef.current, 'done');
-              processingCardIdRef.current = null;
-            }
-          } else if (data.step && data.step !== 'waiting') {
-            const topicMatch = data.message?.match(/["":]"?([^""]+)"?$/);
-            const topic = topicMatch ? topicMatch[1] : null;
-            getOrCreateProcessingCard(data.step, topic);
-          }
-          break;
-        }
-
-        case 'detail': {
-          const targetId = data.step === 'capturing'
-            ? captureCardIdRef.current || getOrCreateCaptureCard()
-            : processingCardIdRef.current;
-          const isCheck = data.icon === 'check';
-          const isWarning = data.icon === 'warning';
-          addSubStepToCard(
-            targetId,
-            data.message || '',
-            data.icon,
-            isCheck ? 'sub-done' : isWarning ? 'sub-error' : '',
-          );
-          break;
-        }
-
-        case 'transcription':
-          setTranscription(prev =>
-            prev + `[${new Date(data.timestamp || Date.now()).toLocaleTimeString()}] ${data.text}\n\n`
-          );
-          break;
-
-        case 'note':
-          if (processingCardIdRef.current && data.content) {
-            addSubStepToCard(processingCardIdRef.current, `"${data.content.slice(0, 100)}..."`, 'document', '');
-          }
-          setPendingNote(prev => {
-            const next = { ...prev, title: data.title as string, content: data.content as string };
-            pendingNoteRef.current = next;
-            return next;
-          });
-          break;
-
-        case 'flyer_bg': {
-          const fcId = processingCardIdRef.current;
-          if (data.source === 'ai_generating') {
-            addSubStepToCard(fcId, `Generando fondo con ${data.model === 'grok' ? 'Grok' : 'Google Imagen'}...`, 'brain', '');
-          } else if (data.source === 'gemini_imagen') {
-            addSubStepToCard(fcId, 'Fondo generado con Google Imagen', 'check', 'sub-done');
-          } else if (data.source === 'grok_image') {
-            addSubStepToCard(fcId, 'Fondo generado con Grok Image', 'check', 'sub-done');
-          } else if (data.source === 'web') {
-            addSubStepToCard(fcId, 'Fondo obtenido de artículo web', 'download', 'sub-done');
-          } else if (data.source === 'placeholder') {
-            addSubStepToCard(fcId, 'Usando fondo placeholder', 'warning', 'sub-error');
-          }
-          break;
-        }
-
-        case 'flyer':
-          if (data.previewUrl && processingCardIdRef.current) {
-            addPreviewToCard(processingCardIdRef.current, data.previewUrl);
-          }
-          setPendingNote(prev => {
-            const next = { ...prev, previewUrl: data.previewUrl as string };
-            pendingNoteRef.current = next;
-            return next;
-          });
-          break;
-
-        case 'published':
-          setPublishedNotes(prev => [...prev, {
-            title: data.title as string || '',
-            content: pendingNoteRef.current.content || '',
-            previewUrl: pendingNoteRef.current.previewUrl || '',
-            timestamp: new Date().toISOString(),
-          }]);
-          setPendingNote({});
-          pendingNoteRef.current = {};
-          if (processingCardIdRef.current) {
-            addSubStepToCard(processingCardIdRef.current, `Publicado: "${data.title}"`, 'rocket', 'sub-done');
-            markCardStatus(processingCardIdRef.current, 'done');
-            processingCardIdRef.current = null;
-          }
-          break;
-
-        case 'error': {
-          const errCardId = data.step === 'capturing'
-            ? captureCardIdRef.current
-            : processingCardIdRef.current;
-          addSubStepToCard(errCardId, `Error: ${data.message}`, 'warning', 'sub-error');
-          if (data.step !== 'capturing' && errCardId) {
-            markCardStatus(errCardId, 'error');
-          }
-          break;
-        }
-
-        case 'publish_warnings': {
-          const warnings = data.warnings as string[] || [];
-          warnings.forEach((w: string) => {
-            addSubStepToCard(processingCardIdRef.current, `Advertencia: ${w}`, 'warning', 'sub-error');
-          });
-          break;
-        }
-
-        case 'stopped': {
-          setRunning(false);
-          setStatusClass('stopped');
-          const info = data.totalMinutes ? ` (${data.totalMinutes} min, ${data.totalPublished} notas)` : '';
-          setStatusText(`Detenido${info}`);
-          if (captureCardIdRef.current) { markCardStatus(captureCardIdRef.current, 'done'); captureCardIdRef.current = null; }
-          if (processingCardIdRef.current) { markCardStatus(processingCardIdRef.current, 'done'); processingCardIdRef.current = null; }
-          break;
-        }
-      }
-    };
-
-    socket.on('pipeline-update', handler);
-    return () => { socket.off('pipeline-update', handler); };
-  }, [socket, getOrCreateCaptureCard, getOrCreateProcessingCard, updateStepUI, markCardStatus, addSubStepToCard, addPreviewToCard, updateCardTitle]);
+    if (running) setShowStatus(true);
+  }, [running]);
 
   // Auto-scroll activity feed
   useEffect(() => {
@@ -359,47 +140,13 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
     }
   }, [activityCards]);
 
-  // Polling pipeline status
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetch('/api/pipeline/status')
-        .then(r => r.json())
-        .then(data => {
-          if (data.running) {
-            setStatusClass('active');
-            setStatusText(`En ejecución - ${data.totalMinutes || 0} min capturados, ${data.totalPublished || 0} notas publicadas`);
-          }
-        })
-        .catch(() => {});
-    }, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
   // ─── Handlers ─────────────────────────────────────────────
 
   const handleStart = async () => {
-    if (!url) { alert('Ingresá una URL de transmisión.'); return; }
-    const config: PipelineConfig = { url, tone, structure, imageModel, segmentDuration, autoPublish };
+    if (!url) { alert('Ingres\u00e1 una URL de transmisi\u00f3n.'); return; }
     try {
-      const res = await fetch('/api/pipeline/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setRunning(true);
-        setShowStatus(true);
-        setStatusClass('active');
-        setStatusText('En ejecución');
-        setActivityCards([]);
-        setTranscription('');
-        setPublishedNotes([]);
-        captureCardIdRef.current = null;
-        processingCardIdRef.current = null;
-      } else {
-        alert(data.error || 'Error al iniciar el pipeline.');
-      }
+      await startPipeline({ url, tone, structure, imageModel, segmentDuration, autoPublish });
+      setShowStatus(true);
     } catch (err: any) {
       alert('Error: ' + err.message);
     }
@@ -407,14 +154,7 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
 
   const handleStop = async () => {
     try {
-      const res = await fetch('/api/pipeline/stop', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setRunning(false);
-        setStatusClass('stopped');
-        setStatusText('Detenido');
-        updateStepUI('');
-      }
+      await stopPipeline();
     } catch (err: any) {
       alert('Error: ' + err.message);
     }
@@ -1137,7 +877,7 @@ function ManualTools() {
 
 const PAGE_SIZE = 20;
 
-function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] }) {
+function History({ socket }: { socket: any }) {
   const [activeTab, setActiveTab] = useState<HistoryTab>('publications');
 
   const [publications, setPublications] = useState<Publication[]>([]);

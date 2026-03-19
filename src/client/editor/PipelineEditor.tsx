@@ -12,7 +12,7 @@ import {
   MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useSocket } from '../hooks/useSocket';
+import { usePipelineState } from '../hooks/usePipelineState';
 import NodePalette from './components/NodePalette';
 import PipelineNode from './components/PipelineNode';
 import NodeInspector from './components/NodeInspector';
@@ -50,14 +50,13 @@ interface AgentTemplate {
 const nodeTypes = { pipelineNode: PipelineNode };
 
 export default function PipelineEditor() {
-  const { socket } = useSocket();
+  const { nodeStatuses } = usePipelineState();
 
   // Data
   const [config, setConfig] = useState<PipelineConfig | null>(null);
   const [allNodes, setAllNodes] = useState<PipelineNodeDef[]>([]);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [nodeStatuses, setNodeStatuses] = useState<Record<string, string>>({});
 
   // Modal
   const [showAgentModal, setShowAgentModal] = useState(false);
@@ -128,38 +127,6 @@ export default function PipelineEditor() {
     setNodes(flowNodes);
     setEdges(flowEdges);
   }, [config, allNodes, nodeStatuses, selectedNodeId]);
-
-  // Socket: real-time node status
-  useEffect(() => {
-    if (!socket) return;
-    const handler = (data: any) => {
-      if (data.event === 'step' && data.step) {
-        setNodeStatuses(prev => {
-          const updated = { ...prev };
-          // Mark current as running, previous as completed
-          for (const key of Object.keys(updated)) {
-            if (updated[key] === 'running') updated[key] = 'completed';
-          }
-          updated[data.step] = 'running';
-          return updated;
-        });
-      }
-      if (data.event === 'stopped') {
-        setNodeStatuses({});
-      }
-      if (data.event === 'detail' && data.sub && data.step) {
-        // Agent node status
-        const agentKey = `agent_${data.sub}`;
-        if (data.message?.includes('Ejecutando agente')) {
-          setNodeStatuses(prev => ({ ...prev, [agentKey]: 'running' }));
-        } else if (data.message?.includes('completado')) {
-          setNodeStatuses(prev => ({ ...prev, [agentKey]: 'completed' }));
-        }
-      }
-    };
-    socket.on('pipeline-update', handler);
-    return () => { socket.off('pipeline-update', handler); };
-  }, [socket]);
 
   // Save config
   const saveConfig = useCallback(async (newOrder: string[]) => {

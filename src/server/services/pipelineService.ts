@@ -5,7 +5,9 @@ import { generateNewsCopy, generateTitle } from "./newsService.js";
 import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
 import { publishToAllMeta } from "./metaPublishService.js";
-import { isMetaConnected, createPublication, createTranscription, getSetting } from "./databaseService.js";
+import { isMetaConnected, createPublication, createTranscription, getSetting, getActivePipelineConfig, getAgent } from "./databaseService.js";
+import { executeAgent } from "./agentExecutionService.js";
+import type { CustomAgent } from "../../shared/types.js";
 import { analyzeTopicSegments, extractSegmentText } from "./topicService.js";
 import { isDuplicateTopic, isTopicInSession } from "./deduplicationService.js";
 import { limiters } from "./rateLimiter.js";
@@ -487,6 +489,106 @@ class AutoPipeline {
   }
 
   /**
+   * Gets custom agents that should run after a specific built-in step.
+   */
+  private getAgentsAfterStep(step: string): CustomAgent[] {
+    try {
+      const config = getActivePipelineConfig();
+      if (!config || !config.node_order) return [];
+
+      const order = config.node_order as string[];
+      const agents: CustomAgent[] = [];
+
+      // Find the step index, then collect consecutive agent_ nodes after it
+      const stepIdx = order.indexOf(step);
+      if (stepIdx === -1) return [];
+
+      for (let i = stepIdx + 1; i < order.length; i++) {
+        const nodeId = order[i];
+        if (nodeId.startsWith('agent_')) {
+          const agentId = nodeId.replace('agent_', '');
+          const agent = getAgent(agentId);
+          if (agent && agent.is_enabled) {
+            agents.push(agent);
+          }
+        } else {
+          break; // Stop at next built-in step
+        }
+      }
+
+      return agents;
+    } catch (error) {
+      console.error("[Pipeline] Error loading agents:", (error as Error).message);
+      return [];
+    }
+  }
+
+  /**
+   * Runs all custom agents configured after a given step.
+   * Mutates the context object with agent outputs.
+   */
+  private async runAgentsAfterStep(
+    stepName: string,
+    context: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const agents = this.getAgentsAfterStep(stepName);
+    let currentContext = { ...context };
+
+    for (const agent of agents) {
+      this.emit("detail", {
+        step: "agent", sub: agent.id,
+        message: `🤖 Ejecutando agente: "${agent.name}"...`,
+        icon: "brain",
+      });
+
+      // Emit node status for editor visualization
+      this.io.emit("pipeline-node-status", {
+        nodeId: `agent_${agent.id}`,
+        status: "running",
+        timestamp: new Date().toISOString(),
+      });
+
+      try {
+        const result = await executeAgent(agent, {
+          nodeId: `agent_${agent.id}`,
+          previousNodeId: stepName,
+          data: currentContext,
+        });
+
+        currentContext = { ...currentContext, ...result.data };
+
+        this.emit("detail", {
+          step: "agent", sub: agent.id,
+          message: `✅ Agente "${agent.name}" completado (${result.executionTimeMs}ms, ${result.provider})`,
+          icon: "check",
+        });
+
+        this.io.emit("pipeline-node-status", {
+          nodeId: `agent_${agent.id}`,
+          status: "completed",
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        const err = error as Error;
+        this.emit("detail", {
+          step: "agent", sub: agent.id,
+          message: `⚠️ Error en agente "${agent.name}": ${err.message}`,
+          icon: "warning",
+        });
+
+        this.io.emit("pipeline-node-status", {
+          nodeId: `agent_${agent.id}`,
+          status: "error",
+          timestamp: new Date().toISOString(),
+        });
+        // Continue with current context unchanged
+      }
+    }
+
+    return currentContext;
+  }
+
+  /**
    * Procesa un segmento temático completado: genera nota + placa + publica.
    */
   private async processTopicSegment(segment: TopicSegment): Promise<void> {
@@ -521,6 +623,7 @@ class AutoPipeline {
     const transcriptionForNote = segmentText || segment.summary;
 
     // --- INSIGHTS ---
+    this.io.emit("pipeline-node-status", { nodeId: "insights", status: "running", timestamp: new Date().toISOString() });
     this.emit("detail", {
       step: "analyzing", sub: "segment_insights",
       message: `Extrayendo insights del tema: "${segment.topic}"...`,
@@ -528,13 +631,25 @@ class AutoPipeline {
     });
 
     const insights: Insights = await extractInsights(transcriptionForNote);
+    this.io.emit("pipeline-node-status", { nodeId: "insights", status: "completed", timestamp: new Date().toISOString() });
+
+    // Run custom agents after insights
+    let pipelineContext: Record<string, unknown> = {
+      segment: segment.topic,
+      transcription: transcriptionForNote,
+      insights,
+    };
+    pipelineContext = await this.runAgentsAfterStep("insights", pipelineContext);
+    // Agent may have enriched insights
+    const enrichedInsights = (pipelineContext.insights || insights) as Insights;
 
     // --- WEB SEARCH ---
+    this.io.emit("pipeline-node-status", { nodeId: "search", status: "running", timestamp: new Date().toISOString() });
     this.currentStep = "searching";
     this.emit("step", { step: "searching", message: `Investigando: "${segment.topic}"` });
 
     let webResults: SearchResult[] = [];
-    if (insights.searchQueries.length > 0) {
+    if (enrichedInsights.searchQueries.length > 0) {
       const hasGemini = !!process.env.GEMINI_API_KEY;
       this.emit("detail", {
         step: "searching", sub: "strategy",
@@ -543,14 +658,14 @@ class AutoPipeline {
           : "Usando búsqueda tradicional + scraping de artículos",
         icon: "brain",
       });
-      for (const query of insights.searchQueries.slice(0, 3)) {
+      for (const query of enrichedInsights.searchQueries.slice(0, 3)) {
         this.emit("detail", {
           step: "searching", sub: "query",
           message: `Buscando: "${query}"`,
           icon: "search",
         });
       }
-      webResults = await searchAndEnrich(insights.searchQueries);
+      webResults = await searchAndEnrich(enrichedInsights.searchQueries);
       this.emit("detail", {
         step: "searching", sub: "results",
         message: `${webResults.length} fuentes encontradas y analizadas`,
@@ -558,11 +673,19 @@ class AutoPipeline {
       });
     }
 
-    const webContext = webResults
+    let webContext = webResults
       .map((r) => `Fuente: ${r.title}\n${r.content || r.snippet}`)
       .join("\n\n---\n\n");
+    this.io.emit("pipeline-node-status", { nodeId: "search", status: "completed", timestamp: new Date().toISOString() });
+
+    // Run custom agents after search
+    pipelineContext = { ...pipelineContext, webResults, webContext };
+    pipelineContext = await this.runAgentsAfterStep("search", pipelineContext);
+    webResults = (pipelineContext.webResults || webResults) as SearchResult[];
+    webContext = String(pipelineContext.webContext || webContext);
 
     // --- GENERATE NOTE ---
+    this.io.emit("pipeline-node-status", { nodeId: "generate_news", status: "running", timestamp: new Date().toISOString() });
     this.currentStep = "generating";
     this.emit("step", { step: "generating", message: `Redactando nota: "${segment.topic}"` });
 
@@ -577,28 +700,43 @@ class AutoPipeline {
       tone: this.config.tone,
       structure: this.config.structure,
       webContext,
-      insights: `Resumen: ${insights.summary}\nDatos clave: ${insights.keyFacts.join(", ")}`,
+      insights: `Resumen: ${enrichedInsights.summary}\nDatos clave: ${enrichedInsights.keyFacts.join(", ")}`,
     });
+    this.io.emit("pipeline-node-status", { nodeId: "generate_news", status: "completed", timestamp: new Date().toISOString() });
 
+    // Run custom agents after news generation
+    pipelineContext = { ...pipelineContext, title: "", content: newsText };
+    pipelineContext = await this.runAgentsAfterStep("generate_news", pipelineContext);
+    const agentNewsText = String(pipelineContext.optimizedText || pipelineContext.correctedText || pipelineContext.content || newsText);
+
+    // --- GENERATE TITLE ---
+    this.io.emit("pipeline-node-status", { nodeId: "generate_title", status: "running", timestamp: new Date().toISOString() });
     this.emit("detail", {
       step: "generating", sub: "generating_title",
       message: "Generando título periodístico...",
       icon: "brain",
     });
 
-    const title = await generateTitle(transcriptionForNote, insights.summary);
+    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary);
+    this.io.emit("pipeline-node-status", { nodeId: "generate_title", status: "completed", timestamp: new Date().toISOString() });
+
+    // Run custom agents after title generation
+    pipelineContext = { ...pipelineContext, title };
+    pipelineContext = await this.runAgentsAfterStep("generate_title", pipelineContext);
+    const finalTitle = String(pipelineContext.title || title);
 
     this.emit("detail", {
       step: "generating", sub: "title_ready",
-      message: `Título: "${title}"`,
+      message: `Título: "${finalTitle}"`,
       icon: "check",
     });
 
-    this.emit("note", { step: "note_generated", title, content: newsText });
+    this.emit("note", { step: "note_generated", title: finalTitle, content: agentNewsText });
 
     // --- GENERATE FLYER ---
+    this.io.emit("pipeline-node-status", { nodeId: "generate_flyer", status: "running", timestamp: new Date().toISOString() });
     this.currentStep = "creating_flyer";
-    this.emit("step", { step: "creating_flyer", message: `Creando placa: "${title}"` });
+    this.emit("step", { step: "creating_flyer", message: `Creando placa: "${finalTitle}"` });
 
     this.emit("detail", {
       step: "creating_flyer", sub: "strategy",
@@ -606,7 +744,8 @@ class AutoPipeline {
       icon: "image",
     });
 
-    const flyerPath = await this.generateFlyer(title, webResults, insights);
+    const flyerPath = await this.generateFlyer(finalTitle, webResults, enrichedInsights);
+    this.io.emit("pipeline-node-status", { nodeId: "generate_flyer", status: "completed", timestamp: new Date().toISOString() });
 
     this.emit("detail", {
       step: "creating_flyer", sub: "overlay",
@@ -620,10 +759,15 @@ class AutoPipeline {
       previewUrl: `/output/${path.basename(flyerPath)}`,
     });
 
+    // Run custom agents after flyer creation
+    pipelineContext = { ...pipelineContext, flyerPath, imagePath: flyerPath };
+    pipelineContext = await this.runAgentsAfterStep("generate_flyer", pipelineContext);
+
     // --- PUBLISH ---
     if (this.config.autoPublish) {
+      this.io.emit("pipeline-node-status", { nodeId: "publish", status: "running", timestamp: new Date().toISOString() });
       this.currentStep = "publishing";
-      this.emit("step", { step: "publishing", message: `Publicando: "${title}"` });
+      this.emit("step", { step: "publishing", message: `Publicando: "${finalTitle}"` });
 
       this.emit("detail", {
         step: "publishing", sub: "google_drive",
@@ -631,11 +775,12 @@ class AutoPipeline {
         icon: "upload",
       });
 
-      await this.publish(title, newsText, flyerPath);
+      await this.publish(finalTitle, agentNewsText, flyerPath);
+      this.io.emit("pipeline-node-status", { nodeId: "publish", status: "completed", timestamp: new Date().toISOString() });
 
       this.publishedNotes.push({
-        title,
-        content: newsText,
+        title: finalTitle,
+        content: agentNewsText,
         flyerPath,
         topic: segment.topic,
         timestamp: new Date().toISOString(),
@@ -643,7 +788,7 @@ class AutoPipeline {
 
       this.emit("published", {
         step: "published",
-        title,
+        title: finalTitle,
         topic: segment.topic,
         totalPublished: this.publishedNotes.length,
       });
