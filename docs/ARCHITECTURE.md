@@ -2,7 +2,7 @@
 
 > Plataforma agnóstica de automatización periodística con IA
 >
-> Version: 1.0 | Ultima actualizacion: Marzo 2026
+> Version: 2.0 | Ultima actualizacion: Marzo 2026
 
 ---
 
@@ -22,6 +22,10 @@
 12. [Como Ejecutar el Proyecto](#12-como-ejecutar-el-proyecto)
 13. [Encriptacion](#13-encriptacion)
 14. [Changelog - Fixes y mejoras aplicados](#14-changelog---fixes-y-mejoras-aplicados)
+15. [Pipeline Visual Editor (Próximo)](#15-pipeline-visual-editor-próximo)
+16. [Sistema de Agentes Custom](#16-sistema-de-agentes-custom)
+17. [Plataformas de Streaming Soportadas](#17-plataformas-de-streaming-soportadas)
+18. [Mejoras de UX](#18-mejoras-de-ux)
 
 ---
 
@@ -2342,6 +2346,284 @@ a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6:f0e1d2c3b4a59687f0e1d2c3b4a59687:7890abcdef1234
 | package.json incompleto | Faltaban dependencias (axios, canvas, sharp, cheerio, etc.) | Agregadas todas las dependencias reales del proyecto |
 | Twitter crasheaba sin credenciales | Se creaba el client aunque no hubiera API keys | Guard: solo crea client si las 4 credenciales existen |
 | canvas nativo no compilaba en Windows | El paquete `canvas` requiere compilación C++ | Reemplazado por `@napi-rs/canvas` (precompilado, sin dependencias nativas) |
+| Twitch/Kick/FB Live no capturaban audio | FFmpeg no puede abrir URLs de plataformas de streaming directamente | Detectar Twitch, Kick, FB Live, Dailymotion, Vimeo como tipo "youtube" → usar yt-dlp |
+| URLs genéricas fallaban | ffmpeg no podía abrir todas las URLs | Fallback inteligente: intenta yt-dlp primero, si falla usa ffmpeg directo |
+| Caracteres Unicode escapados en UI | App.tsx tenía `\u00f3` en vez de `ó` | Reemplazados todos los escapes Unicode por caracteres reales |
+| Layout angosto (900px) | Todo centrado en columna estrecha | Expandido a 1400px, pipeline en 2 columnas, historial en grilla |
+| Activity feed crecía infinitamente | Cada sub-paso se mostraba siempre | Cards colapsables: muestra últimos 3 sub-pasos, expandible |
+| Placas no se podían ver en grande | No había preview de la imagen generada | Lightbox fullscreen al hacer click en cualquier imagen de placa |
+| Notas publicadas sin detalle | Solo mostraba título y fecha | Modal con imagen completa + texto íntegro al hacer click |
+| Historial sin preview | Cards de publicaciones eran solo texto | Cards clickeables que abren modal con placa + nota completa |
+| Gemini 2.0 Flash deprecado | Modelo eliminado por Google | Actualizado a Gemini 2.5 Flash para texto |
+| Modelo de imágenes no era el último | Usaba modelos viejos | Actualizado a Nano Banana 2 (gemini-3.1-flash-image-preview) con image+prompt |
+
+---
+
+## 15. Pipeline Visual Editor (Próximo)
+
+> Estado: **Planificado** - Spec aprobada, pendiente de implementación
+
+### Descripción
+
+Nueva página `/editor` que permite visualizar y editar el pipeline como un grafo interactivo en tiempo real.
+
+### Arquitectura de la nueva página
+
+| Componente | Descripción |
+|-----------|-------------|
+| **Ruta** | `/editor` (React Router, SPA) |
+| **Librería de grafo** | `@xyflow/react` (React Flow v12) |
+| **Layout** | 3 columnas: Paleta de nodos (240px) · Grafo central (flex) · Inspector (320px) |
+| **Persistencia** | Tabla `pipeline_configs` en SQLite |
+
+### Layout del Editor
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Top Bar (nav: Operations ↔ Editor)                  │
+├──────────┬──────────────────────────────┬────────────┤
+│ PALETA   │         GRAFO VISUAL         │ INSPECTOR  │
+│          │                              │            │
+│ Built-in │  [Captura] → [Transcripción] │ Detalles   │
+│  nodes   │       ↓                      │ del nodo   │
+│          │  [Análisis] → [Agente ✨]    │ selec-     │
+│ Templates│       ↓                      │ cionado    │
+│  de      │  [Búsqueda] → [Nota]        │            │
+│ agentes  │       ↓                      │ Config     │
+│          │  [Título] → [Placa]          │ del agente │
+│ Drag &   │       ↓                      │ System     │
+│  Drop    │  [Publicar]                  │ prompt,    │
+│          │                              │ tools, etc │
+└──────────┴──────────────────────────────┴────────────┘
+```
+
+### Funcionalidades
+
+1. **Visualización de grafo**: Nodos del pipeline conectados con edges animados (partículas de datos fluyendo)
+2. **Reordenamiento**: Drag & drop de nodos para cambiar el orden de ejecución
+3. **Agregar agentes**: Click en "+" entre nodos o drag desde la paleta
+4. **Inspector de nodo**: Panel derecho con detalles y configuración editable
+5. **Tiempo real**: Cuando el pipeline ejecuta, los nodos se iluminan según el paso actual
+6. **Persistencia**: La configuración se guarda en DB y persiste entre reinicios
+
+### Nodos built-in (no eliminables)
+
+| ID | Nombre | Icono | Descripción |
+|----|--------|-------|-------------|
+| `capture` | Captura de Audio | 🎤 | yt-dlp + ffmpeg |
+| `transcribe` | Transcripción | 🧠 | Whisper (Python) |
+| `analyze` | Análisis de Temas | 🔍 | Segmentación con IA |
+| `insights` | Extracción de Insights | 💡 | Personas, datos, queries |
+| `search` | Investigación Web | 🌐 | Gemini Grounded Search |
+| `generate_news` | Generación de Nota | ✍️ | DeepSeek/Gemini |
+| `generate_title` | Generación de Título | 📰 | IA periodística |
+| `generate_flyer` | Creación de Placa | 🖼️ | Nano Banana 2 + overlay |
+| `publish` | Publicación | 📤 | Multi-plataforma |
+
+### Pipeline dinámico
+
+El `processTopicSegment` se refactoriza para ejecutar nodos dinámicamente:
+
+```
+1. Leer pipeline_config de la DB
+2. Para cada nodo en node_order:
+   a. Si es built-in → ejecutar el step correspondiente
+   b. Si es agent_XXX → ejecutar agentExecutionService con el system prompt custom
+3. Cada nodo recibe el output del anterior como input
+4. Emitir eventos socket para visualización en tiempo real
+```
+
+### Tablas de base de datos nuevas
+
+**`custom_agents`**
+```sql
+CREATE TABLE custom_agents (
+  id TEXT PRIMARY KEY,              -- UUID
+  name TEXT NOT NULL,               -- Nombre del agente
+  description TEXT,                 -- Descripción corta
+  system_prompt TEXT NOT NULL,      -- System prompt para DeepSeek/Gemini
+  position INTEGER DEFAULT 0,      -- Orden dentro de la misma posición
+  after_step TEXT NOT NULL,         -- Después de qué step built-in va
+  is_enabled INTEGER DEFAULT 1,    -- Habilitado/deshabilitado
+  ai_provider TEXT DEFAULT 'auto', -- auto | deepseek | gemini
+  temperature REAL DEFAULT 0.5,
+  max_tokens INTEGER DEFAULT 2000,
+  tools TEXT DEFAULT '[]',         -- JSON: ["web_search", "image_processing"]
+  template_id TEXT,                -- ID del template si se usó uno
+  created_at TEXT,
+  updated_at TEXT
+);
+```
+
+**`pipeline_configs`**
+```sql
+CREATE TABLE pipeline_configs (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  name TEXT NOT NULL DEFAULT 'Default Pipeline',
+  node_order TEXT NOT NULL DEFAULT '[]',  -- JSON array de node IDs
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT,
+  updated_at TEXT
+);
+```
+
+### API endpoints nuevos
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/api/agents` | Crear agente custom |
+| GET | `/api/agents` | Listar todos los agentes |
+| GET | `/api/agents/:id` | Obtener agente por ID |
+| PUT | `/api/agents/:id` | Actualizar agente |
+| DELETE | `/api/agents/:id` | Eliminar agente |
+| GET | `/api/agents/templates` | Obtener templates predefinidos |
+| GET | `/api/pipeline-config` | Obtener config activa del pipeline |
+| PUT | `/api/pipeline-config` | Guardar config (node order) |
+| POST | `/api/pipeline-config/reset` | Resetear a orden default |
+| GET | `/api/pipeline-config/nodes` | Obtener todos los nodos disponibles |
+
+---
+
+## 16. Sistema de Agentes Custom
+
+### Qué es un agente
+
+Un agente custom es una llamada a la API de DeepSeek o Gemini con un system prompt definido por el usuario. Se inserta en una posición específica del pipeline y procesa el output del nodo anterior.
+
+### Flujo de ejecución
+
+```
+Nodo anterior (ej: generate_news)
+    ↓ output: { title, content }
+[Agente Custom: Fact Checker]
+    ↓ chatCompletion({ systemPrompt: "...", userPrompt: JSON.stringify(input) })
+    ↓ output: { title, content } (corregido)
+Nodo siguiente (ej: generate_title)
+```
+
+### Input/Output por posición
+
+| Después de | Input que recibe el agente | Output esperado |
+|-----------|---------------------------|-----------------|
+| `transcribe` | `{ text }` (transcripción) | `{ text }` |
+| `analyze` | `{ segments: TopicSegment[] }` | `{ segments: TopicSegment[] }` |
+| `insights` | `{ insights: Insights }` | `{ insights: Insights }` |
+| `search` | `{ results: SearchResult[], context }` | `{ results, context }` |
+| `generate_news` | `{ title, content }` | `{ title, content }` |
+| `generate_title` | `{ title }` | `{ title }` |
+| `generate_flyer` | `{ imagePath, title }` | `{ imagePath, title }` |
+
+### 8 Templates predefinidos
+
+| # | Template | Posición default | Descripción | Tools |
+|---|----------|-----------------|-------------|-------|
+| 1 | **Fact Checker** | Después de `generate_news` | Verifica hechos contra fuentes web | web_search |
+| 2 | **Sentiment Analyzer** | Después de `transcribe` | Detecta tono emocional, sesgo, equilibrio | - |
+| 3 | **SEO Optimizer** | Después de `generate_news` | Optimiza para redes sociales, genera hashtags | - |
+| 4 | **Multi-language Translator** | Después de `generate_news` | Traduce manteniendo estilo periodístico | - |
+| 5 | **Source Verifier** | Después de `search` | Evalúa credibilidad de fuentes (1-10) | web_search |
+| 6 | **Headline A/B Generator** | Después de `generate_title` | Genera 5 variantes de título con CTR estimado | - |
+| 7 | **Content Enricher** | Después de `insights` | Agrega contexto histórico y antecedentes | web_search |
+| 8 | **Image Prompt Enhancer** | Después de `generate_news` | Mejora el prompt para generar imágenes más impactantes | - |
+
+### Cómo se crea un agente
+
+1. **Con template**: Seleccionar template → se auto-posiciona en el lugar correcto → textarea prellenado con system prompt → editar si se desea → guardar
+2. **Manual**: Seleccionar posición en el pipeline (obligatorio) → escribir system prompt → configurar tools y temperatura → guardar
+
+### Persistencia
+
+- Los agentes se guardan en la tabla `custom_agents`
+- El orden del pipeline (incluyendo agentes) se guarda en `pipeline_configs.node_order` como JSON
+- Si se apaga el pipeline y se inicia con otro link, el pipeline modificado persiste
+- Los agentes pueden habilitarse/deshabilitarse sin eliminarlos
+
+---
+
+## 17. Plataformas de Streaming Soportadas
+
+### Detección automática de tipo de fuente
+
+| Plataforma | Detección | Método de captura |
+|-----------|-----------|-------------------|
+| **YouTube** | `youtube.com`, `youtu.be` | yt-dlp + `--js-runtimes node` |
+| **Twitch** | `twitch.tv` | yt-dlp |
+| **Kick** | `kick.com` | yt-dlp |
+| **Facebook Live** | `facebook.com/live` | yt-dlp |
+| **Dailymotion** | `dailymotion.com` | yt-dlp |
+| **Vimeo** | `vimeo.com` | yt-dlp |
+| **Radio streams** | `.m3u8`, `.mp3`, `.aac`, `shoutcast`, `icecast` | ffmpeg directo |
+| **URLs genéricas** | Todo lo demás | yt-dlp primero, fallback a ffmpeg |
+
+### Flujo de captura para YouTube/Twitch/Kick
+
+```
+URL → yt-dlp (--js-runtimes node, -f "ba/b", --download-sections, -x --audio-format mp3)
+    → archivo MP3 en output/
+    → Whisper (Python) para transcripción
+```
+
+### Flujo de captura para radio/streams directos
+
+```
+URL → ffmpeg (-i url -t duration -c:a libmp3lame)
+    → archivo MP3 en output/
+    → Whisper (Python) para transcripción
+```
+
+### Flujo para URLs genéricas (fallback inteligente)
+
+```
+URL → intenta yt-dlp primero
+    → si falla → intenta ffmpeg directo
+    → si ambos fallan → error con exponential backoff
+```
+
+---
+
+## 18. Mejoras de UX (v2.0)
+
+### Layout wide (1400px)
+
+- Max-width expandido de 900px a 1400px
+- Usa toda la pantalla en desktop
+- Pipeline en 2 columnas: izquierda (60%) activity feed, derecha (40%) notas + transcripción
+- Historial en grilla de 2 columnas
+
+### Pipeline "vivo"
+
+- Cards activas pulsan con borde que alterna rojo/verde (`cardPulse` animation)
+- Cards completadas se atenúan (opacity 0.7, borde verde)
+- Cards con error tienen borde rojo
+- Nuevas cards aparecen con slide-in animation
+- Labels en uppercase con letter-spacing para estética futurista
+
+### Activity Cards colapsables
+
+- Cuando un card tiene más de 3 sub-pasos, muestra solo los últimos 3
+- Botón "Ver N pasos anteriores" para expandir
+- Evita que la página se haga infinitamente larga con muchos chunks
+
+### Modal de previsualización
+
+- Click en cualquier nota publicada (pipeline o historial) abre modal con:
+  - Título completo
+  - Fecha
+  - Imagen de la placa a tamaño completo
+  - Texto íntegro de la nota
+- Click en imagen de placa en activity card → lightbox fullscreen
+
+### ImageLightbox
+
+- Click en cualquier imagen de placa abre un lightbox a pantalla completa
+- Overlay oscuro (90% opacidad)
+- Imagen centrada con max-width/max-height 90vw/90vh
+- Click afuera o tecla Escape para cerrar
+
+### Navegación entre páginas
+
+- TopBar incluye links a "Operations" y "Editor" (cuando se implemente)
+- SPA con React Router, sin recarga de página
 
 ---
 
