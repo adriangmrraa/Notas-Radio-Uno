@@ -827,9 +827,11 @@ class AutoPipeline {
   }
 
   /**
-   * Genera imagen de fondo con Gemini multimodal (gemini-2.0-flash-exp).
-   * Soporta enviar imágenes de referencia (fotos de personas) junto con el prompt
-   * para generar imágenes contextualizadas que incorporen a la persona.
+   * Genera imagen de fondo con Gemini Nano Banana 2 (gemini-3.1-flash-image-preview).
+   * Modelo más nuevo de Google para generación de imágenes con:
+   *   - Soporte para image+prompt (imágenes de referencia como input)
+   *   - Conocimiento del mundo real (personas, lugares, eventos)
+   *   - Alta calidad y velocidad
    * Fallback: si no hay imágenes de referencia, genera solo con texto.
    */
   private async generateWithGemini(prompt: string, referenceImagePaths?: string[]): Promise<string | null> {
@@ -840,7 +842,7 @@ class AutoPipeline {
       await limiters.imageGen.acquire();
 
       const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
-      const model = "gemini-2.0-flash-exp";
+      const model = "gemini-3.1-flash-image-preview";
       const url = `${GEMINI_API}/${model}:generateContent?key=${apiKey}`;
 
       // Build parts array
