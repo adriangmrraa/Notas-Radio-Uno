@@ -10,6 +10,7 @@ import { dirname } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+const PLATFORM_NAME = process.env.PLATFORM_NAME || "Noticias";
 
 async function processImage(imagePath: string, title: string): Promise<string> {
   const uniqueId = uuidv4();
@@ -96,7 +97,7 @@ async function processImage(imagePath: string, title: string): Promise<string> {
     ctx.fillStyle = "white";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("Radio Uno Formosa", 540, 1080 / 2);
+    ctx.fillText(PLATFORM_NAME, 540, 1080 / 2);
 
     const logo = await loadImage(logoPath);
     const logoWidth = 150;

@@ -1,6 +1,8 @@
 import { chatCompletion } from "./aiService.js";
 import type { NewsGenerationOptions } from "../../shared/types.js";
 
+const PLATFORM_NAME = process.env.PLATFORM_NAME || "Noticias";
+
 const TONE_PROMPTS: Record<string, string> = {
   formal:
     "Tono FORMAL: lenguaje institucional, preciso y sobrio. Oraciones estructuradas con sujeto-verbo-predicado claro. Evitar coloquialismos. Citar fuentes con nombre y cargo cuando esten disponibles.",
@@ -20,14 +22,13 @@ const STRUCTURE_PROMPTS: Record<string, string> = {
   completa:
     "NOTA COMPLETA: 3-4 parrafos. P1: Lead informativo (que, quien, cuando, donde, por que). P2: Desarrollo con detalles, cifras y declaraciones. P3: Contexto y antecedentes relevantes. P4 (opcional): Reacciones o proyeccion futura.",
   cronica:
-    "CRONICA: 4-5 parrafos narrativos. Abrir con la escena o momento mas impactante (in medias res). Desarrollar cronologicamente incorporando voces directas entre comillas. Incluir descripciones del ambiente. Cerrar con una reflexion que conecte con el lector formoseno.",
+    "CRONICA: 4-5 parrafos narrativos. Abrir con la escena o momento mas impactante (in medias res). Desarrollar cronologicamente incorporando voces directas entre comillas. Incluir descripciones del ambiente. Cerrar con una reflexion que conecte con el lector.",
 };
 
-const SYSTEM_PROMPT_NEWS = `Sos un periodista senior de Radio Uno Formosa, el medio de referencia de la provincia de Formosa, Argentina.
+const SYSTEM_PROMPT_NEWS = `Sos un periodista senior de ${PLATFORM_NAME}. Tu trabajo es redactar notas periodisticas precisas y profesionales.
 
 DIRECTRICES EDITORIALES:
-- Escribis para una audiencia formosena y del NEA argentino
-- Prioriza la relevancia local: si hay angulo formoseno, destacalo
+- Escribis para una audiencia general interesada en noticias verificables
 - Usa espanol rioplatense (vos, tenes) pero sin exceso de lunfardo
 - Atribui toda declaracion a su fuente ("segun X", "X afirmo que")
 - Nunca inventes declaraciones ni datos que no esten en la transcripcion
@@ -41,7 +42,7 @@ FORMATO:
 - Solo el texto de la nota, listo para publicar
 - No uses markdown ni formato especial`;
 
-const SYSTEM_PROMPT_TITLE = `Sos el editor de titulares de Radio Uno Formosa. Tu trabajo es crear titulos periodisticos que capten la atencion en redes sociales y placas informativas.
+const SYSTEM_PROMPT_TITLE = `Sos el editor de titulares de ${PLATFORM_NAME}. Tu trabajo es crear titulos periodisticos que capten la atencion en redes sociales y placas informativas.
 
 REGLAS PARA TITULARES:
 - Maximo 10 palabras, idealmente 6-8
@@ -51,7 +52,7 @@ REGLAS PARA TITULARES:
 - No usar signos de pregunta ni exclamacion
 - No usar "ULTIMO MOMENTO" ni "URGENTE" (eso va en la placa, no en el titulo)
 - Priorizar claridad sobre creatividad
-- Si es local (Formosa), incluir la referencia geografica
+- Si es relevante, incluir la referencia geografica
 - Solo el titulo, sin comillas ni explicacion`;
 
 /**
@@ -163,7 +164,7 @@ Genera UN SOLO titulo:`,
   } catch (error: unknown) {
     const err = error as Error;
     console.error("[AI] Error generando titulo:", err.message);
-    return "Ultimo Momento - Radio Uno Formosa";
+    return `Ultimo Momento - ${PLATFORM_NAME}`;
   }
 }
 

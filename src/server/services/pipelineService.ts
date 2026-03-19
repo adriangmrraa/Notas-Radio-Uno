@@ -1,6 +1,6 @@
 import { captureAudioSegment, transcribeAudio, detectSourceType } from "./transcriptionService.js";
 import { extractInsights } from "./insightService.js";
-import { searchAndEnrich } from "./searchService.js";
+import { searchAndEnrich, searchPersonImage } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "./newsService.js";
 import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
@@ -71,6 +71,7 @@ class AutoPipeline {
   private publishingInProgress: boolean;
   private previousAnalysisContext: string;
   private lastAnalyzedChunkIndex: number;
+  private consecutiveFailures: number;
 
   constructor(io: Server) {
     this.io = io;
@@ -105,6 +106,8 @@ class AutoPipeline {
     this.previousAnalysisContext = "";
     // Track which chunk index was last analyzed
     this.lastAnalyzedChunkIndex = 0;
+    // Consecutive capture failures for exponential backoff
+    this.consecutiveFailures = 0;
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
@@ -199,6 +202,8 @@ class AutoPipeline {
           icon: "check",
         });
 
+        this.consecutiveFailures = 0; // Reset on success
+
         // --- RESOLVE PREVIOUS TRANSCRIPTION (if any) ---
         if (pendingTranscription) {
           this.emit("detail", {
@@ -238,13 +243,22 @@ class AutoPipeline {
 
       } catch (error) {
         const err = error as Error;
+        this.consecutiveFailures++;
+        const backoffMs = Math.min(5000 * Math.pow(2, this.consecutiveFailures - 1), 60000);
         this.emit("error", { step: "capturing", message: err.message });
         this.emit("detail", {
           step: "capturing", sub: "retry",
-          message: `Error en captura: ${err.message}. Reintentando en 5s...`,
+          message: `Error en captura (intento #${this.consecutiveFailures}): ${err.message}. Reintentando en ${Math.round(backoffMs/1000)}s...`,
           icon: "warning",
         });
-        if (this.running) await this.sleep(5000);
+        if (this.consecutiveFailures >= 10) {
+          this.emit("detail", {
+            step: "capturing", sub: "persistent_error",
+            message: `${this.consecutiveFailures} errores consecutivos. Verificar URL del stream. Seguimos intentando...`,
+            icon: "warning",
+          });
+        }
+        if (this.running) await this.sleep(backoffMs);
       }
     }
 
@@ -263,6 +277,18 @@ class AutoPipeline {
     // Accumulate full transcription
     this.fullTranscription += (this.fullTranscription ? " " : "") + result.text;
     this.chunks.push(result);
+
+    // Memory management: keep only last 30 minutes of full transcription for analysis
+    // (older text is already persisted in DB and published topics are tracked)
+    const maxCharsForAnalysis = 50000; // ~30 min of transcription
+    if (this.fullTranscription.length > maxCharsForAnalysis * 1.5) {
+      this.fullTranscription = this.fullTranscription.slice(-maxCharsForAnalysis);
+      this.emit("detail", {
+        step: "capturing", sub: "memory_cleanup",
+        message: `Limpieza de memoria: manteniendo últimos ${Math.round(maxCharsForAnalysis/1600)} minutos de transcripción para análisis`,
+        icon: "info",
+      });
+    }
 
     // Persist in DB
     const dbTranscription = createTranscription({
@@ -285,6 +311,21 @@ class AutoPipeline {
       bufferSize: this.chunks.length,
       totalMinutes: Math.round((this.chunks.length * this.config.segmentDuration) / 60),
     });
+
+    // Periodic stats every 10 chunks
+    if (this.chunks.length % 10 === 0) {
+      const hours = Math.round((this.chunks.length * this.config.segmentDuration) / 3600 * 10) / 10;
+      this.emit("detail", {
+        step: "capturing", sub: "stats",
+        message: `Estadísticas: ${hours}h capturadas, ${this.chunks.length} chunks, ${this.publishedNotes.length} notas publicadas, ${this.publishedTopics.length} temas procesados`,
+        icon: "info",
+      });
+    }
+
+    // Cleanup old temp files every 20 chunks
+    if (this.chunks.length % 20 === 0) {
+      this.cleanupOldFiles();
+    }
 
     // Increment counter and check if it's time to analyze topics
     this.chunksSinceLastAnalysis++;
@@ -614,13 +655,41 @@ class AutoPipeline {
    *
    * Estrategia para la imagen de FONDO (en orden de prioridad):
    *   1. Imagen encontrada en artículos web scrapeados
-   *   2. Imagen generada por IA basada en los insights
-   *   3. Placeholder con gradiente de colores de Radio Uno
+   *   2. Imagen generada por IA basada en los insights (con fotos de referencia si hay personas)
+   *   3. Placeholder con gradiente de colores
    *
    * El overlay (sombra + texto + logo) SIEMPRE lo aplica processImage()
    */
   private async generateFlyer(title: string, webResults: SearchResult[], insights: Insights): Promise<string> {
     let imagePath: string | null = null;
+
+    // Search for reference images of notable people mentioned in the news
+    const referenceImages: string[] = [];
+    if (insights?.people?.length > 0) {
+      const peopleToSearch = insights.people.slice(0, 2);
+      this.emit("detail", {
+        step: "creating_flyer", sub: "person_search",
+        message: `Buscando fotos de: ${peopleToSearch.join(", ")}...`,
+        icon: "search",
+      });
+
+      for (const person of peopleToSearch) {
+        try {
+          const imageUrl = await searchPersonImage(person);
+          if (imageUrl) {
+            referenceImages.push(imageUrl);
+            this.emit("detail", {
+              step: "creating_flyer", sub: "person_found",
+              message: `Foto encontrada para "${person}"`,
+              icon: "check",
+            });
+          }
+        } catch (err) {
+          const e = err as Error;
+          console.error(`[Pipeline] Error buscando imagen de "${person}":`, e.message);
+        }
+      }
+    }
 
     // Strategy 1: Find image from scraped web articles
     for (const result of webResults) {
@@ -642,7 +711,7 @@ class AutoPipeline {
 
     // Strategy 2: Generate background with AI (if no web image found)
     if (!imagePath) {
-      imagePath = await this.generateAIBackground(title, insights, webResults);
+      imagePath = await this.generateAIBackground(title, insights, webResults, referenceImages);
     }
 
     // Strategy 3: Placeholder if everything else failed
@@ -655,7 +724,7 @@ class AutoPipeline {
     // - Resize to 1080x1080
     // - Dark gradient from bottom to top
     // - Semi-transparent black box with title (Bebas Kai 70px)
-    // - "Radio Uno Formosa" centered (Bebas Kai 30px)
+    // - Platform name centered (Bebas Kai 30px)
     // - Logo 150px in top-right corner
     const finalPath = await processImage(imagePath, title);
 
@@ -667,79 +736,152 @@ class AutoPipeline {
 
   /**
    * Genera una imagen de fondo usando IA.
-   * Usa el modelo seleccionado por el usuario: "gemini" (Google Imagen) o "grok" (xAI).
+   * Usa el modelo seleccionado por el usuario: "gemini" o "grok" (xAI).
+   * Si hay imágenes de referencia de personas, usa Gemini multimodal (image input+output).
    * Retorna la ruta al archivo generado, o null si no hay API configurada.
    */
-  private async generateAIBackground(title: string, insights: Insights, webResults: SearchResult[]): Promise<string | null> {
-    const prompt = this.buildImagePrompt(title, insights, webResults);
+  private async generateAIBackground(title: string, insights: Insights, webResults: SearchResult[], referenceImages?: string[]): Promise<string | null> {
+    const hasReferenceImages = referenceImages && referenceImages.length > 0;
+    const personNames = hasReferenceImages ? insights.people?.slice(0, 2) : undefined;
+    const prompt = this.buildImagePrompt(title, insights, webResults, personNames);
     const selectedModel = this.config.imageModel || "gemini";
 
     this.emit("flyer_bg", {
       source: "ai_generating",
       model: selectedModel,
       prompt: prompt.slice(0, 150),
+      hasReferenceImages: !!hasReferenceImages,
     });
 
-    // Try selected model first, fallback to the other
-    const strategies: Array<() => Promise<string | null>> = selectedModel === "gemini"
-      ? [() => this.generateWithGemini(prompt), () => this.generateWithGrok(prompt)]
-      : [() => this.generateWithGrok(prompt), () => this.generateWithGemini(prompt)];
-
-    for (const strategy of strategies) {
-      const result = await strategy();
-      if (result) return result;
+    // If we have reference images, download them to temp files for Gemini multimodal
+    const tempRefPaths: string[] = [];
+    if (hasReferenceImages) {
+      for (const imgUrl of referenceImages) {
+        try {
+          const response = await axios.get(imgUrl, {
+            responseType: "arraybuffer",
+            timeout: 10000,
+          });
+          const ext = imgUrl.toLowerCase().includes(".png") ? ".png" : ".jpg";
+          const tempPath = path.join(outputDir, `ref_person_${uuidv4()}${ext}`);
+          fs.writeFileSync(tempPath, Buffer.from(response.data as ArrayBuffer));
+          tempRefPaths.push(tempPath);
+        } catch (err) {
+          const e = err as Error;
+          console.error("[Pipeline] Error descargando imagen de referencia:", e.message);
+        }
+      }
     }
 
-    return null;
+    try {
+      // If we have reference images, always try Gemini multimodal first (supports image input)
+      if (tempRefPaths.length > 0) {
+        const geminiResult = await this.generateWithGemini(prompt, tempRefPaths);
+        if (geminiResult) return geminiResult;
+        // Fallback to Grok (text-only, no image input support)
+        const grokResult = await this.generateWithGrok(prompt);
+        if (grokResult) return grokResult;
+        return null;
+      }
+
+      // No reference images: use selected model with fallback
+      const strategies: Array<() => Promise<string | null>> = selectedModel === "gemini"
+        ? [() => this.generateWithGemini(prompt), () => this.generateWithGrok(prompt)]
+        : [() => this.generateWithGrok(prompt), () => this.generateWithGemini(prompt)];
+
+      for (const strategy of strategies) {
+        const result = await strategy();
+        if (result) return result;
+      }
+
+      return null;
+    } finally {
+      // Clean up temp reference images
+      for (const tempPath of tempRefPaths) {
+        try { fs.unlinkSync(tempPath); } catch (_) { /* ignore */ }
+      }
+    }
   }
 
   /**
-   * Genera imagen de fondo con Google Imagen 4 (Gemini API).
+   * Genera imagen de fondo con Gemini multimodal (gemini-2.0-flash-exp).
+   * Soporta enviar imágenes de referencia (fotos de personas) junto con el prompt
+   * para generar imágenes contextualizadas que incorporen a la persona.
+   * Fallback: si no hay imágenes de referencia, genera solo con texto.
    */
-  private async generateWithGemini(prompt: string): Promise<string | null> {
+  private async generateWithGemini(prompt: string, referenceImagePaths?: string[]): Promise<string | null> {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return null;
 
     try {
       await limiters.imageGen.acquire();
 
-      const response = await axios.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict",
-        {
-          instances: [{ prompt }],
-          parameters: {
-            sampleCount: 1,
-            aspectRatio: "1:1",
-          },
-        },
-        {
-          headers: {
-            "x-goog-api-key": apiKey,
-            "Content-Type": "application/json",
-          },
-          timeout: 60000,
-        },
-      );
+      const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
+      const model = "gemini-2.0-flash-exp";
+      const url = `${GEMINI_API}/${model}:generateContent?key=${apiKey}`;
 
-      const prediction = response.data.predictions?.[0] as { bytesBase64Encoded?: string } | undefined;
-      if (!prediction?.bytesBase64Encoded) {
-        console.error("[Pipeline] Gemini Imagen: respuesta sin imagen");
-        return null;
+      // Build parts array
+      const parts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [];
+
+      // Add reference images if available
+      if (referenceImagePaths && referenceImagePaths.length > 0) {
+        for (const imgPath of referenceImagePaths) {
+          const imageData = fs.readFileSync(imgPath);
+          const base64 = imageData.toString("base64");
+          const mimeType = imgPath.endsWith(".png") ? "image/png" : "image/jpeg";
+          parts.push({
+            inlineData: { mimeType, data: base64 },
+          });
+        }
+        this.emit("detail", {
+          step: "creating_flyer", sub: "gemini_multimodal",
+          message: `Enviando ${referenceImagePaths.length} foto(s) de referencia + prompt a Gemini para generar imagen contextualizada...`,
+          icon: "brain",
+        });
       }
 
-      const imagePath = path.join(outputDir, `ai_bg_gemini_${uuidv4()}.png`);
-      fs.writeFileSync(imagePath, Buffer.from(prediction.bytesBase64Encoded, "base64"));
-      this.emit("flyer_bg", { source: "gemini_imagen" });
-      return imagePath;
+      // Add the text prompt
+      parts.push({ text: prompt });
+
+      const body = {
+        contents: [{ role: "user", parts }],
+        generationConfig: {
+          responseModalities: ["IMAGE", "TEXT"],
+          imageMimeType: "image/jpeg",
+        },
+      };
+
+      const response = await axios.post(url, body, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 90000,
+      });
+
+      // Extract image from response
+      const candidate = response.data.candidates?.[0];
+      const candidateParts = candidate?.content?.parts || [];
+      const imagePart = candidateParts.find((p: { inlineData?: { data?: string } }) => p.inlineData?.data);
+
+      if (imagePart?.inlineData?.data) {
+        const imagePath = path.join(outputDir, `ai_bg_gemini_${uuidv4()}.jpg`);
+        fs.writeFileSync(imagePath, Buffer.from(imagePart.inlineData.data as string, "base64"));
+        this.emit("flyer_bg", {
+          source: referenceImagePaths?.length ? "gemini_multimodal" : "gemini_imagen",
+        });
+        return imagePath;
+      }
+
+      console.error("[Pipeline] Gemini image generation: respuesta sin imagen");
+      return null;
     } catch (error) {
       const err = error as Error;
-      console.error("[Pipeline] Error generando fondo con Gemini Imagen:", err.message);
+      console.error("[Pipeline] Error generando fondo con Gemini:", err.message);
       return null;
     }
   }
 
   /**
    * Genera imagen de fondo con xAI Grok Image.
+   * Nota: Grok no soporta image input, solo genera desde texto.
    */
   private async generateWithGrok(prompt: string): Promise<string | null> {
     const apiKey = process.env.XAI_API_KEY;
@@ -790,15 +932,24 @@ class AutoPipeline {
    * - Título de la nota
    * - Insights extraídos (personas, temas, datos clave)
    * - Información del research web
+   * - Nombres de personas cuyas fotos de referencia se adjuntan (opcional)
    */
-  private buildImagePrompt(title: string, insights: Insights, webResults: SearchResult[]): string {
+  private buildImagePrompt(title: string, insights: Insights, webResults: SearchResult[], referencePersonNames?: string[]): string {
     const parts: string[] = [];
 
     // Base: journalistic photography
     parts.push("Fotografía periodística profesional de alta calidad, estilo editorial de agencia de noticias.");
 
-    // People mentioned: if there are politicians, public figures, they should appear
-    if (insights?.people?.length > 0) {
+    // If reference images of people are being sent, adjust the prompt
+    if (referencePersonNames && referencePersonNames.length > 0) {
+      const names = referencePersonNames.join(" y ");
+      parts.push(
+        `La imagen debe mostrar a ${names} en el contexto de la noticia. ` +
+        `Usá la(s) foto(s) de referencia adjunta(s) para capturar el rostro de la(s) persona(s). ` +
+        `Generá una escena periodística realista donde aparezca(n) ${names} en una situación coherente con el tema noticioso.`
+      );
+    } else if (insights?.people?.length > 0) {
+      // People mentioned but no reference images: generic description
       const people = insights.people.slice(0, 3).join(", ");
       parts.push(`La imagen debe mostrar o representar a: ${people}.`);
     }
@@ -1129,6 +1280,22 @@ class AutoPipeline {
       totalPublished: this.publishedNotes.length,
       publishedNotes: this.publishedNotes.slice(-10),
     };
+  }
+
+  private cleanupOldFiles(): void {
+    try {
+      const files = fs.readdirSync(outputDir);
+      const oneHourAgo = Date.now() - 3600000;
+      for (const file of files) {
+        if (file.startsWith("temp_") || file.startsWith("ai_bg_") || file.startsWith("resized_") || file.startsWith("ref_person_")) {
+          const filePath = path.join(outputDir, file);
+          const stat = fs.statSync(filePath);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(filePath);
+          }
+        }
+      }
+    } catch (_) { /* ignore cleanup errors */ }
   }
 
   private sleep(ms: number): Promise<void> {

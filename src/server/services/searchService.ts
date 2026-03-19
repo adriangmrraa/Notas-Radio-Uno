@@ -67,7 +67,7 @@ async function geminiGroundedSearch(queries: string[]): Promise<SearchResult[] |
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const searchPrompt = `Sos un investigador periodistico de Radio Uno Formosa. Necesitas buscar informacion actualizada sobre los siguientes temas para enriquecer notas periodisticas.
+  const searchPrompt = `Sos un investigador periodistico. Necesitas buscar informacion actualizada sobre los siguientes temas para enriquecer notas periodisticas.
 
 BUSQUEDAS A REALIZAR:
 ${queries.map((q, i) => `${i + 1}. ${q}`).join("\n")}
@@ -76,7 +76,6 @@ INSTRUCCIONES:
 - Busca informacion verificable y actual sobre cada tema
 - Prioriza fuentes periodisticas serias (agencias de noticias, diarios nacionales, medios oficiales)
 - Extrae datos concretos: cifras, declaraciones textuales, fechas, decisiones oficiales
-- Si hay informacion relevante para Formosa o el NEA argentino, priorizala
 - Inclui las URLs de las fuentes
 
 Responde en JSON con esta estructura:
@@ -359,6 +358,81 @@ async function searchAndEnrich(searchQueries: string[]): Promise<SearchResult[]>
   return allResults;
 }
 
+// ─── Busqueda de imagen de persona ───
+
+/**
+ * Busca una foto de una persona pública (político, celebridad, etc.)
+ * usando Google Custom Search con tipo imagen, o como fallback
+ * extrayendo og:image de resultados web.
+ * Retorna la URL de la mejor imagen encontrada, o null.
+ */
+async function searchPersonImage(personName: string): Promise<string | null> {
+  const query = `${personName} rostro foto oficial`;
+
+  // Strategy 1: Google Custom Search Images API
+  if (process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_CX) {
+    try {
+      await limiters.webSearch.acquire();
+      const response = await axios.get("https://www.googleapis.com/customsearch/v1", {
+        params: {
+          key: process.env.GOOGLE_SEARCH_API_KEY,
+          cx: process.env.GOOGLE_SEARCH_CX,
+          q: query,
+          searchType: "image",
+          num: 3,
+          imgSize: "large",
+          safe: "active",
+        },
+        timeout: 10000,
+      });
+
+      const items = response.data.items || [];
+      for (const item of items) {
+        const imageUrl = item.link as string | undefined;
+        if (imageUrl && imageUrl.startsWith("http")) {
+          console.log(`[Search] Imagen encontrada para "${personName}": ${imageUrl}`);
+          return imageUrl;
+        }
+      }
+    } catch (error: unknown) {
+      const err = error as Error;
+      console.error(`[Search] Error buscando imagen de "${personName}" (Google):`, err.message);
+    }
+  }
+
+  // Strategy 2: Fallback - search web and extract og:image
+  try {
+    await limiters.webSearch.acquire();
+    const webResults = await duckDuckGoSearch(query, 3);
+    for (const result of webResults) {
+      if (result.url && result.url.startsWith("http")) {
+        try {
+          const pageResponse = await axios.get(result.url, {
+            timeout: 8000,
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+          });
+          const $ = cheerio.load(pageResponse.data as string);
+          const ogImage = $('meta[property="og:image"]').attr("content");
+          if (ogImage && ogImage.startsWith("http")) {
+            console.log(`[Search] og:image encontrada para "${personName}": ${ogImage}`);
+            return ogImage;
+          }
+        } catch (_) {
+          // Continue with next result
+        }
+      }
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(`[Search] Error en fallback de imagen para "${personName}":`, err.message);
+  }
+
+  console.log(`[Search] No se encontró imagen para "${personName}"`);
+  return null;
+}
+
 export {
   geminiGroundedSearch,
   googleCustomSearch,
@@ -366,4 +440,5 @@ export {
   searchWeb,
   scrapeArticleContent,
   searchAndEnrich,
+  searchPersonImage,
 };
