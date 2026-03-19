@@ -838,11 +838,26 @@ class AutoPipeline {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return null;
 
+    // Try models in order: newest first, fallback to older
+    const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
+    const modelsToTry = [
+      "gemini-2.0-flash-preview-image-generation",
+      "gemini-2.0-flash-exp",
+    ];
+
+    for (const model of modelsToTry) {
+      const result = await this.tryGeminiImageModel(model, apiKey, prompt, referenceImagePaths);
+      if (result) return result;
+    }
+
+    return null;
+  }
+
+  private async tryGeminiImageModel(model: string, apiKey: string, prompt: string, referenceImagePaths?: string[]): Promise<string | null> {
     try {
       await limiters.imageGen.acquire();
 
       const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
-      const model = "gemini-3.1-flash-image-preview";
       const url = `${GEMINI_API}/${model}:generateContent?key=${apiKey}`;
 
       // Build parts array
@@ -897,9 +912,10 @@ class AutoPipeline {
 
       console.error("[Pipeline] Gemini image generation: respuesta sin imagen");
       return null;
-    } catch (error) {
-      const err = error as Error;
-      console.error("[Pipeline] Error generando fondo con Gemini:", err.message);
+    } catch (error: unknown) {
+      const axiosErr = error as { response?: { data?: unknown }; message?: string };
+      const detail = axiosErr.response?.data ? JSON.stringify(axiosErr.response.data).slice(0, 300) : axiosErr.message;
+      console.error(`[Pipeline] Error con modelo ${model}:`, detail);
       return null;
     }
   }
