@@ -840,9 +840,9 @@ class AutoPipeline {
 
     // Try models in order: newest first, fallback to older
     const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
+    // Nano Banana models: newest first, stable as fallback
     const modelsToTry = [
-      "gemini-2.0-flash-preview-image-generation",
-      "gemini-2.0-flash-exp",
+      "gemini-2.5-flash-preview-image-generation",  // Nano Banana (GA, stable)
     ];
 
     for (const model of modelsToTry) {
