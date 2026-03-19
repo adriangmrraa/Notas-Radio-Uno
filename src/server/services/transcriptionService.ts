@@ -7,7 +7,39 @@ import { v4 as uuidv4 } from "uuid";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const outputDir = path.join(__dirname, "..", "output");
+// Resolve output dir relative to project root (works with both tsx and compiled)
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+const outputDir = path.join(PROJECT_ROOT, "output");
+
+// Ensure output dir exists
+if (!fs.existsSync(outputDir)) {
+  fs.mkdirSync(outputDir, { recursive: true });
+}
+
+// Resolve binary paths: check tools dir, then PATH
+const TOOLS_DIR = process.env.TOOLS_DIR || path.join(process.env.HOME || process.env.USERPROFILE || "", "tools");
+
+function findBinary(name: string): string {
+  const toolsPath = path.join(TOOLS_DIR, process.platform === "win32" ? `${name}.exe` : name);
+  if (fs.existsSync(toolsPath)) return toolsPath;
+  return name; // fallback to PATH
+}
+
+function findPython(): string {
+  // Windows: try 'py' launcher first, then 'python'
+  if (process.platform === "win32") {
+    try {
+      const { execSync } = require("child_process");
+      execSync("py --version", { stdio: "ignore" });
+      return "py";
+    } catch (_) { /* py not found */ }
+  }
+  return "python";
+}
+
+const FFMPEG = findBinary("ffmpeg");
+const YTDLP = findBinary("yt-dlp");
+const PYTHON = findPython();
 
 type SourceType = "youtube" | "radio" | "generic";
 
@@ -61,7 +93,7 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
     if (sourceType === "youtube") {
       // yt-dlp extracts audio from live stream with limited duration
       // Pipe: yt-dlp -> ffmpeg to limit duration
-      const ytdlpCommand = `yt-dlp -f "bestaudio" --no-part -o - "${url}" | ffmpeg -i pipe:0 -t ${durationSeconds} -c:a libmp3lame -q:a 4 "${outputFile}"`;
+      const ytdlpCommand = `"${YTDLP}" -f "bestaudio" --no-part -o - "${url}" | "${FFMPEG}" -i pipe:0 -t ${durationSeconds} -c:a libmp3lame -q:a 4 "${outputFile}"`;
 
       exec(ytdlpCommand, { timeout: (durationSeconds + 30) * 1000 }, (error) => {
         if (error && !fs.existsSync(outputFile)) {
@@ -84,7 +116,7 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
       outputFile,
     ];
 
-    const ffmpegProcess = spawn("ffmpeg", args);
+    const ffmpegProcess = spawn(FFMPEG, args);
 
     let stderr = "";
     ffmpegProcess.stderr.on("data", (data: Buffer) => {
@@ -123,7 +155,7 @@ print(json.dumps({"text": result["text"]}))
     const tempScript = path.join(outputDir, `transcribe_${Date.now()}.py`);
     fs.writeFileSync(tempScript, pythonScript);
 
-    exec(`python "${tempScript}"`, { timeout: 120000 }, (error, stdout, _stderr) => {
+    exec(`${PYTHON} "${tempScript}"`, { timeout: 120000 }, (error, stdout, _stderr) => {
       // Clean up temp script
       try { fs.unlinkSync(tempScript); } catch (_) { /* ignore */ }
 
