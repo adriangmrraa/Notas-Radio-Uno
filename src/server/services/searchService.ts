@@ -361,13 +361,16 @@ async function searchAndEnrich(searchQueries: string[]): Promise<SearchResult[]>
 // ─── Busqueda de imagen de persona ───
 
 /**
- * Busca una foto de una persona pública (político, celebridad, etc.)
- * usando Google Custom Search con tipo imagen, o como fallback
- * extrayendo og:image de resultados web.
- * Retorna la URL de la mejor imagen encontrada, o null.
+ * Busca una imagen de referencia relevante para un tema noticioso.
+ * Puede ser: foto de una persona, logo de empresa, imagen de un evento,
+ * lugar, momento especial, o cualquier visual relevante al contexto.
+ *
+ * @param subject - Lo que se busca (persona, empresa, evento, lugar, etc.)
+ * @param context - Contexto opcional para refinar la búsqueda (ej: "presidente en conferencia")
+ * @returns URL de la mejor imagen encontrada, o null
  */
-async function searchPersonImage(personName: string): Promise<string | null> {
-  const query = `${personName} rostro foto oficial`;
+async function searchReferenceImage(subject: string, context?: string): Promise<string | null> {
+  const query = context ? `${subject} ${context} foto imagen` : `${subject} foto imagen`;
 
   // Strategy 1: Google Custom Search Images API
   if (process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_CX) {
@@ -390,13 +393,13 @@ async function searchPersonImage(personName: string): Promise<string | null> {
       for (const item of items) {
         const imageUrl = item.link as string | undefined;
         if (imageUrl && imageUrl.startsWith("http")) {
-          console.log(`[Search] Imagen encontrada para "${personName}": ${imageUrl}`);
+          console.log(`[Search] Imagen encontrada para "${subject}": ${imageUrl}`);
           return imageUrl;
         }
       }
     } catch (error: unknown) {
       const err = error as Error;
-      console.error(`[Search] Error buscando imagen de "${personName}" (Google):`, err.message);
+      console.error(`[Search] Error buscando imagen de "${subject}" (Google):`, err.message);
     }
   }
 
@@ -416,7 +419,7 @@ async function searchPersonImage(personName: string): Promise<string | null> {
           const $ = cheerio.load(pageResponse.data as string);
           const ogImage = $('meta[property="og:image"]').attr("content");
           if (ogImage && ogImage.startsWith("http")) {
-            console.log(`[Search] og:image encontrada para "${personName}": ${ogImage}`);
+            console.log(`[Search] og:image encontrada para "${subject}": ${ogImage}`);
             return ogImage;
           }
         } catch (_) {
@@ -426,10 +429,10 @@ async function searchPersonImage(personName: string): Promise<string | null> {
     }
   } catch (error: unknown) {
     const err = error as Error;
-    console.error(`[Search] Error en fallback de imagen para "${personName}":`, err.message);
+    console.error(`[Search] Error en fallback de imagen para "${subject}":`, err.message);
   }
 
-  console.log(`[Search] No se encontró imagen para "${personName}"`);
+  console.log(`[Search] No se encontró imagen para "${subject}"`);
   return null;
 }
 
@@ -440,5 +443,5 @@ export {
   searchWeb,
   scrapeArticleContent,
   searchAndEnrich,
-  searchPersonImage,
+  searchReferenceImage,
 };

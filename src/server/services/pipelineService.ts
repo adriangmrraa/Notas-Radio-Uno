@@ -1,6 +1,6 @@
 import { captureAudioSegment, transcribeAudio, detectSourceType } from "./transcriptionService.js";
 import { extractInsights } from "./insightService.js";
-import { searchAndEnrich, searchPersonImage } from "./searchService.js";
+import { searchAndEnrich, searchReferenceImage } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "./newsService.js";
 import { processImage } from "./imageService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
@@ -663,30 +663,54 @@ class AutoPipeline {
   private async generateFlyer(title: string, webResults: SearchResult[], insights: Insights): Promise<string> {
     let imagePath: string | null = null;
 
-    // Search for reference images of notable people mentioned in the news
+    // Search for visual references: people, companies, events, locations, etc.
     const referenceImages: string[] = [];
+    const referenceLabels: string[] = [];
+
+    // Build a list of visual subjects to search (max 3 total)
+    const visualSubjects: Array<{ subject: string; context?: string }> = [];
+
+    // Priority 1: People mentioned (politicians, celebrities, public figures)
     if (insights?.people?.length > 0) {
-      const peopleToSearch = insights.people.slice(0, 2);
+      for (const person of insights.people.slice(0, 2)) {
+        visualSubjects.push({ subject: person, context: "rostro foto oficial" });
+      }
+    }
+
+    // Priority 2: Key topics that may have iconic visuals (companies, events, places)
+    if (insights?.topics?.length > 0 && visualSubjects.length < 3) {
+      for (const topic of insights.topics.slice(0, 2)) {
+        if (visualSubjects.length >= 3) break;
+        // Avoid duplicating people already added
+        const isDuplicate = visualSubjects.some(v => topic.toLowerCase().includes(v.subject.toLowerCase()));
+        if (!isDuplicate) {
+          visualSubjects.push({ subject: topic, context: title });
+        }
+      }
+    }
+
+    if (visualSubjects.length > 0) {
       this.emit("detail", {
-        step: "creating_flyer", sub: "person_search",
-        message: `Buscando fotos de: ${peopleToSearch.join(", ")}...`,
+        step: "creating_flyer", sub: "reference_search",
+        message: `Buscando imágenes de referencia: ${visualSubjects.map(v => v.subject).join(", ")}...`,
         icon: "search",
       });
 
-      for (const person of peopleToSearch) {
+      for (const { subject, context } of visualSubjects.slice(0, 3)) {
         try {
-          const imageUrl = await searchPersonImage(person);
+          const imageUrl = await searchReferenceImage(subject, context);
           if (imageUrl) {
             referenceImages.push(imageUrl);
+            referenceLabels.push(subject);
             this.emit("detail", {
-              step: "creating_flyer", sub: "person_found",
-              message: `Foto encontrada para "${person}"`,
+              step: "creating_flyer", sub: "reference_found",
+              message: `Imagen de referencia encontrada: "${subject}"`,
               icon: "check",
             });
           }
         } catch (err) {
           const e = err as Error;
-          console.error(`[Pipeline] Error buscando imagen de "${person}":`, e.message);
+          console.error(`[Pipeline] Error buscando imagen de "${subject}":`, e.message);
         }
       }
     }
@@ -711,7 +735,7 @@ class AutoPipeline {
 
     // Strategy 2: Generate background with AI (if no web image found)
     if (!imagePath) {
-      imagePath = await this.generateAIBackground(title, insights, webResults, referenceImages);
+      imagePath = await this.generateAIBackground(title, insights, webResults, referenceImages, referenceLabels);
     }
 
     // Strategy 3: Placeholder if everything else failed
@@ -740,10 +764,9 @@ class AutoPipeline {
    * Si hay imágenes de referencia de personas, usa Gemini multimodal (image input+output).
    * Retorna la ruta al archivo generado, o null si no hay API configurada.
    */
-  private async generateAIBackground(title: string, insights: Insights, webResults: SearchResult[], referenceImages?: string[]): Promise<string | null> {
+  private async generateAIBackground(title: string, insights: Insights, webResults: SearchResult[], referenceImages?: string[], referenceLabels?: string[]): Promise<string | null> {
     const hasReferenceImages = referenceImages && referenceImages.length > 0;
-    const personNames = hasReferenceImages ? insights.people?.slice(0, 2) : undefined;
-    const prompt = this.buildImagePrompt(title, insights, webResults, personNames);
+    const prompt = this.buildImagePrompt(title, insights, webResults, hasReferenceImages ? referenceLabels : undefined);
     const selectedModel = this.config.imageModel || "gemini";
 
     this.emit("flyer_bg", {
@@ -934,22 +957,23 @@ class AutoPipeline {
    * - Información del research web
    * - Nombres de personas cuyas fotos de referencia se adjuntan (opcional)
    */
-  private buildImagePrompt(title: string, insights: Insights, webResults: SearchResult[], referencePersonNames?: string[]): string {
+  private buildImagePrompt(title: string, insights: Insights, webResults: SearchResult[], referenceLabels?: string[]): string {
     const parts: string[] = [];
 
     // Base: journalistic photography
     parts.push("Fotografía periodística profesional de alta calidad, estilo editorial de agencia de noticias.");
 
-    // If reference images of people are being sent, adjust the prompt
-    if (referencePersonNames && referencePersonNames.length > 0) {
-      const names = referencePersonNames.join(" y ");
+    // If reference images are being sent (people, companies, events, places)
+    if (referenceLabels && referenceLabels.length > 0) {
+      const labels = referenceLabels.join(", ");
       parts.push(
-        `La imagen debe mostrar a ${names} en el contexto de la noticia. ` +
-        `Usá la(s) foto(s) de referencia adjunta(s) para capturar el rostro de la(s) persona(s). ` +
-        `Generá una escena periodística realista donde aparezca(n) ${names} en una situación coherente con el tema noticioso.`
+        `Se adjuntan imágenes de referencia de: ${labels}. ` +
+        `Usá las imágenes adjuntas como referencia visual para generar una escena periodística ` +
+        `realista y coherente con el tema noticioso. Si la referencia es una persona, ` +
+        `capturá su rostro y ubicala en el contexto de la noticia. Si es un logo, lugar o evento, ` +
+        `incorporalo visualmente en la composición.`
       );
     } else if (insights?.people?.length > 0) {
-      // People mentioned but no reference images: generic description
       const people = insights.people.slice(0, 3).join(", ");
       parts.push(`La imagen debe mostrar o representar a: ${people}.`);
     }
