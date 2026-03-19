@@ -134,7 +134,10 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
   const activityFeedRef = useRef<HTMLDivElement>(null);
 
   // Published notes
-  const [publishedNotes, setPublishedNotes] = useState<Array<{ title: string; timestamp: string }>>([]);
+  const [publishedNotes, setPublishedNotes] = useState<Array<{ title: string; content?: string; previewUrl?: string; timestamp: string }>>([]);
+  const [pendingNote, setPendingNote] = useState<{ title?: string; content?: string; previewUrl?: string }>({});
+  const pendingNoteRef = useRef<{ title?: string; content?: string; previewUrl?: string }>({});
+  const [selectedNote, setSelectedNote] = useState<{ title: string; content?: string; previewUrl?: string; timestamp: string } | null>(null);
 
   // Transcription
   const [transcription, setTranscription] = useState('');
@@ -259,6 +262,11 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           if (processingCardIdRef.current && data.content) {
             addSubStepToCard(processingCardIdRef.current, `"${data.content.slice(0, 100)}..."`, 'document', '');
           }
+          setPendingNote(prev => {
+            const next = { ...prev, title: data.title as string, content: data.content as string };
+            pendingNoteRef.current = next;
+            return next;
+          });
           break;
 
         case 'flyer_bg': {
@@ -281,10 +289,22 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           if (data.previewUrl && processingCardIdRef.current) {
             addPreviewToCard(processingCardIdRef.current, data.previewUrl);
           }
+          setPendingNote(prev => {
+            const next = { ...prev, previewUrl: data.previewUrl as string };
+            pendingNoteRef.current = next;
+            return next;
+          });
           break;
 
         case 'published':
-          setPublishedNotes(prev => [{ title: data.title || '', timestamp: data.timestamp || new Date().toISOString() }, ...prev]);
+          setPublishedNotes(prev => [...prev, {
+            title: data.title as string || '',
+            content: pendingNoteRef.current.content || '',
+            previewUrl: pendingNoteRef.current.previewUrl || '',
+            timestamp: new Date().toISOString(),
+          }]);
+          setPendingNote({});
+          pendingNoteRef.current = {};
           if (processingCardIdRef.current) {
             addSubStepToCard(processingCardIdRef.current, `Publicado: "${data.title}"`, 'rocket', 'sub-done');
             markCardStatus(processingCardIdRef.current, 'done');
@@ -492,11 +512,14 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           {/* Published Notes */}
           {publishedNotes.length > 0 && (
             <div>
-              <h4 className="section-label">Notas publicadas</h4>
+              <h4 className="section-label">Notas publicadas ({publishedNotes.length})</h4>
               {publishedNotes.map((note, i) => (
-                <div key={i} className="published-note">
-                  <strong>{note.title}</strong><br />
-                  <small>{new Date(note.timestamp).toLocaleString()}</small>
+                <div key={i} className="published-note clickable" onClick={() => setSelectedNote(note)}>
+                  {note.previewUrl && <img src={note.previewUrl} className="published-note-thumb" alt="" />}
+                  <div className="published-note-info">
+                    <strong>{note.title}</strong>
+                    <small>{new Date(note.timestamp).toLocaleString()}</small>
+                  </div>
                 </div>
               ))}
             </div>
@@ -506,7 +529,32 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           <TranscriptionViewer transcription={transcription} />
         </div>
       )}
+
+      <NoteModal note={selectedNote} onClose={() => setSelectedNote(null)} />
     </section>
+  );
+}
+
+// ─── NoteModal ──────────────────────────────────────────────
+
+function NoteModal({ note, onClose }: {
+  note: { title: string; content?: string | null; previewUrl?: string | null; image_url?: string | null; image_path?: string | null; timestamp?: string; created_at?: string } | null;
+  onClose: () => void;
+}) {
+  if (!note) return null;
+  const imageSrc = note.previewUrl || note.image_url || (note.image_path ? `/output/${note.image_path.split(/[/\\]/).pop()}` : null);
+  const date = note.timestamp ? new Date(note.timestamp).toLocaleString() : note.created_at ? new Date(note.created_at + 'Z').toLocaleString() : '';
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>&times;</button>
+        <h3 className="modal-title">{note.title}</h3>
+        {date && <p className="modal-date">{date}</p>}
+        {imageSrc && <img src={imageSrc} className="modal-image" alt="Placa" />}
+        {note.content && <div className="modal-text">{note.content}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -557,9 +605,15 @@ function StepProgress({ activeStep }: { activeStep: string }) {
 // ─── ActivityCard ───────────────────────────────────────────
 
 function ActivityCard({ card }: { card: ActivityCardData }) {
+  const [expanded, setExpanded] = useState(false);
+  const MAX_VISIBLE = 3;
+  const totalSteps = card.subSteps.length;
+  const hasMore = totalSteps > MAX_VISIBLE;
+  const visibleSteps = expanded ? card.subSteps : card.subSteps.slice(-MAX_VISIBLE);
+
   return (
     <div className={`activity-card ${card.status}`}>
-      <div className="activity-card-header">
+      <div className="activity-card-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
         <span className="activity-card-icon">{card.icon}</span>
         <span className="activity-card-title">{card.title}</span>
         <span className="activity-card-status">
@@ -568,9 +622,19 @@ function ActivityCard({ card }: { card: ActivityCardData }) {
           {card.status === 'error' && '⚠️'}
         </span>
       </div>
-      {card.subSteps.length > 0 && (
+      {visibleSteps.length > 0 && (
         <div className="activity-card-steps">
-          {card.subSteps.map((sub, i) => (
+          {hasMore && !expanded && (
+            <div className="activity-show-more" onClick={() => setExpanded(true)}>
+              ▸ Ver {totalSteps - MAX_VISIBLE} pasos anteriores
+            </div>
+          )}
+          {hasMore && expanded && (
+            <div className="activity-show-more" onClick={() => setExpanded(false)}>
+              ▾ Colapsar
+            </div>
+          )}
+          {visibleSteps.map((sub, i) => (
             <div key={i} className={`activity-sub-step ${sub.className || ''}`}>
               <span className="sub-icon">{sub.icon}</span>
               <span className="sub-text">{sub.text}</span>
@@ -1059,6 +1123,8 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
   const [pubTotal, setPubTotal] = useState(0);
   const [pubOffset, setPubOffset] = useState(0);
 
+  const [selectedPub, setSelectedPub] = useState<Publication | null>(null);
+
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const [transTotal, setTransTotal] = useState(0);
   const [transOffset, setTransOffset] = useState(0);
@@ -1191,7 +1257,7 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
           ) : (
             <div className="history-list">
               {publications.map(pub => (
-                <PublicationCard key={pub.id} pub={pub} onDelete={() => deleteItem('publication', pub.id!)} />
+                <PublicationCard key={pub.id} pub={pub} onDelete={() => deleteItem('publication', pub.id!)} onClick={() => setSelectedPub(pub)} />
               ))}
             </div>
           )}
@@ -1218,13 +1284,15 @@ function History({ socket }: { socket: ReturnType<typeof useSocket>['socket'] })
           )}
         </div>
       )}
+
+      <NoteModal note={selectedPub ? { title: selectedPub.title, content: selectedPub.content, image_url: selectedPub.image_url, image_path: selectedPub.image_path, created_at: selectedPub.created_at } : null} onClose={() => setSelectedPub(null)} />
     </section>
   );
 }
 
 // ─── History Cards ──────────────────────────────────────────
 
-function PublicationCard({ pub, onDelete }: { pub: Publication; onDelete: () => void }) {
+function PublicationCard({ pub, onDelete, onClick }: { pub: Publication; onDelete: () => void; onClick: () => void }) {
   const badgeClass = pub.source === 'pipeline' ? 'badge-pipeline' : pub.source === 'url' ? 'badge-url' : 'badge-manual';
   const badgeLabel = pub.source === 'pipeline' ? 'Pipeline' : pub.source === 'url' ? 'URL' : 'Manual';
   const date = new Date(pub.created_at + 'Z').toLocaleString();
@@ -1232,10 +1300,10 @@ function PublicationCard({ pub, onDelete }: { pub: Publication; onDelete: () => 
   const imageSrc = pub.image_url || (pub.image_path ? `/output/${pub.image_path.split('/').pop()}` : null);
 
   return (
-    <div className="history-card">
+    <div className="history-card clickable" onClick={onClick}>
       <div className="history-card-header">
         <span className="history-card-title">{pub.title}</span>
-        <button className="history-card-delete" title="Eliminar" onClick={onDelete}>&times;</button>
+        <button className="history-card-delete" title="Eliminar" onClick={e => { e.stopPropagation(); onDelete(); }}>&times;</button>
       </div>
       {imageSrc && <img src={imageSrc} className="history-card-image" alt="Placa" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
       {contentPreview && <div className="history-card-content">{contentPreview}</div>}
