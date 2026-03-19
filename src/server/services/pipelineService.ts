@@ -840,9 +840,9 @@ class AutoPipeline {
 
     // Try models in order: newest first, fallback to older
     const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models";
-    // Nano Banana models: newest first, stable as fallback
+    // Nano Banana 2 (gemini-3.1-flash-image-preview) - último modelo de Google
     const modelsToTry = [
-      "gemini-2.5-flash-preview-image-generation",  // Nano Banana (GA, stable)
+      "gemini-3.1-flash-image-preview",
     ];
 
     for (const model of modelsToTry) {
@@ -886,8 +886,11 @@ class AutoPipeline {
       const body = {
         contents: [{ role: "user", parts }],
         generationConfig: {
-          responseModalities: ["IMAGE", "TEXT"],
-          imageMimeType: "image/jpeg",
+          responseModalities: ["TEXT", "IMAGE"],
+          imageConfig: {
+            aspectRatio: "1:1",
+            imageSize: "1K",
+          },
         },
       };
 
