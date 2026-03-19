@@ -9,22 +9,13 @@ import { dirname } from "path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 async function processImage(imagePath: string, title: string): Promise<string> {
   const uniqueId = uuidv4();
-  const resizedImagePath = path.join(
-    __dirname,
-    "..",
-    "output",
-    `resized_${uniqueId}.jpg`,
-  );
-  const finalImagePath = path.join(
-    __dirname,
-    "..",
-    "output",
-    `final_${uniqueId}.jpg`,
-  );
-  const logoPath = path.join(__dirname, "..", "public", "logo.png");
+  const resizedImagePath = path.join(PROJECT_ROOT, "output", `resized_${uniqueId}.jpg`);
+  const finalImagePath = path.join(PROJECT_ROOT, "output", `final_${uniqueId}.jpg`);
+  const logoPath = path.join(PROJECT_ROOT, "public", "logo.png");
 
   try {
     await sharp(imagePath).resize(1080, 1080).toFile(resizedImagePath);
@@ -40,8 +31,8 @@ async function processImage(imagePath: string, title: string): Promise<string> {
 
     // Register font: search in project first, then OS-specific system paths
     const fontPaths: string[] = [
-      path.join(__dirname, "..", "fonts", "BebasKai.ttf"),
-      path.join(__dirname, "..", "public", "BebasKai.ttf"),
+      path.join(PROJECT_ROOT, "fonts", "BebasKai.ttf"),
+      path.join(PROJECT_ROOT, "public", "BebasKai.ttf"),
     ];
 
     // Add system paths based on OS

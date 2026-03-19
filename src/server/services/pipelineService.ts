@@ -32,7 +32,8 @@ import type {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const outputDir = path.join(__dirname, "..", "output");
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+const outputDir = path.join(PROJECT_ROOT, "output");
 
 // Webhooks: configurable via DB settings, then .env, then empty
 function getWebhookPipelineUrl(): string {
@@ -68,6 +69,8 @@ class AutoPipeline {
   private currentStep: string;
   private captureTimeout: ReturnType<typeof setTimeout> | null;
   private publishingInProgress: boolean;
+  private previousAnalysisContext: string;
+  private lastAnalyzedChunkIndex: number;
 
   constructor(io: Server) {
     this.io = io;
@@ -98,6 +101,10 @@ class AutoPipeline {
     this.captureTimeout = null;
     // Publishing in progress flag (to not block capture)
     this.publishingInProgress = false;
+    // Context from previous analyses for smarter decisions
+    this.previousAnalysisContext = "";
+    // Track which chunk index was last analyzed
+    this.lastAnalyzedChunkIndex = 0;
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
@@ -284,27 +291,35 @@ class AutoPipeline {
 
     if (this.chunksSinceLastAnalysis >= this.chunksPerAnalysis && !this.publishingInProgress) {
       this.chunksSinceLastAnalysis = 0;
-      // Launch analysis in background (doesn't block capture)
-      this.analyzeAndPublish(result.text);
+      // Launch analysis in background (fire-and-forget, NEVER blocks capture)
+      this.analyzeAndPublish().catch((err: Error) => {
+        console.error("[Pipeline] Error no capturado en analyzeAndPublish:", err.message);
+        this.publishingInProgress = false;
+      });
     }
   }
 
   /**
    * Analiza temas con IA y publica si hay temas completados.
-   * Se ejecuta en background, no bloquea la captura.
+   * Se ejecuta en background, NUNCA bloquea la captura.
+   * Cuando termina, verifica si llegaron chunks nuevos y re-analiza.
    */
-  private async analyzeAndPublish(latestChunk: string): Promise<void> {
+  private async analyzeAndPublish(): Promise<void> {
     if (this.publishingInProgress) return;
 
     try {
       // --- TOPIC ANALYSIS ---
       this.currentStep = "analyzing";
+      const analysisStartChunkIndex = this.chunks.length;
+      const latestChunk = this.chunks[this.chunks.length - 1]?.text || "";
+
       this.emit("step", { step: "analyzing", message: "Analizando estructura temática..." });
 
       const totalMinutes = Math.round((this.chunks.length * this.config.segmentDuration) / 60);
+      const newChunksSince = analysisStartChunkIndex - this.lastAnalyzedChunkIndex;
       this.emit("detail", {
         step: "analyzing", sub: "topic_analysis",
-        message: `Analizando ${totalMinutes} minutos de transcripción (${this.fullTranscription.length} caracteres)...`,
+        message: `Analizando ${totalMinutes} min de transcripción (${newChunksSince} chunks nuevos, ${this.fullTranscription.length} caracteres)...`,
         icon: "brain",
       });
 
@@ -314,6 +329,8 @@ class AutoPipeline {
         this.publishedTopics,
         this.pendingConfirmation,
       );
+
+      this.lastAnalyzedChunkIndex = analysisStartChunkIndex;
 
       // Report detected segments
       for (const seg of analysis.segments) {
@@ -393,12 +410,32 @@ class AutoPipeline {
         this.publishingInProgress = false;
       }
 
+      // Save analysis context for next round
+      const publishedSummary = analysis.completedSegments.map((s: TopicSegment) => s.topic).join(", ");
+      if (publishedSummary) {
+        this.previousAnalysisContext += `\nTemas publicados: ${publishedSummary}.`;
+      }
+
       // Return to capture state
       this.currentStep = "capturing";
+      const updatedMinutes = Math.round((this.chunks.length * this.config.segmentDuration) / 60);
       this.emit("step", {
         step: "capturing",
-        message: `Escuchando... (${totalMinutes} min capturados, ${this.publishedNotes.length} notas publicadas)`,
+        message: `Escuchando... (${updatedMinutes} min capturados, ${this.publishedNotes.length} notas publicadas)`,
       });
+
+      // Check if new chunks arrived while we were analyzing/publishing - re-trigger
+      const newChunksWhileProcessing = this.chunks.length - analysisStartChunkIndex;
+      if (newChunksWhileProcessing >= this.chunksPerAnalysis && this.running) {
+        this.emit("detail", {
+          step: "capturing", sub: "reanalysis",
+          message: `${newChunksWhileProcessing} chunks nuevos llegaron durante el procesamiento. Re-analizando...`,
+          icon: "brain",
+        });
+        this.chunksSinceLastAnalysis = 0;
+        // Re-trigger analysis (recursive but async, won't stack)
+        await this.analyzeAndPublish();
+      }
 
     } catch (error) {
       this.publishingInProgress = false;

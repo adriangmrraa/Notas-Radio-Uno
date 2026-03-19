@@ -94,7 +94,7 @@ Responde en JSON con esta estructura:
 }`;
 
   try {
-    const model = "gemini-2.0-flash";
+    const model = "gemini-2.5-flash";
     const url = `${GEMINI_API}/${model}:generateContent?key=${apiKey}`;
 
     const body: GeminiGroundedRequestBody = {

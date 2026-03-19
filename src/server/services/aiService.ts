@@ -9,7 +9,7 @@ dotenv.config();
  * Servicio unificado de IA - DeepSeek (primario) + Gemini (fallback)
  *
  * DeepSeek: API compatible con OpenAI, modelos deepseek-chat (V3)
- * Gemini: Google AI Studio, modelo gemini-2.0-flash
+ * Gemini: Google AI Studio, modelo gemini-2.5-flash
  *
  * Ambos se invocan con la misma interfaz: sistema + usuario -> texto.
  */
@@ -88,7 +88,7 @@ async function callGemini({
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  const model = "gemini-2.0-flash";
+  const model = "gemini-2.5-flash";
   const url = `${GEMINI_API}/${model}:generateContent?key=${apiKey}`;
 
   const body: GeminiRequestBody = {

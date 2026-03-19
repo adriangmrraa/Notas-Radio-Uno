@@ -9,7 +9,8 @@ import type { Publication, Transcription, MetaAsset } from "../../shared/types.j
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const DB_PATH = path.join(__dirname, "..", "data", "credentials.db");
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+const DB_PATH = path.join(PROJECT_ROOT, "data", "credentials.db");
 
 interface CredentialRow {
   name: string;
@@ -83,7 +84,7 @@ let db: Database.Database | null = null;
  */
 export function initDatabase(): Database.Database {
   // Crear directorio data/ si no existe
-  const dataDir = path.join(__dirname, "..", "data");
+  const dataDir = path.join(PROJECT_ROOT, "data");
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }

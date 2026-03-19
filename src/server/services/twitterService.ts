@@ -9,7 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Ensure temp directory exists
-const tempDir = path.join(__dirname, "temp");
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
+const tempDir = path.join(PROJECT_ROOT, "output", "temp");
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
 // Twitter credentials
@@ -63,7 +64,7 @@ async function downloadImage(imageUrl: string): Promise<string> {
     });
 
     const filename = `temp_image_${Date.now()}.jpg`;
-    const imagePath = path.join(__dirname, "temp", filename);
+    const imagePath = path.join(tempDir, filename);
     fs.writeFileSync(imagePath, Buffer.from(response.data as ArrayBuffer));
     return imagePath;
   } catch (error) {

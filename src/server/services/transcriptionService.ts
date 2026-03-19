@@ -1,4 +1,4 @@
-import { exec, spawn } from "child_process";
+import { exec, execSync, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -29,7 +29,6 @@ function findPython(): string {
   // Windows: try 'py' launcher first, then 'python'
   if (process.platform === "win32") {
     try {
-      const { execSync } = require("child_process");
       execSync("py --version", { stdio: "ignore" });
       return "py";
     } catch (_) { /* py not found */ }
@@ -91,11 +90,23 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
     );
 
     if (sourceType === "youtube") {
-      // yt-dlp extracts audio from live stream with limited duration
-      // Pipe: yt-dlp -> ffmpeg to limit duration
-      const ytdlpCommand = `"${YTDLP}" -f "bestaudio" --no-part -o - "${url}" | "${FFMPEG}" -i pipe:0 -t ${durationSeconds} -c:a libmp3lame -q:a 4 "${outputFile}"`;
+      // yt-dlp needs a JS runtime for YouTube extraction.
+      // Use Node.js (already installed) via --js-runtimes node
+      // Download audio directly to file (no pipe) for better compatibility
+      const ytdlpCommand = [
+        `"${YTDLP}"`,
+        `--js-runtimes`, `node`,
+        `-f`, `"ba/b"`,          // best audio, fallback to best overall
+        `--no-part`,
+        `--download-sections`, `"*0-${durationSeconds}"`,
+        `-x`,                    // extract audio
+        `--audio-format`, `mp3`,
+        `--audio-quality`, `4`,
+        `-o`, `"${outputFile}"`,
+        `"${url}"`,
+      ].join(" ");
 
-      exec(ytdlpCommand, { timeout: (durationSeconds + 30) * 1000 }, (error) => {
+      exec(ytdlpCommand, { timeout: (durationSeconds + 60) * 1000 }, (error) => {
         if (error && !fs.existsSync(outputFile)) {
           reject(new Error(`Error capturando audio YouTube: ${error.message}`));
           return;
@@ -155,7 +166,13 @@ print(json.dumps({"text": result["text"]}))
     const tempScript = path.join(outputDir, `transcribe_${Date.now()}.py`);
     fs.writeFileSync(tempScript, pythonScript);
 
-    exec(`${PYTHON} "${tempScript}"`, { timeout: 120000 }, (error, stdout, _stderr) => {
+    // Add tools dir to PATH so Whisper can find ffmpeg internally
+    const envWithTools = {
+      ...process.env,
+      PATH: `${TOOLS_DIR}${path.delimiter}${process.env.PATH || ""}`,
+    };
+
+    exec(`${PYTHON} "${tempScript}"`, { timeout: 120000, env: envWithTools }, (error, stdout, _stderr) => {
       // Clean up temp script
       try { fs.unlinkSync(tempScript); } catch (_) { /* ignore */ }
 
