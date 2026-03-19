@@ -142,6 +142,9 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
   // Transcription
   const [transcription, setTranscription] = useState('');
 
+  // Lightbox
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
   // Image model hint
   const modelHints: Record<string, string> = {
     gemini: 'Requiere GEMINI_API_KEY en el servidor',
@@ -499,38 +502,43 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           {/* Step Progress */}
           <StepProgress activeStep={activeStep} />
 
-          {/* Activity Feed */}
-          <div className="activity-feed-container">
-            <h4 className="section-label">Actividad en tiempo real</h4>
-            <div className="activity-feed" ref={activityFeedRef}>
-              {activityCards.map(card => (
-                <ActivityCard key={card.id} card={card} />
-              ))}
+          <div className="pipeline-left">
+            {/* Activity Feed */}
+            <div className="activity-feed-container">
+              <h4 className="section-label">&#9889; Pipeline en vivo</h4>
+              <div className="activity-feed" ref={activityFeedRef}>
+                {activityCards.map(card => (
+                  <ActivityCard key={card.id} card={card} onImageClick={url => setLightboxUrl(url)} />
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* Published Notes */}
-          {publishedNotes.length > 0 && (
-            <div>
-              <h4 className="section-label">Notas publicadas ({publishedNotes.length})</h4>
-              {publishedNotes.map((note, i) => (
-                <div key={i} className="published-note clickable" onClick={() => setSelectedNote(note)}>
-                  {note.previewUrl && <img src={note.previewUrl} className="published-note-thumb" alt="" />}
-                  <div className="published-note-info">
-                    <strong>{note.title}</strong>
-                    <small>{new Date(note.timestamp).toLocaleString()}</small>
+          <div className="pipeline-right">
+            {/* Published Notes */}
+            {publishedNotes.length > 0 && (
+              <div>
+                <h4 className="section-label">Notas publicadas ({publishedNotes.length})</h4>
+                {publishedNotes.map((note, i) => (
+                  <div key={i} className="published-note clickable" onClick={() => setSelectedNote(note)}>
+                    {note.previewUrl && <img src={note.previewUrl} className="published-note-thumb" alt="" />}
+                    <div className="published-note-info">
+                      <strong>{note.title}</strong>
+                      <small>{new Date(note.timestamp).toLocaleString()}</small>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
-          {/* Live Transcription */}
-          <TranscriptionViewer transcription={transcription} />
+            {/* Live Transcription */}
+            <TranscriptionViewer transcription={transcription} />
+          </div>
         </div>
       )}
 
       <NoteModal note={selectedNote} onClose={() => setSelectedNote(null)} />
+      <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
     </section>
   );
 }
@@ -554,6 +562,17 @@ function NoteModal({ note, onClose }: {
         {imageSrc && <img src={imageSrc} className="modal-image" alt="Placa" />}
         {note.content && <div className="modal-text">{note.content}</div>}
       </div>
+    </div>
+  );
+}
+
+// ─── ImageLightbox ──────────────────────────────────────────
+
+function ImageLightbox({ url, onClose }: { url: string | null; onClose: () => void }) {
+  if (!url) return null;
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <img src={url} className="lightbox-image" alt="Placa" onClick={e => e.stopPropagation()} />
     </div>
   );
 }
@@ -604,7 +623,7 @@ function StepProgress({ activeStep }: { activeStep: string }) {
 
 // ─── ActivityCard ───────────────────────────────────────────
 
-function ActivityCard({ card }: { card: ActivityCardData }) {
+function ActivityCard({ card, onImageClick }: { card: ActivityCardData; onImageClick?: (url: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const MAX_VISIBLE = 3;
   const totalSteps = card.subSteps.length;
@@ -644,7 +663,7 @@ function ActivityCard({ card }: { card: ActivityCardData }) {
       )}
       {card.previewUrl && (
         <div className="activity-card-preview">
-          <img src={card.previewUrl} alt="Placa" />
+          <img src={card.previewUrl} alt="Placa" onClick={() => onImageClick?.(card.previewUrl!)} />
         </div>
       )}
     </div>
@@ -1297,7 +1316,7 @@ function PublicationCard({ pub, onDelete, onClick }: { pub: Publication; onDelet
   const badgeLabel = pub.source === 'pipeline' ? 'Pipeline' : pub.source === 'url' ? 'URL' : 'Manual';
   const date = new Date(pub.created_at + 'Z').toLocaleString();
   const contentPreview = pub.content ? pub.content.slice(0, 200) + (pub.content.length > 200 ? '...' : '') : '';
-  const imageSrc = pub.image_url || (pub.image_path ? `/output/${pub.image_path.split('/').pop()}` : null);
+  const imageSrc = pub.image_url || (pub.image_path ? `/output/${pub.image_path.split(/[/\\]/).pop()}` : null);
 
   return (
     <div className="history-card clickable" onClick={onClick}>
