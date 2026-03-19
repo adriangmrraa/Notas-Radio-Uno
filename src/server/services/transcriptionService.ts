@@ -59,17 +59,28 @@ interface TranscriptionResult {
  * Retorna: "youtube", "radio", o "generic"
  */
 function detectSourceType(url: string): SourceType {
+  // Plataformas que necesitan yt-dlp para extraer el stream
   if (
     url.includes("youtube.com") ||
     url.includes("youtu.be") ||
-    url.includes("youtube.com/live")
+    url.includes("twitch.tv") ||
+    url.includes("kick.com") ||
+    url.includes("facebook.com/live") ||
+    url.includes("dailymotion.com") ||
+    url.includes("vimeo.com")
   ) {
-    return "youtube";
+    return "youtube"; // "youtube" = usa yt-dlp (soporta todas estas plataformas)
   }
+  // Streams directos de radio/audio (URLs que ffmpeg puede abrir directo)
   if (
     url.includes("streamingraddios") ||
-    url.includes("radiouno") ||
-    url.endsWith("/stream")
+    url.endsWith("/stream") ||
+    url.endsWith(".m3u8") ||
+    url.endsWith(".mp3") ||
+    url.endsWith(".aac") ||
+    url.includes("/radio") ||
+    url.includes("shoutcast") ||
+    url.includes("icecast")
   ) {
     return "radio";
   }
@@ -117,7 +128,44 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
       return;
     }
 
-    // For radio and generic streams, use ffmpeg directly
+    if (sourceType === "generic") {
+      // Generic URLs: try yt-dlp first (handles many platforms), fallback to ffmpeg
+      const ytdlpGeneric = [
+        `"${YTDLP}"`,
+        `--js-runtimes`, `node`,
+        `-f`, `"ba/b"`,
+        `--no-part`,
+        `--download-sections`, `"*0-${durationSeconds}"`,
+        `-x`,
+        `--audio-format`, `mp3`,
+        `--audio-quality`, `4`,
+        `-o`, `"${outputFile}"`,
+        `"${url}"`,
+      ].join(" ");
+
+      exec(ytdlpGeneric, { timeout: (durationSeconds + 60) * 1000 }, (ytError) => {
+        if (!ytError || fs.existsSync(outputFile)) {
+          resolve({ filePath: outputFile, sourceType });
+          return;
+        }
+        // yt-dlp failed, try ffmpeg direct
+        console.log(`[Transcription] yt-dlp falló para URL genérica, intentando ffmpeg directo...`);
+        captureWithFfmpeg(url, durationSeconds, outputFile, sourceType, resolve, reject);
+      });
+      return;
+    }
+
+    // Radio streams: ffmpeg direct
+    captureWithFfmpeg(url, durationSeconds, outputFile, sourceType, resolve, reject);
+  });
+}
+
+function captureWithFfmpeg(
+  url: string, durationSeconds: number, outputFile: string,
+  sourceType: SourceType,
+  resolve: (value: CaptureResult) => void,
+  reject: (reason: Error) => void,
+): void {
     const args = [
       "-i", url,
       "-t", String(durationSeconds),
@@ -145,7 +193,6 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
     ffmpegProcess.on("error", (err: Error) => {
       reject(new Error(`Error ejecutando FFmpeg: ${err.message}`));
     });
-  });
 }
 
 /**
