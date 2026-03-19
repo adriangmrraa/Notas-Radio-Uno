@@ -303,6 +303,14 @@ function PipelineControl({ socket }: { socket: ReturnType<typeof useSocket>['soc
           break;
         }
 
+        case 'publish_warnings': {
+          const warnings = data.warnings as string[] || [];
+          warnings.forEach((w: string) => {
+            addSubStepToCard(processingCardIdRef.current, `Advertencia: ${w}`, 'warning', 'sub-error');
+          });
+          break;
+        }
+
         case 'stopped': {
           setRunning(false);
           setStatusClass('stopped');
@@ -614,9 +622,53 @@ function MetaConnection() {
   }, []);
 
   const handleConnect = async () => {
-    // In a full implementation this would load the Facebook SDK and open the OAuth popup.
-    // For now, redirect to the server-side OAuth flow.
-    window.open('/api/meta/auth', 'meta-auth', 'width=600,height=700');
+    setLoading(true);
+    try {
+      // Load Meta config
+      const cfgRes = await fetch('/api/meta/config');
+      const cfg = await cfgRes.json();
+      if (!cfg.appId) { alert('META_APP_ID no configurado en el servidor'); setLoading(false); return; }
+
+      // Load Facebook SDK if not loaded
+      if (!(window as any).FB) {
+        await new Promise<void>((resolve) => {
+          const script = document.createElement('script');
+          script.src = 'https://connect.facebook.net/es_LA/sdk.js';
+          script.onload = () => {
+            (window as any).FB.init({ appId: cfg.appId, cookie: true, xfbml: false, version: 'v22.0' });
+            resolve();
+          };
+          document.body.appendChild(script);
+        });
+      }
+
+      // Open FB login popup
+      (window as any).FB.login((response: any) => {
+        if (response.authResponse) {
+          const { accessToken } = response.authResponse;
+          fetch('/api/meta/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accessToken }),
+          })
+            .then(r => r.json())
+            .then(data => {
+              if (data.success) {
+                fetch('/api/meta/status').then(r => r.json()).then(setStatus);
+              } else {
+                alert('Error conectando Meta: ' + (data.error || 'desconocido'));
+              }
+            })
+            .catch(err => alert('Error: ' + err.message))
+            .finally(() => setLoading(false));
+        } else {
+          setLoading(false);
+        }
+      }, { scope: 'pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish', config_id: cfg.configId || undefined });
+    } catch (err: any) {
+      alert('Error: ' + err.message);
+      setLoading(false);
+    }
   };
 
   const handleDisconnect = async () => {
