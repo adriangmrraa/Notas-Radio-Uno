@@ -1,6 +1,6 @@
 # PeriodistApp - Documentacion de Arquitectura
 
-> Pipeline autonomo de produccion periodistica con IA para Radio Uno Formosa.
+> Plataforma agnóstica de automatización periodística con IA
 >
 > Version: 1.0 | Ultima actualizacion: Marzo 2026
 
@@ -21,12 +21,13 @@
 11. [Deteccion de Duplicados](#11-deteccion-de-duplicados)
 12. [Como Ejecutar el Proyecto](#12-como-ejecutar-el-proyecto)
 13. [Encriptacion](#13-encriptacion)
+14. [Changelog - Fixes y mejoras aplicados](#14-changelog---fixes-y-mejoras-aplicados)
 
 ---
 
 ## 1. Vision General de la Plataforma
 
-PeriodistApp automatiza el ciclo completo de produccion periodistica de Radio Uno Formosa. Desde la captura de audio en vivo de una transmision radial hasta la publicacion de notas con placas visuales en multiples plataformas, todo el proceso es autonomo y esta potenciado por inteligencia artificial.
+PeriodistApp automatiza el ciclo completo de produccion periodistica para cualquier emisora o medio. Desde la captura de audio en vivo de una transmision radial hasta la publicacion de notas con placas visuales en multiples plataformas, todo el proceso es autonomo y esta potenciado por inteligencia artificial. La plataforma es agnóstica: el nombre del medio se configura mediante la variable de entorno `PLATFORM_NAME` (default: "Radio Uno Formosa") y se usa en los system prompts de IA y en las placas generadas.
 
 ### El ciclo completo
 
@@ -59,7 +60,7 @@ PeriodistApp automatiza el ciclo completo de produccion periodistica de Radio Un
 | 5 | **Extraccion de insights** | De cada tema confirmado, la IA extrae personas mencionadas, datos clave, cifras, y genera queries de busqueda para investigacion web. |
 | 6 | **Investigacion web** | Usando Gemini Grounded Search (primario), Google Custom Search o DuckDuckGo (fallbacks), se buscan articulos relacionados para enriquecer la nota con contexto y fuentes. |
 | 7 | **Generacion de nota** | Se genera una nota periodistica completa usando IA. El usuario puede elegir entre 4 tonos (formal, informal, urgente, editorial) y 4 estructuras (completa, breve, bullet points, tweet). |
-| 8 | **Creacion de placa/flyer** | Se genera una imagen de 1080x1080 pixeles con un overlay de texto (titulo) sobre una imagen de fondo. El fondo puede venir de un articulo scrapeado, generado por IA (Gemini Imagen o Grok), o un placeholder con gradiente. |
+| 8 | **Creacion de placa/flyer** | Se genera una imagen de 1080x1080 pixeles con un overlay de texto (titulo) sobre una imagen de fondo. El fondo puede venir de un articulo scrapeado, generado por IA (Nano Banana 2 o Grok), o un placeholder con gradiente. |
 | 9 | **Publicacion multi-plataforma** | La nota se publica en todas las plataformas configuradas: Google Drive (sube imagen), Webhooks (Make/N8N), Twitter (API directa), Facebook Pages e Instagram (Meta API). |
 | 10 | **Deduplicacion y rate limiting** | Antes de publicar, se verifica que el tema no sea duplicado (comparando con publicaciones de las ultimas 24 horas y la sesion actual). Todas las APIs externas tienen rate limiting con token bucket. |
 
@@ -76,11 +77,12 @@ PeriodistApp automatiza el ciclo completo de produccion periodistica de Radio Un
 | **Frontend** | React 19 + Vite + TypeScript | Puerto 5173 en desarrollo. Vite hace proxy automatico de `/api/*` y `/socket.io` al backend. |
 | **Base de datos** | SQLite (better-sqlite3) | WAL mode habilitado. Archivo: `data/credentials.db` |
 | **Comunicacion real-time** | Socket.IO | Bidireccional. El backend emite eventos de progreso del pipeline. |
-| **IA - Texto** | DeepSeek (primario) + Gemini 2.0 Flash (fallback) | Analisis de temas, generacion de notas, extraccion de insights. |
-| **IA - Imagenes** | Google Imagen 4.0 + xAI Grok | Generacion de fondos para placas cuando no hay imagen de articulo. |
+| **IA - Texto** | DeepSeek (primario) + Gemini 2.5 Flash (fallback) | Analisis de temas, generacion de notas, extraccion de insights. |
+| **IA - Imagenes** | Nano Banana 2 (gemini-3.1-flash-image-preview) + xAI Grok | Generacion de fondos para placas cuando no hay imagen de articulo. Soporta image+prompt: envía fotos de referencia (personas, logos, eventos) junto con el prompt para generar imágenes contextualizadas. |
 | **IA - Busqueda** | Gemini Grounded Search | Investigacion web con fuentes verificables. |
 | **Audio** | ffmpeg + yt-dlp + Whisper | Captura de streams, conversion a formato compatible, transcripcion speech-to-text. |
-| **Imagenes** | Sharp (Node.js) | Procesamiento de imagenes: resize, overlay de texto, composicion de placas. |
+| **Imagenes** | @napi-rs/canvas (overlay de texto, logo) + Sharp (resize) | Procesamiento de imagenes: resize, overlay de texto, composicion de placas. |
+| **Canvas** | @napi-rs/canvas | Generacion de placas: overlay de texto, gradiente, logo. Drop-in replacement de node-canvas sin compilacion nativa. |
 
 ### Estructura de carpetas
 
@@ -125,7 +127,7 @@ periodistapp/
 │   └── shared/
 │       └── types.ts                    # Tipos compartidos entre server y client
 ├── public/
-│   └── logo.png                        # Logo de Radio Uno Formosa
+│   └── logo.png                        # Logo de la plataforma configurada (PLATFORM_NAME)
 ├── output/                             # Imagenes generadas (auto-creado)
 ├── uploads/                            # Archivos subidos temporalmente (multer)
 ├── fonts/                              # BebasKai.ttf (tipografia opcional para placas)
@@ -280,7 +282,7 @@ analyzeAndPublish(latestChunk)
                 |
                 +--> generateFlyer(title, imageSource)
                 |      +--> Estrategia 1: Imagen de articulo scrapeado
-                |      +--> Estrategia 2: IA genera imagen (Gemini Imagen o Grok)
+                |      +--> Estrategia 2: IA genera imagen (Nano Banana 2 o Grok)
                 |      +--> Estrategia 3: Placeholder con gradiente
                 |      +--> processImage(): overlay de texto sobre fondo 1080x1080
                 |
@@ -329,6 +331,37 @@ while (this.running) {
   pendingTranscription = transcribeAudio(filePath);
 }
 ```
+
+### Captura verdaderamente paralela (fire-and-forget)
+
+El análisis y publicación se ejecutan con fire-and-forget: `analyzeAndPublish()` se lanza sin `await`, de modo que la captura NUNCA se detiene. Si durante el análisis y publicación llegan nuevos chunks, al terminar el procesamiento se re-analiza automáticamente con los chunks acumulados.
+
+```
+Chunk 1: [====GRAB====][===TRANSCRIBE===]
+Chunk 2:              [====GRAB====][===TRANSCRIBE===]
+Chunk 3:                            [====GRAB====][===TRANSCRIBE===]
+                                         ↑ Análisis en background (fire-and-forget)
+Chunk 4:                                          [====GRAB====][===TRANSCRIBE===]
+Chunk 5:                                                        [====GRAB====]...
+                                                                 ↑ Re-análisis con chunks 4-5 nuevos
+```
+
+### Contexto acumulado entre análisis
+
+Cada ronda de análisis acumula contexto de las anteriores:
+- `previousAnalysisContext`: resumen de temas ya publicados
+- `lastAnalyzedChunkIndex`: sabe qué chunks son nuevos vs ya procesados
+- Cuando termina de publicar, verifica si hay `>= chunksPerAnalysis` nuevos y re-analiza
+
+### Operación 24/7
+
+El pipeline está diseñado para operar 24 horas sin intervención:
+
+- **Exponential backoff**: si la captura falla, espera 5s, 10s, 20s... hasta 60s max. Nunca se rinde.
+- **Limpieza de memoria**: la transcripción se recorta a los últimos ~50,000 caracteres (~30 min) para evitar consumo desmedido de RAM.
+- **Estadísticas periódicas**: cada 10 chunks emite horas capturadas, chunks procesados, notas publicadas.
+- **Limpieza de archivos temporales**: cada 20 chunks elimina archivos temp, ai_bg, resized, ref_person mayores a 1 hora.
+- **Auto-reconexión**: si el stream se cae, reintenta con backoff. Tras 10+ fallos consecutivos emite warning pero sigue intentando.
 
 ### Sistema de confirmacion en 2 fases
 
@@ -384,7 +417,7 @@ La IA evalua si un tema es noticioso segun:
 
 **SI es noticioso:**
 - Contiene **informacion verificable**: cifras concretas, declaraciones oficiales, decisiones gubernamentales
-- Tiene **relevancia publica**: afecta a ciudadanos, es de interes general para Formosa
+- Tiene **relevancia publica**: afecta a ciudadanos, es de interes general para la audiencia
 - Incluye **hechos concretos**: inauguraciones, anuncios, medidas, eventos
 - Tiene **fuentes identificables**: funcionarios, instituciones, personas publicas
 
@@ -417,26 +450,52 @@ Estrategia 1: Imagen de articulo web
 Estrategia 2: Imagen generada por IA
   |
   +--> Si imageModel === "gemini":
-  |      +--> Google Imagen 4.0 genera imagen basada en el titulo
+  |      +--> Nano Banana 2 (gemini-3.1-flash-image-preview) genera imagen
+  |      +--> Soporta image+prompt (ver seccion siguiente)
   |      +--> Emite evento flyer_bg { source: "gemini_imagen" }
   |
   +--> Si imageModel === "grok":
-  |      +--> xAI Grok genera imagen
+  |      +--> xAI Grok genera imagen (solo texto, sin referencia visual)
   |      +--> Emite evento flyer_bg { source: "grok_image" }
   |
   v (si falla)
 Estrategia 3: Placeholder con gradiente
   |
-  +--> Genera imagen con gradiente usando colores de Radio Uno
+  +--> Genera imagen con gradiente usando colores de la plataforma configurada (PLATFORM_NAME)
   +--> Emite evento flyer_bg { source: "placeholder" }
 ```
+
+### Generación de imágenes con referencia visual (image+prompt)
+
+El sistema busca automáticamente imágenes de referencia relevantes antes de generar el fondo:
+
+1. **Personas mencionadas**: Si la noticia habla de un político, celebridad o figura pública, busca su foto
+2. **Temas/eventos**: Busca imágenes del evento, lugar, empresa, logo, etc.
+3. **Máximo 3 referencias**: Se descargan como archivos temporales
+
+Luego envía las imágenes + un prompt contextual a **Nano Banana 2** (`gemini-3.1-flash-image-preview`):
+- Si hay foto de persona → "Usá la foto adjunta para capturar el rostro y ubicalo en el contexto de la noticia"
+- Si hay logo/evento → "Incorporá visualmente la referencia en la composición"
+- Si no hay referencia → genera solo con texto
+
+```typescript
+// Ejemplo de llamada multimodal a Gemini
+const parts = [
+  { inlineData: { mimeType: "image/jpeg", data: base64Photo } },  // foto de referencia
+  { text: "Fotografía periodística de [persona] en conferencia..." }  // prompt
+];
+
+// generationConfig con responseModalities: ["IMAGE", "TEXT"]
+```
+
+Fallback: si Gemini falla, intenta con xAI Grok (solo texto, sin imagen de referencia).
 
 Una vez obtenida la imagen de fondo, `processImage()` (imageService.ts) la procesa:
 
 1. Redimensiona a 1080x1080 pixeles
 2. Aplica overlay oscuro semitransparente para legibilidad
 3. Superpone el titulo con tipografia grande (BebasKai si disponible, sans-serif fallback)
-4. Agrega logo de Radio Uno en esquina
+4. Agrega logo de la plataforma configurada (PLATFORM_NAME) en esquina
 5. Guarda en `output/` como PNG
 
 ### Publicacion multi-plataforma
@@ -1350,12 +1409,12 @@ Barra superior fija que siempre se muestra al tope de la pagina:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  [Logo Radio Uno]  Radio Uno Formosa    [DeepSeek] [Gemini] │
+│  [Logo]  {PLATFORM_NAME}                [DeepSeek] [Gemini] │
 │                                         (badges IA)        │
 └─────────────────────────────────────────────────────────┘
 ```
 
-- **Izquierda:** Logo de Radio Uno Formosa (`public/logo.png`) + nombre
+- **Izquierda:** Logo de la plataforma (`public/logo.png`) + nombre configurado via `PLATFORM_NAME`
 - **Derecha:** Badges de los proveedores de IA disponibles (DeepSeek, Gemini). Se muestran como etiquetas con los colores de cada servicio.
 
 ### Seccion 1: Pipeline Autonomo (Hero)
@@ -1821,8 +1880,8 @@ Todas las variables se configuran en el archivo `.env` en la raiz del proyecto.
 |----------|:-----------:|---------------------|-------------|---------|
 | `ENCRYPTION_KEY` | **SI** | `encryptionService.ts` | Clave para encriptacion AES-256-GCM. Se hashea con SHA-256 para obtener 32 bytes. Generar con: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` | `a1b2c3d4e5f6...` (64 caracteres hex) |
 | `DEEPSEEK_API_KEY` | **SI** (o GEMINI) | `aiService.ts` | API key de DeepSeek ([deepseek.com](https://deepseek.com)). Proveedor primario de IA para analisis de texto. | `sk-...` |
-| `GEMINI_API_KEY` | **SI** (o DEEPSEEK) | `aiService.ts`, `searchService.ts`, `pipelineService.ts` | API key de Google AI Studio ([aistudio.google.com](https://aistudio.google.com)). Se usa como fallback de texto, para Gemini Grounded Search, y para generacion de imagenes con Imagen 4.0. | `AIza...` |
-| `XAI_API_KEY` | No | `pipelineService.ts` | API key de xAI ([console.x.ai](https://console.x.ai)). Para generar imagenes con Grok como alternativa a Gemini Imagen. | `xai-...` |
+| `GEMINI_API_KEY` | **SI** (o DEEPSEEK) | `aiService.ts`, `searchService.ts`, `pipelineService.ts` | API key de Google AI Studio ([aistudio.google.com](https://aistudio.google.com)). Se usa como fallback de texto, para Gemini Grounded Search, y para generacion de imagenes con Nano Banana 2 (gemini-3.1-flash-image-preview). | `AIza...` |
+| `XAI_API_KEY` | No | `pipelineService.ts` | API key de xAI ([console.x.ai](https://console.x.ai)). Para generar imagenes con Grok como alternativa a Nano Banana 2. | `xai-...` |
 | `TWITTER_APP_KEY` | No | `twitterService.ts` | App Key del Twitter/X Developer Portal. Necesaria para publicar en Twitter. | Alfanumerico |
 | `TWITTER_APP_SECRET` | No | `twitterService.ts` | App Secret de Twitter/X. | Alfanumerico |
 | `TWITTER_ACCESS_TOKEN` | No | `twitterService.ts` | Access Token de OAuth 1.0a (cuenta especifica). | Alfanumerico |
@@ -1839,10 +1898,12 @@ Todas las variables se configuran en el archivo `.env` en la raiz del proyecto.
 | `WEBHOOK_URL_NUEVO_BOTON` | No | `settings.ts`, `generate.ts` | URL del webhook para el boton "Nuevo" de la interfaz manual. | `https://hook.us1.make.com/...` |
 | `WEBHOOK_URL_VIEJO_BOTON` | No | `settings.ts`, `generate.ts` | URL del webhook para el boton "Viejo" de la interfaz manual. | `https://hook.us1.make.com/...` |
 | `WEBHOOK_URL_TERCER_BOTON` | No | `settings.ts` | URL del webhook para el tercer boton. | `https://hook.us1.make.com/...` |
+| `PLATFORM_NAME` | No | `imageService`, `newsService` | Nombre de la plataforma. Se muestra en las placas y se usa en los system prompts de IA. | `Radio Uno Formosa` |
+| `TOOLS_DIR` | No | `transcriptionService` | Directorio donde están ffmpeg, yt-dlp. Default: `~/tools/` | `C:\Users\Asus\tools` |
 
 ### Notas importantes
 
-- **`COHERE_API_KEY`**: Esta variable es **legacy** y **ya no es utilizada** por el codigo actual. Puede ser eliminada del `.env` si existe.
+- **`COHERE_API_KEY`**: Esta variable es **legacy** y **ya no se usa**. Fue reemplazada por DeepSeek/Gemini. Puede ser eliminada del `.env` si existe.
 
 - **Webhooks desde el frontend**: Las URLs de webhooks tambien se pueden configurar desde la seccion "Configuracion de Webhooks" del frontend. Los valores guardados desde el frontend se persisten en la tabla `settings` de la base de datos y **tienen prioridad** sobre los valores del `.env`. El orden de prioridad es: DB > `.env` > vacio.
 
@@ -1880,6 +1941,10 @@ GOOGLE_SEARCH_CX=017XXXXXXXXXX
 META_APP_ID=123456789012345
 META_APP_SECRET=abc123def456ghi789
 META_CONFIG_ID=987654321
+
+# === Plataforma ===
+PLATFORM_NAME=Radio Uno Formosa
+TOOLS_DIR=C:\Users\Asus\tools
 
 # === Webhooks (opcional, tambien configurables desde el frontend) ===
 WEBHOOK_URL_PIPELINE=https://hook.us1.make.com/xxxxx
@@ -1926,7 +1991,7 @@ if (limiters.twitter.tryAcquire()) {
 | `metaApi` | 5 | 1 | 12000 ms (12s) | ~5 req/min | `metaAuthService.ts` - operaciones OAuth, `metaPublishService.ts` - publicaciones |
 | `twitter` | 3 | 1 | 60000 ms (60s) | ~3 req/min | `twitterService.ts` - publicacion de tweets |
 | `googleDrive` | 10 | 1 | 6000 ms (6s) | ~10 req/min | `pipelineService.ts` - subida de imagenes a Drive |
-| `imageGen` | 3 | 1 | 20000 ms (20s) | ~3 req/min | `pipelineService.ts` - generacion con Gemini Imagen y Grok |
+| `imageGen` | 3 | 1 | 20000 ms (20s) | ~3 req/min | `pipelineService.ts` - generacion con Nano Banana 2 y Grok |
 | `webSearch` | 10 | 1 | 6000 ms (6s) | ~10 req/min | `searchService.ts` - Google Custom Search y DuckDuckGo |
 
 ### Comportamiento del token bucket
@@ -2072,13 +2137,18 @@ this.emit("detail", {
 | **yt-dlp** | Descarga de streams de YouTube/radio | `winget install yt-dlp.yt-dlp` |
 | **Whisper** | Transcripcion speech-to-text | `pip install openai-whisper` |
 
+**Notas de auto-detección:**
+- `py` (Python launcher) es auto-detectado en Windows cuando `python` no está en PATH
+- `ffmpeg` y `yt-dlp` son auto-detectados desde el directorio `~/tools/` (configurable con `TOOLS_DIR`)
+- En la primera ejecución, Whisper descarga el modelo (~139MB). Esto es normal y tarda aproximadamente 30 segundos.
+
 #### Verificar instalacion
 
 ```bash
 node --version       # >= 18.x
-python --version     # >= 3.10
-ffmpeg -version      # cualquier version reciente
-yt-dlp --version     # cualquier version reciente
+python --version     # >= 3.10 (o `py --version` en Windows)
+ffmpeg -version      # cualquier version reciente (puede estar en ~/tools/)
+yt-dlp --version     # cualquier version reciente (puede estar en ~/tools/)
 whisper --help       # debe estar en PATH
 ```
 
@@ -2241,6 +2311,37 @@ a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6:f0e1d2c3b4a59687f0e1d2c3b4a59687:7890abcdef1234
 - **Hacer backup** de la `ENCRYPTION_KEY` en un lugar seguro (gestor de passwords, etc.).
 - **Si se cambia la `ENCRYPTION_KEY`**, todas las credenciales existentes se vuelven ilegibles. Se deben reconectar todos los servicios (Meta, etc.).
 - El **AuthTag** protege contra manipulacion: si alguien modifica el ciphertext en la DB, la desencriptacion falla con error en lugar de producir datos corruptos.
+
+---
+
+## 14. Changelog - Fixes y mejoras aplicados
+
+### Problemas encontrados en testing y sus soluciones
+
+| Problema | Causa raíz | Solución |
+|----------|-----------|----------|
+| `python` no reconocido en Windows | Windows usa `py` como launcher, no `python` | Auto-detección: prueba `py --version`, fallback a `python` |
+| ffmpeg/yt-dlp no encontrados | No estaban en el PATH del sistema | Auto-búsqueda en `~/tools/` antes de buscar en PATH |
+| Whisper no encontraba ffmpeg | Whisper usa ffmpeg internamente via subprocess | Se inyecta `TOOLS_DIR` en el PATH del subproceso de Python |
+| yt-dlp error "No JS runtime" | yt-dlp 2026 necesita un JS runtime para YouTube | Se agrega `--js-runtimes node` al comando de yt-dlp |
+| yt-dlp error "bestaudio not available" | Formato `bestaudio` no disponible sin JS runtime completo | Cambio a `-f "ba/b"` (best audio con fallback) + descarga directa sin pipe |
+| Imágenes generadas no encontradas (ENOENT) | Rutas de output relativas a `src/server/` en vez de la raíz del proyecto | Todas las rutas ahora usan `PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..")` |
+| Base de datos creada en `src/server/data/` | Misma causa que lo anterior | `DB_PATH` ahora usa `PROJECT_ROOT/data/` |
+| Gemini 2.0 Flash deprecado | Google deprecó el modelo | Actualizado a `gemini-2.5-flash` |
+| Pipeline se detenía durante análisis | `analyzeAndPublish()` bloqueaba el loop de captura | Cambiado a fire-and-forget con `.catch()`, re-análisis automático al terminar |
+| Componentes React huérfanos | 9 archivos en `components/` no se usaban (todo estaba inline en App.tsx) | Eliminados los 9 archivos huérfanos |
+| `publish_warnings` no se manejaba en UI | Faltaba el case en el switch de eventos | Agregado handler que muestra warnings en activity cards |
+| Meta OAuth usaba ruta inexistente | `window.open('/api/meta/auth')` no existía como endpoint | Implementado flujo completo con FB SDK: FB.init() + FB.login() popup |
+| Double response en stop-capture | Tanto `close` como `error` events podían enviar respuesta | Flag `responseSent` para evitar enviar dos respuestas |
+| Prompts hardcodeados para Formosa | System prompts mencionaban "Radio Uno Formosa" exclusivamente | Todos los prompts usan `PLATFORM_NAME` env var, agnósticos |
+| Modelo de imágenes desactualizado | Usaba `imagen-4.0-generate-001` (no existe) y luego `gemini-2.0-flash-exp` | Actualizado a `gemini-3.1-flash-image-preview` (Nano Banana 2) |
+| Solo buscaba fotos de personas | `searchPersonImage` limitado a rostros | Renombrado a `searchReferenceImage`: busca personas, logos, eventos, lugares |
+| Sin rate limiting | APIs podían recibir spam de requests | Token bucket por servicio: DeepSeek (10/min), Gemini (15/min), Meta (5/min), Twitter (3/min), etc. |
+| Sin detección de duplicados | Mismo tema podía publicarse dos veces | Verificación doble: sesión (in-memory) + DB (últimas 24h) con word overlap >= 50% |
+| Sin graceful shutdown | Procesos quedaban colgados al cerrar | Handler SIGTERM/SIGINT que detiene pipeline, mata procesos y cierra servidor |
+| package.json incompleto | Faltaban dependencias (axios, canvas, sharp, cheerio, etc.) | Agregadas todas las dependencias reales del proyecto |
+| Twitter crasheaba sin credenciales | Se creaba el client aunque no hubiera API keys | Guard: solo crea client si las 4 credenciales existen |
+| canvas nativo no compilaba en Windows | El paquete `canvas` requiere compilación C++ | Reemplazado por `@napi-rs/canvas` (precompilado, sin dependencias nativas) |
 
 ---
 
