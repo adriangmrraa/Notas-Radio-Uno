@@ -11,3 +11,5 @@ tweets_log_*.json
 Notas-Radio-Uno/
 .claude/
 next-env.d.ts
+
+/src/generated/prisma

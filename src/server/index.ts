@@ -20,6 +20,8 @@ import { registerGenerateRoutes } from "./routes/generate.js";
 import { registerCaptureRoutes } from "./routes/capture.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
+import { authRouter } from "./routes/auth.js";
+import { disconnectPrisma } from "./lib/prisma.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -114,6 +116,11 @@ app.get("/api/get-transcriptions", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Auth routes
+// ---------------------------------------------------------------------------
+app.use("/api/auth", authRouter);
+
+// ---------------------------------------------------------------------------
 // Register route modules
 // ---------------------------------------------------------------------------
 registerPipelineRoutes(app, io);
@@ -131,8 +138,10 @@ registerPipelineConfigRoutes(app);
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
-function gracefulShutdown(): void {
+async function gracefulShutdown(): Promise<void> {
   console.log("\n[Server] Cerrando servidor...");
+
+  await disconnectPrisma();
 
   httpServer.close(() => {
     console.log("[Server] Servidor cerrado.");
