@@ -59,6 +59,7 @@ function getWebhookPipelineUrl(): string {
  */
 class AutoPipeline {
   private io: Server;
+  public tenantId: string;
   public running: boolean;
   public config: PipelineConfig;
   private fullTranscription: string;
@@ -75,8 +76,9 @@ class AutoPipeline {
   private lastAnalyzedChunkIndex: number;
   private consecutiveFailures: number;
 
-  constructor(io: Server) {
+  constructor(io: Server, tenantId: string = 'default') {
     this.io = io;
+    this.tenantId = tenantId;
     this.running = false;
     this.config = {
       url: "",
@@ -113,12 +115,13 @@ class AutoPipeline {
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
-    this.io.emit("pipeline-update", {
+    this.io.to(`tenant:${this.tenantId}`).emit("pipeline-update", {
       event,
+      tenantId: this.tenantId,
       timestamp: new Date().toISOString(),
       ...data,
     });
-    console.log(`[Pipeline] ${event}:`, JSON.stringify(data).slice(0, 200));
+    console.log(`[Pipeline][${this.tenantId}] ${event}:`, JSON.stringify(data).slice(0, 200));
   }
 
   async start(config: Partial<PipelineConfig>): Promise<void> {

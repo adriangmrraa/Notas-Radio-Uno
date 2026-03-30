@@ -22,13 +22,20 @@ declare global {
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+    // Support both Bearer header and HttpOnly cookie
+    let token: string | undefined;
+
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
+    if (authHeader?.startsWith('Bearer ')) {
+        token = authHeader.slice(7);
+    } else if (req.cookies?.token) {
+        token = req.cookies.token;
+    }
+
+    if (!token) {
         res.status(401).json({ error: 'Token de autenticacion requerido' });
         return;
     }
-
-    const token = authHeader.slice(7);
 
     try {
         const payload = jwt.verify(token, JWT_SECRET) as AuthPayload;

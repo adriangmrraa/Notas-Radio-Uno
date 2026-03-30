@@ -1,10 +1,11 @@
 import type { Express, Request, Response } from "express";
+import { requireAuth } from "../middleware/auth.js";
 import { getActivePipelineConfig, savePipelineConfig, resetPipelineConfig, getAllAgents } from "../services/databaseService.js";
 import { BUILTIN_NODES, DEFAULT_NODE_ORDER } from "../../shared/types.js";
 
 export function registerPipelineConfigRoutes(app: Express): void {
   // Get active pipeline config
-  app.get("/api/pipeline-config", (_req: Request, res: Response) => {
+  app.get("/api/pipeline-config", requireAuth, (_req: Request, res: Response) => {
     try {
       const config = getActivePipelineConfig();
       res.json({
@@ -16,7 +17,7 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Save pipeline config
-  app.put("/api/pipeline-config", (req: Request, res: Response) => {
+  app.put("/api/pipeline-config", requireAuth, (req: Request, res: Response) => {
     const { node_order, name } = req.body;
     if (!node_order || !Array.isArray(node_order)) {
       res.status(400).json({ error: "Se requiere node_order como array" });
@@ -32,7 +33,7 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Reset to default
-  app.post("/api/pipeline-config/reset", (_req: Request, res: Response) => {
+  app.post("/api/pipeline-config/reset", requireAuth, (_req: Request, res: Response) => {
     try {
       resetPipelineConfig();
       res.json({ success: true, config: { id: 'default', name: 'Default Pipeline', node_order: DEFAULT_NODE_ORDER, is_active: true } });
@@ -42,7 +43,7 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Get all available nodes (built-in + custom agents)
-  app.get("/api/pipeline-config/nodes", (_req: Request, res: Response) => {
+  app.get("/api/pipeline-config/nodes", requireAuth, (_req: Request, res: Response) => {
     try {
       const agents = getAllAgents();
       const agentNodes = agents.map((a: any) => ({

@@ -4,18 +4,17 @@ import type { PipelineConfig, PipelineStatus } from "../../shared/types.js";
 
 import { AutoPipeline } from "../services/pipelineService.js";
 import { TONE_PROMPTS, STRUCTURE_PROMPTS } from "../services/newsService.js";
+import { requireAuth, requireActiveSubscription } from "../middleware/auth.js";
 
-// NOTE: AutoPipeline will be created in a later phase. This file compiles
-// once pipelineService.ts exports the class with: running, config,
-// publishedNotes, start(), stop(), getStatus().
-
-let pipeline: AutoPipeline | null = null;
+// Per-tenant pipeline instances
+const pipelines: Map<string, AutoPipeline> = new Map();
 
 export function registerPipelineRoutes(app: Express, io: Server): void {
   // ------------------------------------------------------------------
   // POST /api/pipeline/start
   // ------------------------------------------------------------------
-  app.post("/api/pipeline/start", async (req: Request, res: Response) => {
+  app.post("/api/pipeline/start", requireAuth, requireActiveSubscription, async (req: Request, res: Response) => {
+    const tenantId = req.auth!.tenantId;
     const {
       url,
       tone,
@@ -31,14 +30,17 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
     }
 
     try {
-      if (pipeline && pipeline.running) {
+      const existing = pipelines.get(tenantId);
+      if (existing && existing.running) {
         res.status(400).json({
           error: "El pipeline ya esta en ejecucion. Detenelo primero.",
         });
         return;
       }
 
-      pipeline = new AutoPipeline(io);
+      const pipeline = new AutoPipeline(io, tenantId);
+      pipelines.set(tenantId, pipeline);
+
       await pipeline.start({
         url,
         tone: tone || "formal",
@@ -55,7 +57,7 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("Error iniciando pipeline:", message);
+      console.error(`[Pipeline][${tenantId}] Error iniciando:`, message);
       res.status(500).json({ error: message });
     }
   });
@@ -63,7 +65,10 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
   // ------------------------------------------------------------------
   // POST /api/pipeline/stop
   // ------------------------------------------------------------------
-  app.post("/api/pipeline/stop", (_req: Request, res: Response) => {
+  app.post("/api/pipeline/stop", requireAuth, (req: Request, res: Response) => {
+    const tenantId = req.auth!.tenantId;
+    const pipeline = pipelines.get(tenantId);
+
     if (!pipeline || !pipeline.running) {
       res.status(400).json({ error: "No hay pipeline en ejecucion." });
       return;
@@ -82,7 +87,10 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
   // ------------------------------------------------------------------
   // GET /api/pipeline/status
   // ------------------------------------------------------------------
-  app.get("/api/pipeline/status", (_req: Request, res: Response) => {
+  app.get("/api/pipeline/status", requireAuth, (req: Request, res: Response) => {
+    const tenantId = req.auth!.tenantId;
+    const pipeline = pipelines.get(tenantId);
+
     if (!pipeline) {
       const idle = {
         running: false,
@@ -119,7 +127,7 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
   });
 
   // ------------------------------------------------------------------
-  // Expose pipeline reference for graceful shutdown
+  // Expose pipelines map for graceful shutdown
   // ------------------------------------------------------------------
-  app.set("pipeline", () => pipeline);
+  app.set("pipelines", () => pipelines);
 }

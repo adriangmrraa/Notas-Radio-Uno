@@ -1,0 +1,388 @@
+// Temporary SQLite schema for migration generation
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./temp.db"
+}
+
+// Copy all models from the main schema
+model Tenant {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @db.VarChar(255)
+  slug         String   @unique @db.VarChar(100)
+  ownerId      String?  @map("owner_id") @db.Uuid
+  platformName String?  @map("platform_name") @db.VarChar(255)
+  plan         Plan?    @relation("PlanTenants", fields: [planId], references: [id])
+  planId       String?  @map("plan_id") @db.Uuid
+  logoUrl      String?  @map("logo_url") @db.Text
+  timezone     String   @default("America/Argentina/Buenos_Aires") @db.VarChar(50)
+  aiProvider   String?  @map("ai_provider") @db.VarChar(50)
+  aiApiKey     String?  @map("ai_api_key") @db.Text
+  aiModel      String?  @map("ai_model") @db.VarChar(100)
+  twitterAppKey String? @map("twitter_app_key") @db.Text
+  twitterAppSecret String? @map("twitter_app_secret") @db.Text
+  twitterAccessToken String? @map("twitter_access_token") @db.Text
+  twitterAccessSecret String? @map("twitter_access_secret") @db.Text
+  googleClientEmail String? @map("google_client_email") @db.Text
+  googlePrivateKey String? @map("google_private_key") @db.Text
+  googleFolderId String? @map("google_folder_id") @db.Text
+  metaAppId    String?  @map("meta_app_id") @db.Text
+  metaAppSecret String? @map("meta_app_secret") @db.Text
+  metaConfigId String?  @map("meta_config_id") @db.Text
+  webhookPipelineUrl String? @map("webhook_pipeline_url") @db.Text
+  webhookNuevoBotonUrl String? @map("webhook_nuevo_boton_url") @db.Text
+  webhookViejoBotonUrl String? @map("webhook_viejo_boton_url") @db.Text
+  webhookTercerBotonUrl String? @map("webhook_tercer_boton_url") @db.Text
+  googleSearchApiKey String? @map("google_search_api_key") @db.Text
+  googleSearchCx    String? @map("google_search_cx") @db.Text
+  stripeCustomerId  String? @map("stripe_customer_id") @db.Text
+  stripeSubscriptionId String? @map("stripe_subscription_id") @db.Text
+  stripeSubscriptionStatus String? @map("stripe_subscription_status") @db.VarChar(50)
+  trialEndsAt       DateTime? @map("trial_ends_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  users             User[]
+  pipelines         Pipeline[]
+  topics            Topic[]
+  articles          Article[]
+  publications      Publication[]
+  pipelineConfigs   PipelineConfig[]
+  connections       Connection[]
+  jobs              Job[]
+  stripeInvoices    StripeInvoice[]
+  credits           Credit[]
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  email       String   @unique @db.VarChar(255)
+  password    String   @db.VarChar(255)
+  fullName    String   @map("full_name") @db.VarChar(255)
+  role        Role     @default(VIEWER)
+  tenantId    String   @map("tenant_id") @db.Uuid
+  emailVerified Boolean @default(false) @map("email_verified")
+  verificationToken String? @map("verification_token") @db.Text
+  resetToken  String? @map("reset_token") @db.Text
+  resetTokenExpiresAt DateTime? @map("reset_token_expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  stripeInvoices StripeInvoice[]
+
+  @@index([email])
+  @@index([tenantId])
+}
+
+model Plan {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @unique @db.VarChar(100)
+  description  String?  @db.Text
+  priceMonthly Float    @map("price_monthly") @default(0)
+  priceYearly  Float?   @map("price_yearly")
+  stripePriceIdMonthly String? @map("stripe_price_id_monthly") @db.Text
+  stripePriceIdYearly  String? @map("stripe_price_id_yearly") @db.Text
+  features     Json     // Array de strings en JSON
+  maxUsers     Int      @map("max_users") @default(1)
+  maxPipelines Int      @map("max_pipelines") @default(3)
+  maxTopicsPerMonth Int @map("max_topics_per_month") @default(10)
+  maxArticlesPerMonth Int @map("max_articles_per_month") @default(10)
+  maxPublicationsPerMonth Int @map("max_publications_per_month") @default(10)
+  maxStorageGb  Float   @map("max_storage_gb") @default(1)
+  hasPrioritySupport Boolean @default(false) @map("has_priority_support")
+  hasCustomBranding Boolean @default(false) @map("has_custom_branding")
+  hasAdvancedAnalytics Boolean @default(false) @map("has_advanced_analytics")
+  isActive     Boolean  @default(true) @map("is_active")
+  isPublic     Boolean  @default(true) @map("is_public")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenants      Tenant[] @relation("PlanTenants")
+}
+
+model Pipeline {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  config      Json     // PipelineConfig JSON
+  isActive    Boolean  @default(true) @map("is_active")
+  isTemplate  Boolean  @default(false) @map("is_template")
+  lastRunAt   DateTime? @map("last_run_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  jobs        Job[]
+
+  @@index([tenantId])
+}
+
+model Topic {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  title       String   @db.VarChar(500)
+  description String?  @db.Text
+  url         String?  @db.Text
+  source      String?  @db.VarChar(100)
+  category    String?  @db.VarChar(100)
+  sentiment   Float?   @default(0)
+  urgency     Float?   @default(0)
+  isProcessed Boolean  @default(false) @map("is_processed")
+  processedAt DateTime? @map("processed_at")
+  metadata    Json?    // JSON adicional
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  articles    Article[]
+
+  @@index([tenantId])
+  @@index([isProcessed])
+  @@index([createdAt])
+}
+
+model Article {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  topicId     String?  @map("topic_id") @db.Uuid
+  title       String   @db.VarChar(500)
+  content     String   @db.Text
+  summary     String?  @db.Text
+  author      String?  @db.VarChar(255)
+  tags        String?  @db.Text // CSV de tags
+  language    String   @default("es") @db.VarChar(10)
+  wordCount   Int      @default(0) @map("word_count")
+  readingTime Int      @default(0) @map("reading_time") // en minutos
+  status      ArticleStatus @default(DRAFT)
+  publishedAt DateTime? @map("published_at")
+  imageUrl    String?  @map("image_url") @db.Text
+  imagePrompt String?  @map("image_prompt") @db.Text
+  metadata    Json?    // JSON adicional
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  topic       Topic?   @relation(fields: [topicId], references: [id])
+  publications Publication[]
+
+  @@index([tenantId])
+  @@index([topicId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Publication {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  articleId   String   @map("article_id") @db.Uuid
+  platform    PublicationPlatform
+  platformId  String?  @map("platform_id") @db.Text // ID en la plataforma externa
+  url         String?  @db.Text
+  status      PublicationStatus @default(PENDING)
+  scheduledAt DateTime? @map("scheduled_at")
+  publishedAt DateTime? @map("published_at")
+  error       String?  @db.Text
+  metadata    Json?    // JSON respuesta de la plataforma
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  article     Article  @relation(fields: [articleId], references: [id])
+
+  @@index([tenantId])
+  @@index([articleId])
+  @@index([platform])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+model PipelineConfig {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String   @db.VarChar(255)
+  config      Json     // PipelineConfig JSON
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([isDefault])
+}
+
+model Connection {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  platform    ConnectionPlatform
+  name        String   @db.VarChar(255)
+  credentials String   @db.Text // Encriptado
+  isActive    Boolean  @default(true) @map("is_active")
+  lastTestedAt DateTime? @map("last_tested_at")
+  lastError   String?  @map("last_error") @db.Text
+  metadata    Json?    // JSON adicional
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([platform])
+  @@index([isActive])
+}
+
+model Job {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  pipelineId  String?  @map("pipeline_id") @db.Uuid
+  type        JobType
+  status      JobStatus @default(PENDING)
+  input       Json?    // JSON de entrada
+  output      Json?    // JSON de resultado
+  progress    Float?   @default(0)
+  error       String?  @db.Text
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  metadata    Json?    // JSON adicional
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  pipeline    Pipeline? @relation(fields: [pipelineId], references: [id])
+
+  @@index([tenantId])
+  @@index([pipelineId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model StripeInvoice {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  userId      String?  @map("user_id") @db.Uuid
+  stripeInvoiceId String @unique @map("stripe_invoice_id") @db.Text
+  amount      Float    @default(0)
+  currency    String   @default("usd") @db.VarChar(3)
+  status      String   @db.VarChar(50) // paid, unpaid, void, etc.
+  pdfUrl      String?  @map("pdf_url") @db.Text
+  hostedInvoiceUrl String? @map("hosted_invoice_url") @db.Text
+  invoiceAt   DateTime @map("invoice_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  user        User?    @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([stripeInvoiceId])
+  @@index([invoiceAt])
+}
+
+model Credit {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  type        CreditType
+  amount      Int      @default(0)
+  description String?  @db.Text
+  expiresAt   DateTime? @map("expires_at")
+  isUsed      Boolean  @default(false) @map("is_used")
+  usedAt      DateTime? @map("used_at")
+  metadata    Json?    // JSON adicional
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([type])
+  @@index([isUsed])
+  @@index([expiresAt])
+}
+
+// =============================================
+// ENUMS
+// =============================================
+
+enum Role {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum ArticleStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum PublicationPlatform {
+  TWITTER
+  FACEBOOK
+  INSTAGRAM
+  GOOGLE_DRIVE
+  WEBHOOK
+}
+
+enum PublicationStatus {
+  PENDING
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum ConnectionPlatform {
+  TWITTER
+  FACEBOOK
+  INSTAGRAM
+  GOOGLE_DRIVE
+  WEBHOOK
+}
+
+enum JobType {
+  CAPTURE
+  TRANSCRIPTION
+  TOPIC_DETECTION
+  ARTICLE_GENERATION
+  IMAGE_GENERATION
+  PUBLICATION
+  PIPELINE_EXECUTION
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CreditType {
+  ARTICLE
+  PUBLICATION
+  TRANSCRIPTION
+  STORAGE
+}

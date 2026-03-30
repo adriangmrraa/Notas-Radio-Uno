@@ -18,11 +18,11 @@
 
   --border: rgba(255, 255, 255, 0.06);
   --border-hover: rgba(255, 255, 255, 0.12);
-  --border-focus: rgba(233, 69, 96, 0.4);
+  --border-focus: rgba(6, 182, 212, 0.4);
 
-  --accent: #e94560;
-  --accent-hover: #d63a54;
-  --accent-glow: rgba(233, 69, 96, 0.15);
+  --accent: #06b6d4;
+  --accent-hover: #0891b2;
+  --accent-glow: rgba(6, 182, 212, 0.15);
   --success: #00d4aa;
   --success-bg: rgba(0, 212, 170, 0.08);
   --warning: #f59e0b;
@@ -34,7 +34,7 @@
   --text-primary: #e8eaf0;
   --text-secondary: #8892a4;
   --text-muted: #555d70;
-  --text-accent: #e94560;
+  --text-accent: #06b6d4;
 
   --radius-sm: 6px;
   --radius: 10px;
@@ -47,7 +47,7 @@
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
   --shadow: 0 4px 16px rgba(0,0,0,0.3);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.4);
-  --shadow-glow: 0 0 30px rgba(233, 69, 96, 0.08);
+  --shadow-glow: 0 0 30px rgba(6, 182, 212, 0.08);
 }
 
 body {
@@ -65,7 +65,7 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse at 20% 50%, rgba(233, 69, 96, 0.04), transparent 60%),
+    radial-gradient(ellipse at 20% 50%, rgba(6, 182, 212, 0.04), transparent 60%),
     radial-gradient(ellipse at 80% 20%, rgba(0, 212, 170, 0.03), transparent 50%);
   pointer-events: none;
   z-index: 0;
@@ -133,9 +133,9 @@ body::before {
 }
 
 .badge-ai {
-  background: rgba(233, 69, 96, 0.1);
+  background: rgba(6, 182, 212, 0.1);
   color: var(--accent);
-  border: 1px solid rgba(233, 69, 96, 0.2);
+  border: 1px solid rgba(6, 182, 212, 0.2);
 }
 
 /* ========================================= */
@@ -282,7 +282,7 @@ select:focus,
 textarea:focus {
   background: var(--bg-input-focus);
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.08);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.08);
 }
 
 input::placeholder,
@@ -384,13 +384,13 @@ textarea {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent), #c53050);
-  box-shadow: 0 2px 12px rgba(233, 69, 96, 0.3);
+  background: linear-gradient(135deg, var(--accent), #0891b2);
+  box-shadow: 0 2px 12px rgba(6, 182, 212, 0.3);
 }
 
 .btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 20px rgba(233, 69, 96, 0.4);
+  box-shadow: 0 4px 20px rgba(6, 182, 212, 0.4);
 }
 
 .btn-secondary {
@@ -582,7 +582,7 @@ textarea {
 
 .step.active .step-icon-wrap {
   background: var(--accent-glow);
-  box-shadow: 0 0 16px rgba(233, 69, 96, 0.2);
+  box-shadow: 0 0 16px rgba(6, 182, 212, 0.2);
 }
 
 .step.active .step-label {
@@ -661,11 +661,11 @@ textarea {
 }
 
 .activity-card.active {
-  background: rgba(233, 69, 96, 0.04);
+  background: rgba(6, 182, 212, 0.04);
   border-left: 3px solid var(--accent);
-  border-color: rgba(233, 69, 96, 0.15);
+  border-color: rgba(6, 182, 212, 0.15);
   border-left-color: var(--accent);
-  box-shadow: 0 0 20px rgba(233, 69, 96, 0.05);
+  box-shadow: 0 0 20px rgba(6, 182, 212, 0.05);
   animation: slideInCard 0.3s ease-out, cardPulse 2s ease-in-out infinite;
 }
 
@@ -724,7 +724,7 @@ textarea {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(233, 69, 96, 0.2);
+  border: 2px solid rgba(6, 182, 212, 0.2);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -1025,7 +1025,7 @@ textarea {
 }
 
 .history-tab.active .tab-count {
-  background: rgba(233, 69, 96, 0.15);
+  background: rgba(6, 182, 212, 0.15);
   color: var(--accent);
 }
 
@@ -1064,7 +1064,7 @@ textarea {
 }
 
 @keyframes highlightNew {
-  0% { background: rgba(233, 69, 96, 0.08); border-color: rgba(233, 69, 96, 0.3); }
+  0% { background: rgba(6, 182, 212, 0.08); border-color: rgba(6, 182, 212, 0.3); }
   100% { background: rgba(255, 255, 255, 0.02); border-color: var(--border); }
 }
 
@@ -1325,7 +1325,7 @@ textarea {
   padding: 4px;
 }
 .modal-close:hover {
-  color: var(--accent, #e94560);
+  color: var(--accent, #06b6d4);
 }
 .modal-title {
   font-size: 1.3rem;

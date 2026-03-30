@@ -52,6 +52,13 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
         const ipAddress = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress;
         const userAgent = req.headers['user-agent'];
         const result = await login(data, ipAddress, userAgent);
+        res.cookie('token', result.accessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+            path: '/',
+        });
         res.json(result);
     } catch (err: any) {
         if (err instanceof z.ZodError) {

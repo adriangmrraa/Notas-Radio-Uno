@@ -54,6 +54,7 @@ export async function register(input: {
             },
         });
 
+        const isDev = process.env.NODE_ENV !== 'production';
         const user = await tx.user.create({
             data: {
                 email: normalizedEmail,
@@ -61,9 +62,10 @@ export async function register(input: {
                 fullName,
                 tenantId: tenant.id,
                 role: UserRole.owner,
-                status: UserStatus.pending,
-                verificationToken,
-                verificationTokenExpiresAt: tokenExpires,
+                status: isDev ? UserStatus.active : UserStatus.pending,
+                isVerified: isDev ? true : false,
+                verificationToken: isDev ? null : verificationToken,
+                verificationTokenExpiresAt: isDev ? null : tokenExpires,
             },
         });
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { usePipelineState } from './hooks/usePipelineState';
+import { ImageEditModal } from './components/ImageEditModal';
 import type {
   PipelineConfig,
   Publication,
@@ -59,16 +60,13 @@ export default function App() {
   const { socket } = usePipelineState();
 
   return (
-    <>
-      <TopBar />
-      <main className="main-container">
-        <PipelineControl />
-        <MetaConnection />
-        <WebhookSettingsSection />
-        <ManualTools />
-        <History socket={socket} />
-      </main>
-    </>
+    <main className="main-container">
+      <PipelineControl />
+      <MetaConnection />
+      <WebhookSettingsSection />
+      <ManualTools />
+      <History socket={socket} />
+    </main>
   );
 }
 
@@ -120,6 +118,7 @@ function PipelineControl() {
   const [showStatus, setShowStatus] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [selectedNote, setSelectedNote] = useState<{ title: string; content?: string; previewUrl?: string; timestamp: string } | null>(null);
+  const [editingImage, setEditingImage] = useState<{ url: string; path: string } | null>(null);
   const activityFeedRef = useRef<HTMLDivElement>(null);
 
   // Image model hint
@@ -250,7 +249,7 @@ function PipelineControl() {
               <h4 className="section-label">&#9889; Pipeline en vivo</h4>
               <div className="activity-feed" ref={activityFeedRef}>
                 {activityCards.map(card => (
-                  <ActivityCard key={card.id} card={card} onImageClick={url => setLightboxUrl(url)} />
+                  <ActivityCard key={card.id} card={card} onImageClick={url => setLightboxUrl(url)} onImageEdit={(url, path) => setEditingImage({ url, path })} />
                 ))}
               </div>
             </div>
@@ -281,6 +280,17 @@ function PipelineControl() {
 
       <NoteModal note={selectedNote} onClose={() => setSelectedNote(null)} />
       <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
+      {editingImage && (
+        <ImageEditModal
+          imageUrl={editingImage.url}
+          imagePath={editingImage.path}
+          onClose={() => setEditingImage(null)}
+          onSave={(newPath, newUrl) => {
+            console.log('[ImageEdit] Imagen editada guardada:', newPath, newUrl);
+            setEditingImage(null);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -365,7 +375,7 @@ function StepProgress({ activeStep }: { activeStep: string }) {
 
 // ─── ActivityCard ───────────────────────────────────────────
 
-function ActivityCard({ card, onImageClick }: { card: ActivityCardData; onImageClick?: (url: string) => void }) {
+function ActivityCard({ card, onImageClick, onImageEdit }: { card: ActivityCardData; onImageClick?: (url: string) => void; onImageEdit?: (url: string, path: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const MAX_VISIBLE = 3;
   const totalSteps = card.subSteps.length;
@@ -406,6 +416,15 @@ function ActivityCard({ card, onImageClick }: { card: ActivityCardData; onImageC
       {card.previewUrl && (
         <div className="activity-card-preview">
           <img src={card.previewUrl} alt="Placa" onClick={() => onImageClick?.(card.previewUrl!)} />
+          <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => onImageEdit?.(card.previewUrl!, card.previewUrl!.replace(/^\//, ''))}
+              style={{ fontSize: '11px', padding: '4px 10px' }}
+            >
+              ✨ Editar con IA
+            </button>
+          </div>
         </div>
       )}
     </div>

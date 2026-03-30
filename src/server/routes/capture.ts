@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "socket.io";
 import type { ChildProcess } from "child_process";
 
+import { requireAuth } from "../middleware/auth.js";
 import path from "path";
 import fs from "fs";
 import { exec } from "child_process";
@@ -92,7 +93,7 @@ export function registerCaptureRoutes(
   // ------------------------------------------------------------------
   // POST /api/start-capture
   // ------------------------------------------------------------------
-  app.post("/api/start-capture", (_req: Request, res: Response) => {
+  app.post("/api/start-capture", requireAuth, (_req: Request, res: Response) => {
     console.log("Solicitando iniciar captura de audio...");
 
     if (isCapturing) {
@@ -130,7 +131,7 @@ export function registerCaptureRoutes(
   // ------------------------------------------------------------------
   // POST /api/stop-capture
   // ------------------------------------------------------------------
-  app.post("/api/stop-capture", (_req: Request, res: Response) => {
+  app.post("/api/stop-capture", requireAuth, (_req: Request, res: Response) => {
     console.log("Deteniendo captura...");
 
     if (!isCapturing) {

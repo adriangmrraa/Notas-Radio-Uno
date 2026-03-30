@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import * as dotenv from "dotenv";
 import multer from "multer";
 import path from "path";
@@ -21,6 +22,12 @@ import { registerCaptureRoutes } from "./routes/capture.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
 import { authRouter } from "./routes/auth.js";
+import { billingRouter } from "./routes/billing.js";
+import { connectionsRouter } from "./routes/connections.js";
+import { jobsRouter } from "./routes/jobs.js";
+import { imageEditRouter } from "./routes/imageEdit.js";
+import { initJobScheduler } from "./services/jobSchedulerService.js";
+import { initNotificationService } from "./services/notificationService.js";
 import { disconnectPrisma } from "./lib/prisma.js";
 
 // ---------------------------------------------------------------------------
@@ -79,9 +86,36 @@ const app = express();
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: true,
     methods: ["GET", "POST"],
+    credentials: true,
   },
+});
+
+// Socket.IO auth middleware — join tenant room
+import jwt from "jsonwebtoken";
+const SOCKET_JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token as string | undefined;
+  if (!token) {
+    // Allow unauthenticated sockets for backward compatibility (dev mode)
+    socket.data.tenantId = "default";
+    return next();
+  }
+  try {
+    const payload = jwt.verify(token, SOCKET_JWT_SECRET) as { tenantId: string };
+    socket.data.tenantId = payload.tenantId;
+    next();
+  } catch {
+    next(new Error("Socket auth failed"));
+  }
+});
+
+io.on("connection", (socket) => {
+  const tenantId = socket.data.tenantId || "default";
+  socket.join(`tenant:${tenantId}`);
+  console.log(`[Socket.IO] Client connected to tenant:${tenantId}`);
 });
 
 const upload = multer({ dest: path.join(PROJECT_ROOT, "uploads") });
@@ -90,8 +124,9 @@ const PORT = 3001;
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 
 // Static files: production client bundle
 app.use(express.static(path.join(PROJECT_ROOT, "dist", "client")));
@@ -101,6 +136,13 @@ app.use(express.static(path.join(PROJECT_ROOT, "public")));
 
 // Serve /output for generated images
 app.use("/output", express.static(OUTPUT_DIR));
+
+// ---------------------------------------------------------------------------
+// Health check endpoint
+// ---------------------------------------------------------------------------
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
 
 // ---------------------------------------------------------------------------
 // API route to get transcription file content
@@ -119,6 +161,14 @@ app.get("/api/get-transcriptions", (_req, res) => {
 // Auth routes
 // ---------------------------------------------------------------------------
 app.use("/api/auth", authRouter);
+app.use("/api/billing", billingRouter);
+app.use("/api/connections", connectionsRouter);
+app.use("/api/jobs", jobsRouter);
+app.use("/api/images", imageEditRouter);
+
+// Initialize background services
+initNotificationService(io);
+initJobScheduler(io);
 
 // ---------------------------------------------------------------------------
 // Register route modules

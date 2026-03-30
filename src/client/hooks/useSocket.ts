@@ -6,10 +6,23 @@ export function useSocket() {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    // In dev mode Vite proxy forwards to the backend.
-    // In production the client is served by the same origin.
+    // Read JWT from cookie or localStorage for socket auth
+    // The backend sets an httpOnly cookie, but we also support Bearer token
+    // For socket auth, we try to get it from a non-httpOnly source
+    const getToken = (): string | undefined => {
+      // Try to read from a meta tag or localStorage if available
+      try {
+        const stored = localStorage.getItem('accessToken');
+        if (stored) return stored;
+      } catch { /* ignore */ }
+      return undefined;
+    };
+
     const socket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
+      auth: {
+        token: getToken(),
+      },
     });
 
     socketRef.current = socket;

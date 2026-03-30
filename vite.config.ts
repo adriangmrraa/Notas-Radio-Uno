@@ -9,6 +9,7 @@ export default defineConfig({
     outDir: "dist/client",
   },
   server: {
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: "http://localhost:3001",

@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "socket.io";
 import type { Multer } from "multer";
 
+import { requireAuth } from "../middleware/auth.js";
 import path from "path";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
@@ -140,6 +141,7 @@ export function registerGenerateRoutes(
   // ------------------------------------------------------------------
   app.post(
     "/api/generate",
+    requireAuth,
     upload.single("image"),
     async (req: Request, res: Response) => {
       if (!req.file) {
@@ -182,7 +184,7 @@ export function registerGenerateRoutes(
   // ------------------------------------------------------------------
   // POST /api/generate-from-url - Scrape URL -> generate placa
   // ------------------------------------------------------------------
-  app.post("/api/generate-from-url", async (req: Request, res: Response) => {
+  app.post("/api/generate-from-url", requireAuth, async (req: Request, res: Response) => {
     const { url } = req.body as { url?: string };
 
     if (!url) {
@@ -219,7 +221,7 @@ export function registerGenerateRoutes(
   // ------------------------------------------------------------------
   // POST /api/sendWebhook - Viejo boton
   // ------------------------------------------------------------------
-  app.post("/api/sendWebhook", async (req: Request, res: Response) => {
+  app.post("/api/sendWebhook", requireAuth, async (req: Request, res: Response) => {
     const { title, description, imageUrl, finalImagePath } = req.body as {
       title?: string;
       description?: string;
@@ -290,7 +292,7 @@ export function registerGenerateRoutes(
   // ------------------------------------------------------------------
   // POST /api/sendWebhookNuevoBoton
   // ------------------------------------------------------------------
-  app.post("/api/sendWebhookNuevoBoton", async (req: Request, res: Response) => {
+  app.post("/api/sendWebhookNuevoBoton", requireAuth, async (req: Request, res: Response) => {
     const { title, content, imageUrl, finalImagePath } = req.body as {
       title?: string;
       content?: string;
@@ -361,7 +363,7 @@ export function registerGenerateRoutes(
   // ------------------------------------------------------------------
   // POST /api/generateNewsCopy
   // ------------------------------------------------------------------
-  app.post("/api/generateNewsCopy", async (req: Request, res: Response) => {
+  app.post("/api/generateNewsCopy", requireAuth, async (req: Request, res: Response) => {
     const { context, transcription } = req.body as {
       context?: string;
       transcription?: string;

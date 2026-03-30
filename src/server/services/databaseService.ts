@@ -130,10 +130,18 @@ export function initDatabase(): Database.Database {
       image_path TEXT,
       image_url TEXT,
       source TEXT NOT NULL DEFAULT 'manual',
+      status TEXT NOT NULL DEFAULT 'published',
       publish_results TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  // Migración: agregar columna status si no existe
+  try {
+    db.exec(`ALTER TABLE publications ADD COLUMN status TEXT NOT NULL DEFAULT 'published'`);
+  } catch (_) {
+    // Column already exists
+  }
 
   // Tabla de transcripciones de audio
   db.exec(`
@@ -457,6 +465,50 @@ export function deletePublication(id: number): boolean {
 
   const result = database.prepare("DELETE FROM publications WHERE id = ?").run(id);
   return result.changes > 0;
+}
+
+/**
+ * Obtiene publicaciones pendientes de aprobación.
+ */
+export function getPendingPublications(limit: number = 50): Publication[] {
+  const database = getDb();
+  const rows = database
+    .prepare("SELECT * FROM publications WHERE status = 'pending_approval' ORDER BY created_at DESC LIMIT ?")
+    .all(limit) as PublicationRow[];
+  return rows.map((row) => ({
+    ...row,
+    publish_results: row.publish_results ? JSON.parse(row.publish_results) : null,
+  }));
+}
+
+/**
+ * Aprueba una publicación (cambia status a 'approved').
+ */
+export function approvePublication(id: number): Publication | null {
+  const database = getDb();
+  database.prepare("UPDATE publications SET status = 'approved' WHERE id = ?").run(id);
+  return getPublicationById(id);
+}
+
+/**
+ * Actualiza una publicación (título, contenido, imagen).
+ */
+export function updatePublication(id: number, data: { title?: string; content?: string; imagePath?: string; imageUrl?: string; status?: string }): Publication | null {
+  const database = getDb();
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  if (data.title !== undefined) { fields.push('title = ?'); values.push(data.title); }
+  if (data.content !== undefined) { fields.push('content = ?'); values.push(data.content); }
+  if (data.imagePath !== undefined) { fields.push('image_path = ?'); values.push(data.imagePath); }
+  if (data.imageUrl !== undefined) { fields.push('image_url = ?'); values.push(data.imageUrl); }
+  if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
+
+  if (fields.length === 0) return getPublicationById(id);
+  values.push(id);
+
+  database.prepare(`UPDATE publications SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getPublicationById(id);
 }
 
 /**

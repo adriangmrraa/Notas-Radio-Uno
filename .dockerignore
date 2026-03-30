@@ -1,0 +1,15 @@
+node_modules
+dist
+output
+uploads
+.env
+.env.*
+*.md
+.git
+.gitignore
+.atl
+.claude
+data
+*.log
+.DS_Store
+Thumbs.db

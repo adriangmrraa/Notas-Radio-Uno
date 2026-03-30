@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 
+import { requireAuth } from "../middleware/auth.js";
 import { getSetting, setSetting } from "../services/databaseService.js";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ export function registerSettingsRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // GET /api/settings/webhooks
   // ------------------------------------------------------------------
-  app.get("/api/settings/webhooks", (_req: Request, res: Response) => {
+  app.get("/api/settings/webhooks", requireAuth, (_req: Request, res: Response) => {
     res.json({
       webhook_nuevo_boton: getWebhookNuevoBoton(),
       webhook_viejo_boton: getWebhookViejoBoton(),
@@ -40,7 +41,7 @@ export function registerSettingsRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // POST /api/settings/webhooks
   // ------------------------------------------------------------------
-  app.post("/api/settings/webhooks", (req: Request, res: Response) => {
+  app.post("/api/settings/webhooks", requireAuth, (req: Request, res: Response) => {
     const {
       webhook_nuevo_boton,
       webhook_viejo_boton,

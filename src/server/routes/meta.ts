@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 
+import { requireAuth } from "../middleware/auth.js";
 import {
   exchangeToken,
   discoverAssets,
@@ -13,7 +14,7 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // GET /api/meta/config - Public IDs for frontend (no secrets)
   // ------------------------------------------------------------------
-  app.get("/api/meta/config", (_req: Request, res: Response) => {
+  app.get("/api/meta/config", requireAuth, (_req: Request, res: Response) => {
     res.json({
       appId: process.env.META_APP_ID || "",
       configId: process.env.META_CONFIG_ID || "",
@@ -23,7 +24,7 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // GET /api/meta/status - Connection status
   // ------------------------------------------------------------------
-  app.get("/api/meta/status", (_req: Request, res: Response) => {
+  app.get("/api/meta/status", requireAuth, (_req: Request, res: Response) => {
     try {
       const status = getConnectionStatus();
       res.json(status);
@@ -37,7 +38,7 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // POST /api/meta/connect - Receive code or accessToken from FB popup
   // ------------------------------------------------------------------
-  app.post("/api/meta/connect", async (req: Request, res: Response) => {
+  app.post("/api/meta/connect", requireAuth, async (req: Request, res: Response) => {
     const { code, accessToken, redirectUri } = req.body as {
       code?: string;
       accessToken?: string;
@@ -91,7 +92,7 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // POST /api/meta/disconnect
   // ------------------------------------------------------------------
-  app.post("/api/meta/disconnect", (_req: Request, res: Response) => {
+  app.post("/api/meta/disconnect", requireAuth, (_req: Request, res: Response) => {
     try {
       const result = disconnectMeta();
       res.json(result);
@@ -105,7 +106,7 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // POST /api/meta/publish - Publish directly via Meta API
   // ------------------------------------------------------------------
-  app.post("/api/meta/publish", async (req: Request, res: Response) => {
+  app.post("/api/meta/publish", requireAuth, async (req: Request, res: Response) => {
     const { title, content, imageUrl, imagePath } = req.body as {
       title?: string;
       content?: string;
