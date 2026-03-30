@@ -1,5 +1,39 @@
-import { chatCompletion, extractJSON } from "./aiService.js";
+import { chatCompletion } from "./aiSdkService.js";
 import type { Insights } from "../../shared/types.js";
+
+/**
+ * Extract JSON from text response (for backward compatibility)
+ */
+function extractJSON(text: string): unknown {
+  // Intentar parsear directamente
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    // no-op
+  }
+
+  // Buscar JSON en markdown code blocks
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1].trim());
+    } catch (_) {
+      // no-op
+    }
+  }
+
+  // Buscar objeto JSON suelto
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (_) {
+      // no-op
+    }
+  }
+
+  return null;
+}
 
 const SYSTEM_PROMPT = `Sos un analista de inteligencia informativa. Tu trabajo es procesar transcripciones en bruto de transmisiones en vivo y extraer datos estructurados para el equipo editorial.
 

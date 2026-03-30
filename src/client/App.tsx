@@ -2,6 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { usePipelineState } from './hooks/usePipelineState';
 import { ImageEditModal } from './components/ImageEditModal';
+import { MarkdownViewer } from './components/ai/MarkdownViewer';
+import { PipelineView } from './components/pipeline/PipelineView';
+import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import type {
   PipelineConfig,
   Publication,
@@ -243,6 +246,14 @@ function PipelineControl() {
           {/* Step Progress */}
           <StepProgress activeStep={activeStep} />
 
+          {/* PipelineView Component */}
+          <div className="mt-4 mb-4">
+            <PipelineView 
+              activeStep={activeStep} 
+              isRunning={running} 
+            />
+          </div>
+
           <div className="pipeline-left">
             {/* Activity Feed */}
             <div className="activity-feed-container">
@@ -408,7 +419,9 @@ function ActivityCard({ card, onImageClick, onImageEdit }: { card: ActivityCardD
           {visibleSteps.map((sub, i) => (
             <div key={i} className={`activity-sub-step ${sub.className || ''}`}>
               <span className="sub-icon">{sub.icon}</span>
-              <span className="sub-text">{sub.text}</span>
+              <span className="sub-text">
+                <MarkdownViewer content={sub.text} />
+              </span>
             </div>
           ))}
         </div>

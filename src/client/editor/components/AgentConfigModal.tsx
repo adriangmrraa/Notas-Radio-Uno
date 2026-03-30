@@ -1,4 +1,22 @@
 import React, { useState, useEffect } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/client/components/ui/dialog';
+import { Input } from '@/client/components/ui/input';
+import { Textarea } from '@/client/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/client/components/ui/select';
+import { Button } from '@/client/components/ui/button';
 
 interface Props {
   agent: any | null;
@@ -123,18 +141,29 @@ export default function AgentConfigModal({ agent, afterStep, templates, currentN
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content agent-modal" onClick={e => e.stopPropagation()}>
-        <button className="modal-close" onClick={onClose}>&times;</button>
-        <h3 className="modal-title">{isEditing ? 'Editar Agente' : 'Crear Agente'}</h3>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto bg-zinc-950 border-zinc-800 text-zinc-100">
+        <DialogHeader>
+          <DialogTitle className="text-xl">{isEditing ? 'Editar Agente' : 'Crear Agente'}</DialogTitle>
+          <DialogDescription className="text-zinc-400">
+            Configura un agente de IA para el pipeline de procesamiento de audio.
+          </DialogDescription>
+        </DialogHeader>
 
         {!isEditing && templates.length > 0 && (
-          <div className="agent-templates-row">
-            <label className="form-label">Templates rápidos:</label>
-            <div className="templates-chips">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">Templates rápidos:</label>
+            <div className="flex flex-wrap gap-2">
               {templates.map(tmpl => (
-                <button key={tmpl.id} className={`chip ${templateId === tmpl.id ? 'active' : ''}`}
-                  onClick={() => applyTemplate(tmpl)}>
+                <button
+                  key={tmpl.id}
+                  className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
+                    templateId === tmpl.id
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                  }`}
+                  onClick={() => applyTemplate(tmpl)}
+                >
                   {tmpl.icon} {tmpl.name}
                 </button>
               ))}
@@ -142,78 +171,143 @@ export default function AgentConfigModal({ agent, afterStep, templates, currentN
           </div>
         )}
 
-        <div className="form-group">
-          <label className="form-label">Nombre *</label>
-          <input className="form-input" value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del agente" />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Descripción</label>
-          <input className="form-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Descripción breve" />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Posición en el Pipeline *</label>
-          <select className="form-select" value={position} onChange={e => setPosition(e.target.value)}>
-            {STEP_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">System Prompt *</label>
-          <textarea className="form-input agent-prompt-textarea" rows={12} value={systemPrompt}
-            onChange={e => setSystemPrompt(e.target.value)}
-            placeholder="Instrucciones para el agente. Usá JSON en la respuesta para que se integre con el pipeline." />
-        </div>
-
-        <div className="form-row">
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Proveedor IA</label>
-            <select className="form-select" value={aiProvider} onChange={e => setAiProvider(e.target.value)}>
-              <option value="auto">Auto (DeepSeek → Gemini)</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="gemini">Gemini</option>
-            </select>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">Nombre *</label>
+            <Input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Nombre del agente"
+              className="bg-zinc-900 border-zinc-700 text-zinc-100 placeholder:text-zinc-500"
+            />
           </div>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Temperatura: {temperature}</label>
-            <input type="range" min="0" max="1" step="0.1" value={temperature}
-              onChange={e => setTemperature(parseFloat(e.target.value))} />
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">Descripción</label>
+            <Input
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Descripción breve"
+              className="bg-zinc-900 border-zinc-700 text-zinc-100 placeholder:text-zinc-500"
+            />
           </div>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Max Tokens</label>
-            <input type="number" className="form-input" value={maxTokens}
-              onChange={e => setMaxTokens(parseInt(e.target.value) || 2000)} />
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">Posición en el Pipeline *</label>
+            <Select value={position} onValueChange={setPosition}>
+              <SelectTrigger className="bg-zinc-900 border-zinc-700 text-zinc-100">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-zinc-900 border-zinc-700 text-zinc-100">
+                {STEP_OPTIONS.map(opt => (
+                  <SelectItem key={opt.value} value={opt.value} className="focus:bg-zinc-800 focus:text-zinc-100">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">System Prompt *</label>
+            <Textarea
+              rows={10}
+              value={systemPrompt}
+              onChange={e => setSystemPrompt(e.target.value)}
+              placeholder="Instrucciones para el agente. Usá JSON en la respuesta para que se integre con el pipeline."
+              className="bg-zinc-900 border-zinc-700 text-zinc-100 placeholder:text-zinc-500 resize-none font-mono text-sm"
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-300">Proveedor IA</label>
+              <Select value={aiProvider} onValueChange={setAiProvider}>
+                <SelectTrigger className="bg-zinc-900 border-zinc-700 text-zinc-100">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-zinc-900 border-zinc-700 text-zinc-100">
+                  <SelectItem value="auto" className="focus:bg-zinc-800 focus:text-zinc-100">Auto (DeepSeek → Gemini)</SelectItem>
+                  <SelectItem value="deepseek" className="focus:bg-zinc-800 focus:text-zinc-100">DeepSeek</SelectItem>
+                  <SelectItem value="gemini" className="focus:bg-zinc-800 focus:text-zinc-100">Gemini</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-300">
+                Temperatura: <span className="text-emerald-400">{temperature}</span>
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={temperature}
+                onChange={e => setTemperature(parseFloat(e.target.value))}
+                className="w-full accent-emerald-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-300">Max Tokens</label>
+              <Input
+                type="number"
+                value={maxTokens}
+                onChange={e => setMaxTokens(parseInt(e.target.value) || 2000)}
+                className="bg-zinc-900 border-zinc-700 text-zinc-100"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-300">Tools habilitadas</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tools.includes('web_search')}
+                  onChange={() => toggleTool('web_search')}
+                  className="accent-emerald-500"
+                />
+                🌐 Búsqueda web
+              </label>
+              <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tools.includes('image_processing')}
+                  onChange={() => toggleTool('image_processing')}
+                  className="accent-emerald-500"
+                />
+                🖼️ Procesamiento de imágenes
+              </label>
+            </div>
           </div>
         </div>
 
-        <div className="form-group">
-          <label className="form-label">Tools habilitadas</label>
-          <div className="tools-checkboxes">
-            <label className="checkbox-label">
-              <input type="checkbox" checked={tools.includes('web_search')}
-                onChange={() => toggleTool('web_search')} />
-              🌐 Búsqueda web
-            </label>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={tools.includes('image_processing')}
-                onChange={() => toggleTool('image_processing')} />
-              🖼️ Procesamiento de imágenes
-            </label>
+        {error && (
+          <div className="p-3 rounded-md bg-red-900/30 border border-red-800 text-red-400 text-sm">
+            {error}
           </div>
-        </div>
+        )}
 
-        {error && <div className="form-error">{error}</div>}
-
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button
+            variant="ghost"
+            onClick={onClose}
+            className="text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800"
+          >
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={saving}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
             {saving ? 'Guardando...' : isEditing ? 'Actualizar' : 'Crear y agregar al pipeline'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

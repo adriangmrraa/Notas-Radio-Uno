@@ -124,7 +124,7 @@ export interface ChatCompletionOptions {
 
 export interface ChatCompletionResult {
   text: string;
-  provider: "deepseek" | "gemini";
+  provider: "deepseek" | "gemini" | "openai";
 }
 
 export interface ScrapedArticle {

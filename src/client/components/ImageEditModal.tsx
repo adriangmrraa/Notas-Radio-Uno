@@ -1,6 +1,14 @@
 import { useState } from 'react';
-import { X, Wand2, Loader2, RotateCcw, Check, AlertCircle } from 'lucide-react';
+import { Wand2, Loader2, RotateCcw, Check, AlertCircle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from './ui/dialog';
 
 interface ImageEditModalProps {
   imageUrl: string;      // URL to display (e.g. /output/final_xxx.jpg)
@@ -71,29 +79,24 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
   ];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal-content max-w-4xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="modal-header">
+    <Dialog open={true} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-4xl bg-zinc-900 border-zinc-800 text-white max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-purple-500/10 flex items-center justify-center text-cyan-400">
               <Wand2 className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-white">Editor de Imagen con IA</h3>
-              <p className="text-xs text-white/30">Gemini edita la imagen con tu instrucción</p>
+              <DialogTitle className="text-lg font-bold text-white">Editor de Imagen con IA</DialogTitle>
+              <DialogDescription className="text-xs text-white/30">
+                Gemini edita la imagen con tu instrucción
+              </DialogDescription>
             </div>
           </div>
-          <button onClick={onClose} className="text-white/30 hover:text-white transition-colors p-2">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        </DialogHeader>
 
         {/* Body */}
-        <div className="modal-body space-y-6">
+        <div className="space-y-6">
           {/* Image Preview */}
           <div className="relative rounded-2xl overflow-hidden border border-white/[0.06] bg-black/30">
             <img
@@ -108,7 +111,7 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
               </div>
             )}
             {editedUrl && !loading && (
-              <div className="absolute top-3 right-3 badge badge-success flex items-center gap-1.5 px-3 py-1.5">
+              <div className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs">
                 <Check className="w-3 h-3" />
                 Editada
               </div>
@@ -134,7 +137,7 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Describe qué cambios quieres en la imagen..."
                 rows={3}
-                className="input-premium resize-none"
+                className="w-full resize-none rounded-xl bg-white/[0.03] border border-white/[0.06] text-white/70 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/30 transition-all placeholder:text-white/20"
                 disabled={loading}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -155,7 +158,7 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
                   key={s}
                   onClick={() => setPrompt(s)}
                   disabled={loading}
-                  className="text-xs px-3 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06] text-white/40 hover:text-white/70 hover:bg-white/[0.06] hover:border-white/[0.1] transition-all duration-200 cursor-pointer"
+                  className="text-xs px-3 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06] text-white/40 hover:text-white/70 hover:bg-white/[0.06] hover:border-white/[0.1] transition-all duration-200 cursor-pointer disabled:opacity-50"
                 >
                   {s}
                 </button>
@@ -165,9 +168,9 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
         </div>
 
         {/* Footer */}
-        <div className="modal-footer">
+        <DialogFooter className="gap-2 sm:gap-0">
           {editedUrl && (
-            <button onClick={handleReset} className="btn-secondary flex items-center gap-2 mr-auto">
+            <button onClick={handleReset} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/[0.06] border border-white/[0.1] text-white/70 hover:text-white hover:bg-white/[0.1] transition-all mr-auto">
               <RotateCcw className="w-4 h-4" />
               Restaurar original
             </button>
@@ -175,7 +178,7 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
           <button
             onClick={handleEdit}
             disabled={loading || !prompt.trim()}
-            className="btn-primary flex items-center gap-2"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
               <>
@@ -190,13 +193,13 @@ export function ImageEditModal({ imageUrl, imagePath, onClose, onSave }: ImageEd
             )}
           </button>
           {editedUrl && (
-            <button onClick={handleConfirm} className="btn-primary flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-[0_4px_20px_rgba(16,185,129,0.2)]">
+            <button onClick={handleConfirm} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-medium shadow-[0_4px_20px_rgba(16,185,129,0.2)] hover:from-emerald-400 hover:to-emerald-500 transition-all">
               <Check className="w-4 h-4" />
               Usar esta imagen
             </button>
           )}
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

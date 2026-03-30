@@ -1,4 +1,4 @@
-import { chatCompletion } from "./aiService.js";
+import { chatCompletion } from "./aiSdkService.js";
 import type { NewsGenerationOptions } from "../../shared/types.js";
 
 const PLATFORM_NAME = process.env.PLATFORM_NAME || "Noticias";
