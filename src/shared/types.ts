@@ -1,3 +1,63 @@
+// Branding
+export type FontFamilyId = 'bebas_kai' | 'oswald' | 'roboto_condensed' | 'montserrat' | 'lato' | 'playfair';
+export type TemplateId = 'dark_gradient' | 'solid_bar' | 'minimal' | 'split' | 'vignette';
+export type PlatformType = 'youtube' | 'facebook' | 'kick' | 'twitch' | 'radio_stream' | 'website' | 'other';
+export type ConductorRole = 'conductor' | 'columnista' | 'productor' | 'invitado' | 'other';
+
+export interface BrandingConfig {
+  logoBuffer: Buffer | null;
+  platformName: string;
+  fontFamily: FontFamilyId;
+  templateId: TemplateId;
+}
+
+export interface BrandingResponse {
+  platformName: string | null;
+  logoUrl: string | null;
+  fontFamily: FontFamilyId;
+  templateId: TemplateId;
+  hasLogo: boolean;
+}
+
+export interface Program {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  schedule: string | null;
+  isActive: boolean;
+  urls: ProgramUrl[];
+  createdAt: string;
+}
+
+export interface ProgramUrl {
+  id: string;
+  programId: string;
+  type: PlatformType;
+  url: string;
+  label: string | null;
+}
+
+export interface Conductor {
+  id: string;
+  tenantId: string;
+  programId?: string | null;
+  name: string;
+  role: ConductorRole | null;
+  bio: string | null;
+  isActive: boolean;
+  photos: ConductorPhoto[];
+  createdAt: string;
+}
+
+export interface ConductorPhoto {
+  id: string;
+  conductorId: string;
+  mimeType: string;
+  isPrimary: boolean;
+  createdAt: string;
+}
+
 // Pipeline
 export interface PipelineConfig {
   url: string;
@@ -6,6 +66,7 @@ export interface PipelineConfig {
   imageModel: string;
   segmentDuration: number;
   autoPublish: boolean;
+  programId?: string;
 }
 
 export interface PipelineStatus {

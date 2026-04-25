@@ -5,6 +5,9 @@ import type { PipelineConfig, PipelineStatus } from "../../shared/types.js";
 import { AutoPipeline } from "../services/pipelineService.js";
 import { TONE_PROMPTS, STRUCTURE_PROMPTS } from "../services/newsService.js";
 import { requireAuth, requireActiveSubscription } from "../middleware/auth.js";
+import { db } from "../db/index.js";
+import { programs } from "../db/schema/programs.js";
+import { eq, and } from "drizzle-orm";
 
 // Per-tenant pipeline instances
 const pipelines: Map<string, AutoPipeline> = new Map();
@@ -22,6 +25,7 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
       imageModel,
       segmentDuration,
       autoPublish,
+      programId,
     } = req.body as Partial<PipelineConfig> & { url?: string };
 
     if (!url) {
@@ -30,6 +34,20 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
     }
 
     try {
+      // Validate programId if provided
+      if (programId) {
+        const [program] = await db
+          .select({ id: programs.id })
+          .from(programs)
+          .where(and(eq(programs.id, programId), eq(programs.tenantId, tenantId)))
+          .limit(1);
+
+        if (!program) {
+          res.status(400).json({ error: "El programa seleccionado no existe o no pertenece a este tenant." });
+          return;
+        }
+      }
+
       const existing = pipelines.get(tenantId);
       if (existing && existing.running) {
         res.status(400).json({
@@ -48,6 +66,7 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
         imageModel: imageModel || "gemini",
         segmentDuration: segmentDuration || 120,
         autoPublish: autoPublish !== false,
+        ...(programId ? { programId } : {}),
       });
 
       res.json({

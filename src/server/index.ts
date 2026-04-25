@@ -21,6 +21,9 @@ import { registerGenerateRoutes } from "./routes/generate.js";
 import { registerCaptureRoutes } from "./routes/capture.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
+import { registerBrandingRoutes } from "./routes/branding.js";
+import { registerProgramRoutes } from "./routes/programs.js";
+import { registerConductorRoutes } from "./routes/conductors.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
@@ -29,6 +32,7 @@ import { imageEditRouter } from "./routes/imageEdit.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
+import { registerAllFonts } from "./services/fontService.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -134,6 +138,9 @@ app.use(express.static(path.join(PROJECT_ROOT, "public")));
 // Serve /output for generated images
 app.use("/output", express.static(OUTPUT_DIR));
 
+// Serve /fonts for font files
+app.use("/fonts", express.static(path.join(PROJECT_ROOT, "fonts")));
+
 // ---------------------------------------------------------------------------
 // Health check endpoint
 // ---------------------------------------------------------------------------
@@ -181,6 +188,9 @@ registerCaptureRoutes(app, io, {
 });
 registerAgentRoutes(app);
 registerPipelineConfigRoutes(app);
+registerBrandingRoutes(app);
+registerProgramRoutes(app);
+registerConductorRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -225,6 +235,9 @@ app.get("*", (_req, res) => {
     console.error("[Server] Error running migrations:", err);
     process.exit(1);
   }
+
+  // Register all fonts from /fonts directory
+  registerAllFonts(PROJECT_ROOT);
 
   httpServer.listen(PORT, () => {
     console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);

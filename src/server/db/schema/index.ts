@@ -11,6 +11,9 @@ export * from './billing.js';
 export * from './jobs.js';
 export * from './social.js';
 export * from './misc.js';
+export * from './customTypes.js';
+export * from './programs.js';
+export * from './conductors.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -22,6 +25,8 @@ import { plans, subscriptions, usageRecords, invoices } from './billing.js';
 import { scheduledJobs, jobExecutions } from './jobs.js';
 import { socialPortfolios, businessAssets } from './social.js';
 import { settings, notifications, auditLog, dailyMetrics, teamInvitations, refreshTokens } from './misc.js';
+import { programs, programUrls } from './programs.js';
+import { conductors, conductorPhotos } from './conductors.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -45,6 +50,8 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   auditLogs: many(auditLog),
   refreshTokens: many(refreshTokens),
   notifications: many(notifications),
+  programs: many(programs),
+  conductors: many(conductors),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -149,4 +156,26 @@ export const teamInvitationsRelations = relations(teamInvitations, ({ one }) => 
 export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
   user: one(users, { fields: [refreshTokens.userId], references: [users.id] }),
   tenant: one(tenants, { fields: [refreshTokens.tenantId], references: [tenants.id] }),
+}));
+
+// ── programs relations ────────────────────────────────────────────────────────
+export const programsRelations = relations(programs, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [programs.tenantId], references: [tenants.id] }),
+  urls: many(programUrls),
+  conductors: many(conductors),
+}));
+
+export const programUrlsRelations = relations(programUrls, ({ one }) => ({
+  program: one(programs, { fields: [programUrls.programId], references: [programs.id] }),
+}));
+
+// ── conductors relations ──────────────────────────────────────────────────────
+export const conductorsRelations = relations(conductors, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [conductors.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [conductors.programId], references: [programs.id] }),
+  photos: many(conductorPhotos),
+}));
+
+export const conductorPhotosRelations = relations(conductorPhotos, ({ one }) => ({
+  conductor: one(conductors, { fields: [conductorPhotos.conductorId], references: [conductors.id] }),
 }));

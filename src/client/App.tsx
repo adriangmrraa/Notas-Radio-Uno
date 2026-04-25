@@ -73,6 +73,8 @@ function PipelineControl() {
   const [imageModel, setImageModel] = useState('gemini');
   const [segmentDuration, setSegmentDuration] = useState(120);
   const [autoPublish, setAutoPublish] = useState(true);
+  const [programId, setProgramId] = useState('');
+  const [programs, setPrograms] = useState<Array<{ id: string; name: string }>>([]);
 
   // Local UI state
   const [showStatus, setShowStatus] = useState(false);
@@ -86,6 +88,14 @@ function PipelineControl() {
     gemini: 'Requiere GEMINI_API_KEY en el servidor',
     grok: 'Requiere XAI_API_KEY en el servidor',
   };
+
+  // Fetch programs on mount
+  useEffect(() => {
+    authFetch('/api/programs')
+      .then(r => r.json())
+      .then(data => setPrograms(data.programs || []))
+      .catch(() => {});
+  }, []);
 
   // Auto-show status when pipeline is running
   useEffect(() => {
@@ -104,7 +114,7 @@ function PipelineControl() {
   const handleStart = async () => {
     if (!url) { alert('Ingres\u00e1 una URL de transmisi\u00f3n.'); return; }
     try {
-      await startPipeline({ url, tone, structure, imageModel, segmentDuration, autoPublish });
+      await startPipeline({ url, tone, structure, imageModel, segmentDuration, autoPublish, ...(programId ? { programId } : {}) });
       setShowStatus(true);
     } catch (err: any) {
       alert('Error: ' + err.message);
@@ -133,6 +143,16 @@ function PipelineControl() {
 
       {/* Config form */}
       <div className="pipeline-config">
+        <div className="form-group">
+          <label htmlFor="pipelineProgram">Programa (opcional)</label>
+          <select id="pipelineProgram" value={programId} onChange={e => setProgramId(e.target.value)}>
+            <option value="">Sin programa</option>
+            {programs.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+
         <div className="form-group">
           <label htmlFor="pipelineUrl">URL de transmisión</label>
           <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream"

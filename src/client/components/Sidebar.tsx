@@ -10,12 +10,14 @@ import {
   LogOut,
   Newspaper,
   ChevronRight,
+  Mic,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const NAV_MAIN = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor' },
+  { to: '/programs', icon: Mic, label: 'Programas' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
   { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },

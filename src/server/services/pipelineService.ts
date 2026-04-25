@@ -3,6 +3,7 @@ import { extractInsights } from "./insightService.js";
 import { searchAndEnrich, searchReferenceImage } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "./newsService.js";
 import { processImage } from "./imageService.js";
+import { loadTenantBranding } from "./brandingService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
 import { publishToAllMeta } from "./metaPublishService.js";
 import { isMetaConnected, createPublication, createTranscription, getSetting, getActivePipelineConfig, getAgent } from "./databaseService.js";
@@ -892,13 +893,14 @@ class AutoPipeline {
       this.emit("flyer_bg", { source: "placeholder" });
     }
 
-    // processImage() ALWAYS applies the same overlay:
+    // processImage() applies the overlay using tenant branding:
     // - Resize to 1080x1080
-    // - Dark gradient from bottom to top
-    // - Semi-transparent black box with title (Bebas Kai 70px)
-    // - Platform name centered (Bebas Kai 30px)
-    // - Logo 150px in top-right corner
-    const finalPath = await processImage(imagePath, title);
+    // - Template-based rendering (gradient, bar, minimal, split, or vignette)
+    // - Title with configured font family
+    // - Platform name from tenant branding
+    // - Logo from DB bytea or fallback to public/logo.png
+    const branding = await loadTenantBranding(this.tenantId);
+    const finalPath = await processImage(imagePath, title, branding);
 
     // Clean up temp background image
     try { fs.unlinkSync(imagePath); } catch (_) { /* ignore */ }

@@ -10,6 +10,7 @@ import axios from "axios";
 import { google } from "googleapis";
 
 import { processImage } from "../services/imageService.js";
+import { loadTenantBranding } from "../services/brandingService.js";
 import { scrapeElComercialArticle as scrapeArticle } from "../services/scraperService.js";
 import { generateNewsCopy } from "../services/newsService.js";
 import { createPublication } from "../services/databaseService.js";
@@ -182,7 +183,8 @@ export function registerGenerateRoutes(
       const imagePath = req.file.path;
 
       try {
-        const finalImagePath = await processImage(imagePath, title);
+        const branding = await loadTenantBranding(req.auth!.tenantId);
+        const finalImagePath = await processImage(imagePath, title, branding);
         const imageDriveUrl = await tryUploadToDrive(finalImagePath);
 
         res.json({
@@ -220,7 +222,8 @@ export function registerGenerateRoutes(
       const imagePath = path.join("output", `temp_${uuidv4()}.jpg`);
       fs.writeFileSync(imagePath, buffer);
 
-      const finalImagePath = await processImage(imagePath, articleData.title);
+      const branding = await loadTenantBranding(req.auth!.tenantId);
+      const finalImagePath = await processImage(imagePath, articleData.title, branding);
       const imageUrl = `/output/${path.basename(finalImagePath)}`;
 
       res.json({
