@@ -26,6 +26,10 @@ import {
 const SCOPES = ["https://www.googleapis.com/auth/drive.file"];
 const FOLDER_ID = process.env.GOOGLE_FOLDER_ID || "";
 
+function isDriveConfigured(): boolean {
+  return !!(process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY);
+}
+
 async function authorize(): Promise<InstanceType<typeof google.auth.JWT>> {
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
   const privateKeyRaw = process.env.GOOGLE_PRIVATE_KEY;
@@ -35,6 +39,22 @@ async function authorize(): Promise<InstanceType<typeof google.auth.JWT>> {
   const privateKey = privateKeyRaw.replace(/\\n/g, "\n");
   const auth = new google.auth.JWT(clientEmail, undefined, privateKey, SCOPES);
   return auth;
+}
+
+async function tryUploadToDrive(filePath: string): Promise<string> {
+  if (!isDriveConfigured()) {
+    console.log("[Drive] No configurado, usando imagen local");
+    return "";
+  }
+  try {
+    const auth = await authorize();
+    const url = await uploadFile(auth, filePath);
+    console.log("[Drive] Imagen subida:", url);
+    return url;
+  } catch (err) {
+    console.error("[Drive] Error subiendo:", err);
+    return "";
+  }
 }
 
 async function uploadFile(
@@ -163,13 +183,11 @@ export function registerGenerateRoutes(
 
       try {
         const finalImagePath = await processImage(imagePath, title);
-
-        // Upload to Google Drive
-        const auth = await authorize();
-        await uploadFile(auth, finalImagePath);
+        const imageDriveUrl = await tryUploadToDrive(finalImagePath);
 
         res.json({
           imageUrl: `/output/${path.basename(finalImagePath)}`,
+          imageDriveUrl,
           title,
           description,
           finalImagePath,
@@ -240,38 +258,51 @@ export function registerGenerateRoutes(
     }
 
     try {
-      const auth = await authorize();
-      const imageDriveUrl = await uploadFile(auth, finalImagePath);
-      console.log("Imagen subida a Google Drive. URL:", imageDriveUrl);
+      const imageDriveUrl = await tryUploadToDrive(finalImagePath);
+      const publicImageUrl = imageDriveUrl || imageUrl || `/output/${path.basename(finalImagePath)}`;
 
       const note: WebhookNote = {
         title,
         datePublished: new Date().toISOString(),
         content: description || "",
-        imageUrl: imageUrl || "",
-        linkUrl: imageDriveUrl,
+        imageUrl: publicImageUrl,
+        linkUrl: publicImageUrl,
         imageDriveUrl,
       };
 
+      // 1. Try webhook first
       const webhookViejoUrl = await getWebhookViejoBoton();
+      let webhookSent = false;
       if (webhookViejoUrl) {
         await sendToWebhook(webhookViejoUrl, note);
+        webhookSent = true;
       }
 
-      // Publish via Meta API if connected
-      const metaResults = await tryPublishMeta({
-        title,
-        content: description || "",
-        imageDriveUrl,
-        finalImagePath,
-      });
+      // 2. If no webhook, try Meta API
+      let metaResults: unknown = null;
+      if (!webhookSent) {
+        metaResults = await tryPublishMeta({
+          title,
+          content: description || "",
+          imageDriveUrl: publicImageUrl,
+          finalImagePath,
+        });
+      } else {
+        // Even with webhook, also try Meta if connected
+        metaResults = await tryPublishMeta({
+          title,
+          content: description || "",
+          imageDriveUrl: publicImageUrl,
+          finalImagePath,
+        });
+      }
 
-      // Persist publication
+      // 3. Always persist publication
       const publication = await createPublication({
         title,
         content: description || "",
         imagePath: finalImagePath,
-        imageUrl: imageDriveUrl,
+        imageUrl: publicImageUrl,
         source: "manual",
         publishResults: metaResults,
       });
@@ -279,13 +310,14 @@ export function registerGenerateRoutes(
 
       res.json({
         success: true,
-        message: "Webhook enviado con exito.",
+        message: webhookSent ? "Webhook enviado con exito." : metaResults ? "Publicado en Meta." : "Publicacion guardada.",
+        webhookSent,
         metaResults,
         publication,
       });
     } catch (error) {
-      console.error("Error al enviar el webhook:", error);
-      res.status(500).json({ error: "Error al enviar el webhook." });
+      console.error("Error al publicar:", error);
+      res.status(500).json({ error: "Error al publicar." });
     }
   });
 
@@ -311,38 +343,40 @@ export function registerGenerateRoutes(
     }
 
     try {
-      const auth = await authorize();
-      const imageDriveUrl = await uploadFile(auth, finalImagePath);
-      console.log("Imagen subida a Google Drive. URL:", imageDriveUrl);
+      const imageDriveUrl = await tryUploadToDrive(finalImagePath);
+      const publicImageUrl = imageDriveUrl || imageUrl || `/output/${path.basename(finalImagePath)}`;
 
       const webhookData: WebhookNote = {
         title,
         datePublished: new Date().toISOString(),
         content: content || "",
-        imageUrl: imageDriveUrl,
-        linkUrl: imageDriveUrl,
+        imageUrl: publicImageUrl,
+        linkUrl: publicImageUrl,
         imageDriveUrl,
       };
 
+      // 1. Try webhook first
       const webhookNuevoUrl = await getWebhookNuevoBoton();
+      let webhookSent = false;
       if (webhookNuevoUrl) {
         await sendToWebhook(webhookNuevoUrl, webhookData);
+        webhookSent = true;
       }
 
-      // Publish via Meta API if connected
+      // 2. Try Meta API (always, as secondary channel)
       const metaResults = await tryPublishMeta({
         title,
         content: content || "",
-        imageDriveUrl,
+        imageDriveUrl: publicImageUrl,
         finalImagePath,
       });
 
-      // Persist publication
+      // 3. Always persist publication
       const publication = await createPublication({
         title,
         content: content || "",
         imagePath: finalImagePath,
-        imageUrl: imageDriveUrl,
+        imageUrl: publicImageUrl,
         source: "url",
         publishResults: metaResults,
       });
@@ -350,13 +384,14 @@ export function registerGenerateRoutes(
 
       res.json({
         success: true,
-        message: "Webhook enviado con exito (Nuevo Boton)",
+        message: webhookSent ? "Webhook enviado con exito." : metaResults ? "Publicado en Meta." : "Publicacion guardada.",
+        webhookSent,
         metaResults,
         publication,
       });
     } catch (error) {
-      console.error("Error al enviar el webhook (Nuevo Boton):", error);
-      res.status(500).json({ error: "Error al enviar el webhook (Nuevo Boton)" });
+      console.error("Error al publicar:", error);
+      res.status(500).json({ error: "Error al publicar." });
     }
   });
 
