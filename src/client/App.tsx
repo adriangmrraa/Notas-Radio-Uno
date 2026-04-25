@@ -15,6 +15,16 @@ import type {
   PipelineStep,
   HistoryTab,
 } from './types';
+// Authenticated fetch — includes cookie credentials + Bearer token
+function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = localStorage.getItem('accessToken');
+  const headers = new Headers(options.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(url, { ...options, headers, credentials: 'include' });
+}
+
 import {
   STEP_META as stepMeta,
   PIPELINE_STEPS as pipelineSteps,
@@ -434,7 +444,7 @@ function MetaConnection() {
   const handleConnect = async () => {
     setLoading(true);
     try {
-      const cfgRes = await fetch('/api/meta/config');
+      const cfgRes = await authFetch('/api/meta/config');
       const cfg = await cfgRes.json();
       if (!cfg.appId) { alert('META_APP_ID no configurado en el servidor'); setLoading(false); return; }
 
@@ -481,7 +491,7 @@ function MetaConnection() {
   const handleDisconnect = async () => {
     if (!confirm('¿Seguro que querés desconectar Meta?')) return;
     try {
-      const res = await fetch('/api/meta/disconnect', { method: 'POST' });
+      const res = await authFetch('/api/meta/disconnect', { method: 'POST' });
       const data = await res.json();
       if (data.success) setStatus({ connected: false });
     } catch (err: any) {
@@ -581,7 +591,7 @@ function WebhookSettingsSection() {
 
   const handleSave = async () => {
     try {
-      await fetch('/api/settings/webhooks', {
+      await authFetch('/api/settings/webhooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(webhooks),
@@ -676,7 +686,7 @@ function ManualTools() {
     formData.append('title', flyerTitle);
     formData.append('description', flyerDesc);
     try {
-      const res = await fetch('/api/generate', { method: 'POST', body: formData });
+      const res = await authFetch('/api/generate', { method: 'POST', body: formData });
       const data = await res.json();
       setFlyerResult({ imageUrl: data.imageUrl, finalImagePath: data.finalImagePath });
     } catch (err: any) {
@@ -687,7 +697,7 @@ function ManualTools() {
   const handleUrlSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/generate-from-url', {
+      const res = await authFetch('/api/generate-from-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: urlInput }),
@@ -701,7 +711,7 @@ function ManualTools() {
 
   const handleStartCapture = async () => {
     try {
-      const res = await fetch('/api/start-capture', { method: 'POST' });
+      const res = await authFetch('/api/start-capture', { method: 'POST' });
       const data = await res.json();
       if (data.success) setCapturing(true);
       else alert('Error al iniciar captura: ' + data.message);
@@ -712,7 +722,7 @@ function ManualTools() {
 
   const handleStopCapture = async () => {
     try {
-      const res = await fetch('/api/stop-capture', { method: 'POST' });
+      const res = await authFetch('/api/stop-capture', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setCapturing(false);
@@ -725,7 +735,7 @@ function ManualTools() {
 
   const handleGenerateCopy = async () => {
     try {
-      const res = await fetch('/api/generateNewsCopy', {
+      const res = await authFetch('/api/generateNewsCopy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ context: newsContext, transcription: manualTranscription }),
@@ -739,7 +749,7 @@ function ManualTools() {
 
   const handleWebhook = async (endpoint: string, payload: Record<string, any>) => {
     try {
-      await fetch(`/api/${endpoint}`, {
+      await authFetch(`/api/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -877,7 +887,7 @@ function History({ socket }: { socket: any }) {
   const loadPublications = useCallback(async (append = false) => {
     try {
       const offset = append ? pubOffset : 0;
-      const res = await fetch(`/api/history/publications?limit=${PAGE_SIZE}&offset=${offset}`);
+      const res = await authFetch(`/api/history/publications?limit=${PAGE_SIZE}&offset=${offset}`);
       const data = await res.json();
       setPubTotal(data.total);
       if (append) {
@@ -894,7 +904,7 @@ function History({ socket }: { socket: any }) {
   const loadTranscriptions = useCallback(async (append = false) => {
     try {
       const offset = append ? transOffset : 0;
-      const res = await fetch(`/api/history/transcriptions?limit=${PAGE_SIZE}&offset=${offset}`);
+      const res = await authFetch(`/api/history/transcriptions?limit=${PAGE_SIZE}&offset=${offset}`);
       const data = await res.json();
       setTransTotal(data.total);
       if (append) {
@@ -950,7 +960,7 @@ function History({ socket }: { socket: any }) {
     if (!confirm('¿Eliminar este item del historial?')) return;
     const endpoint = type === 'publication' ? 'publications' : 'transcriptions';
     try {
-      const res = await fetch(`/api/history/${endpoint}/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/history/${endpoint}/${id}`, { method: 'DELETE' });
       if (res.ok) {
         if (type === 'publication') {
           setPublications(prev => prev.filter(p => p.id !== id));
