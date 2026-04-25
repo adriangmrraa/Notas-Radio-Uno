@@ -23,11 +23,11 @@ const VALID_ROLES: readonly string[] = [
 const MAX_PHOTOS_PER_CONDUCTOR = 5;
 
 // ---------------------------------------------------------------------------
-// Multer — memory storage, 2MB, PNG/JPEG only
+// Multer — memory storage, 5MB, PNG/JPEG only (high quality for quote flyers)
 // ---------------------------------------------------------------------------
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (["image/png", "image/jpeg"].includes(file.mimetype)) {
       cb(null, true);
@@ -335,10 +335,10 @@ export function registerConductorRoutes(app: Express): void {
           return;
         }
 
-        // Resize + crop to 400x400 with Sharp
+        // Resize + crop to 800x800 with Sharp (high quality for quote flyers)
         const processedBuffer = await sharp(req.file.buffer)
-          .resize(400, 400, { fit: "cover" })
-          .jpeg()
+          .resize(800, 800, { fit: "cover" })
+          .jpeg({ quality: 90 })
           .toBuffer();
 
         const isFirst = existingPhotos.length === 0;
