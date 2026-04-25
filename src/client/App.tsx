@@ -1,58 +1,30 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
 import { usePipelineState } from './hooks/usePipelineState';
 import { ImageEditModal } from './components/ImageEditModal';
 import { MarkdownViewer } from './components/ai/MarkdownViewer';
 import { PipelineView } from './components/pipeline/PipelineView';
-import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
+import {
+  Play, Square, Settings, Wrench, Clock, ChevronDown,
+} from 'lucide-react';
 import type {
-  PipelineConfig,
   Publication,
   Transcription,
   MetaStatus,
   WebhookSettings,
   ActivityCardData,
-  SubStep,
   PipelineStep,
-  PipelineUpdateEvent,
   HistoryTab,
-  STEP_META,
-  PIPELINE_STEPS,
-  DETAIL_ICONS,
 } from './types';
 import {
   STEP_META as stepMeta,
   PIPELINE_STEPS as pipelineSteps,
-  DETAIL_ICONS as detailIcons,
 } from './types';
 
-// ─── Inline SVG icons ───────────────────────────────────────
-
-const PlayIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-);
-const StopIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
-);
-const PipelineIcon = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-);
-const FacebookIcon = ({ size = 20, color = 'currentColor' }: { size?: number; color?: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+// Inline Facebook icon (not available in lucide-react v1.x)
+const FacebookIcon = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
     <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
   </svg>
-);
-const SettingsIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-);
-const ToolsIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v18m-9-9h18" /></svg>
-);
-const HistoryIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-);
-const ChevronIcon = () => (
-  <svg className="chevron-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9" /></svg>
 );
 
 // ═══════════════════════════════════════════════════════════
@@ -70,31 +42,6 @@ export default function App() {
       <ManualTools />
       <History socket={socket} />
     </main>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// TopBar
-// ═══════════════════════════════════════════════════════════
-
-function TopBar() {
-  return (
-    <header className="top-bar">
-      <div className="top-bar-inner">
-        <div className="top-bar-brand">
-          <img src="/logo.png" alt="Radio Uno" className="top-bar-logo" />
-          <div>
-            <h1 className="top-bar-title">Radio Uno Formosa</h1>
-            <p className="top-bar-subtitle">Centro de Noticias Inteligente</p>
-          </div>
-        </div>
-        <div className="top-bar-badges">
-          <span className="badge badge-ai">DeepSeek AI</span>
-          <span className="badge badge-ai">Gemini</span>
-        </div>
-        <Link to="/editor" className="btn btn-ghost btn-sm" style={{ marginLeft: 12 }}>⚡ Editor</Link>
-      </div>
-    </header>
   );
 }
 
@@ -163,12 +110,14 @@ function PipelineControl() {
   };
 
   return (
-    <section className="card card-pipeline">
+    <section className="card card-pipeline animate-in">
       <div className="card-header">
-        <div className="card-header-icon"><PipelineIcon /></div>
+        <div className="card-header-icon">
+          <Play size={20} />
+        </div>
         <div>
           <h2 className="card-title">Pipeline Autónomo</h2>
-          <p className="card-description">Captura continua sin cortes + segmentación inteligente por temas con IA</p>
+          <p className="card-description">Captura continua + segmentación inteligente con IA</p>
         </div>
       </div>
 
@@ -176,7 +125,7 @@ function PipelineControl() {
       <div className="pipeline-config">
         <div className="form-group">
           <label htmlFor="pipelineUrl">URL de transmisión</label>
-          <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream de radio"
+          <input type="url" id="pipelineUrl" placeholder="https://youtube.com/live/... o URL de stream"
             value={url} onChange={e => setUrl(e.target.value)} />
         </div>
 
@@ -193,9 +142,9 @@ function PipelineControl() {
           <div className="form-group">
             <label htmlFor="pipelineStructure">Estructura</label>
             <select id="pipelineStructure" value={structure} onChange={e => setStructure(e.target.value)}>
-              <option value="flash">Flash informativo</option>
-              <option value="corta">Nota corta</option>
-              <option value="completa">Nota completa</option>
+              <option value="flash">Flash</option>
+              <option value="corta">Corta</option>
+              <option value="completa">Completa</option>
               <option value="cronica">Crónica</option>
             </select>
           </div>
@@ -203,44 +152,49 @@ function PipelineControl() {
             <label htmlFor="pipelineImageModel">Imagen IA</label>
             <select id="pipelineImageModel" value={imageModel} onChange={e => setImageModel(e.target.value)}>
               <option value="gemini">Google Imagen</option>
-              <option value="grok">Grok Image (xAI)</option>
+              <option value="grok">Grok (xAI)</option>
             </select>
-            <span className="hint">{modelHints[imageModel]}</span>
           </div>
         </div>
 
-        <div className="form-grid-2">
-          <div className="form-group">
-            <label htmlFor="pipelineSegment">Duración chunk (seg)</label>
-            <input type="number" id="pipelineSegment" value={segmentDuration}
-              min={30} max={300} onChange={e => setSegmentDuration(Number(e.target.value))} />
+        <div className="pipeline-bottom-row">
+          <div className="duration-inline">
+            <Clock size={14} className="duration-icon" />
+            <label htmlFor="pipelineSegment">Chunk</label>
+            <input
+              type="number"
+              id="pipelineSegment"
+              value={segmentDuration}
+              min={30}
+              max={300}
+              onChange={e => setSegmentDuration(Number(e.target.value))}
+              className="duration-input"
+            />
+            <span className="duration-unit">seg</span>
           </div>
-          <div className="form-group form-group-checkbox">
-            <label className="checkbox-label">
-              <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
-              Publicar automáticamente
-            </label>
-          </div>
+          <label className="checkbox-label">
+            <input type="checkbox" checked={autoPublish} onChange={e => setAutoPublish(e.target.checked)} />
+            Auto-publicar
+          </label>
         </div>
 
         <div className="pipeline-actions">
           <button className="btn btn-primary btn-lg" onClick={handleStart} disabled={running}>
-            <PlayIcon /> Iniciar Pipeline
+            <Play size={16} /> Iniciar Pipeline
           </button>
           <button className="btn btn-danger btn-lg" onClick={handleStop} disabled={!running}>
-            <StopIcon /> Detener
+            <Square size={16} /> Detener
           </button>
         </div>
       </div>
 
       {/* Pipeline status */}
       {showStatus && (
-        <div className="pipeline-status">
-          <div className="pipeline-status-header">
-            <div className="status-indicator">
-              <span className={`status-dot ${statusClass}`} />
-              <span>{statusText}</span>
-            </div>
+        <div className="pipeline-status animate-in">
+          {/* Slim status bar */}
+          <div className="pipeline-status-bar">
+            <span className={`status-dot ${statusClass}`} />
+            <span className="status-bar-text">{statusText}</span>
           </div>
 
           {/* Step Progress */}
@@ -248,16 +202,16 @@ function PipelineControl() {
 
           {/* PipelineView Component */}
           <div className="mt-4 mb-4">
-            <PipelineView 
-              activeStep={activeStep} 
-              isRunning={running} 
+            <PipelineView
+              activeStep={activeStep}
+              isRunning={running}
             />
           </div>
 
           <div className="pipeline-left">
             {/* Activity Feed */}
             <div className="activity-feed-container">
-              <h4 className="section-label">&#9889; Pipeline en vivo</h4>
+              <h4 className="section-label">Pipeline en vivo</h4>
               <div className="activity-feed" ref={activityFeedRef}>
                 {activityCards.map(card => (
                   <ActivityCard key={card.id} card={card} onImageClick={url => setLightboxUrl(url)} onImageEdit={(url, path) => setEditingImage({ url, path })} />
@@ -346,7 +300,7 @@ function StepProgress({ activeStep }: { activeStep: string }) {
   const steps: Array<{ key: PipelineStep; icon: string; label: string }> = pipelineSteps.map(s => ({
     key: s,
     icon: stepMeta[s].icon,
-    label: stepMeta[s].label.split(' ')[0], // short label
+    label: stepMeta[s].label.split(' ')[0],
   }));
 
   const shortLabels: Record<PipelineStep, string> = {
@@ -365,9 +319,7 @@ function StepProgress({ activeStep }: { activeStep: string }) {
       {steps.map((step, i) => {
         let cls = 'step';
         if (step.key === activeStep) cls += ' active';
-        // Capturing always active while pipeline runs
         if (step.key === 'capturing' && activeStep && activeStep !== 'stopped') cls += ' active';
-        // Completed steps
         if (activeIdx > 0 && i > 0 && i < activeIdx) cls += ' completed';
 
         return (
@@ -404,16 +356,16 @@ function ActivityCard({ card, onImageClick, onImageEdit }: { card: ActivityCardD
           {card.status === 'error' && '⚠️'}
         </span>
       </div>
-      {visibleSteps.length > 0 && (
+      {expanded && visibleSteps.length > 0 && (
         <div className="activity-card-steps">
           {hasMore && !expanded && (
             <div className="activity-show-more" onClick={() => setExpanded(true)}>
-              ▸ Ver {totalSteps - MAX_VISIBLE} pasos anteriores
+              Ver {totalSteps - MAX_VISIBLE} pasos anteriores
             </div>
           )}
           {hasMore && expanded && (
             <div className="activity-show-more" onClick={() => setExpanded(false)}>
-              ▾ Colapsar
+              Colapsar
             </div>
           )}
           {visibleSteps.map((sub, i) => (
@@ -435,7 +387,7 @@ function ActivityCard({ card, onImageClick, onImageEdit }: { card: ActivityCardD
               onClick={() => onImageEdit?.(card.previewUrl!, card.previewUrl!.replace(/^\//, ''))}
               style={{ fontSize: '11px', padding: '4px 10px' }}
             >
-              ✨ Editar con IA
+              Editar con IA
             </button>
           </div>
         </div>
@@ -473,6 +425,7 @@ function TranscriptionViewer({ transcription }: { transcription: string }) {
 function MetaConnection() {
   const [status, setStatus] = useState<MetaStatus>({ connected: false });
   const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     fetch('/api/meta/status').then(r => r.json()).then(setStatus).catch(() => setStatus({ connected: false }));
@@ -481,12 +434,10 @@ function MetaConnection() {
   const handleConnect = async () => {
     setLoading(true);
     try {
-      // Load Meta config
       const cfgRes = await fetch('/api/meta/config');
       const cfg = await cfgRes.json();
       if (!cfg.appId) { alert('META_APP_ID no configurado en el servidor'); setLoading(false); return; }
 
-      // Load Facebook SDK if not loaded
       if (!(window as any).FB) {
         await new Promise<void>((resolve) => {
           const script = document.createElement('script');
@@ -499,7 +450,6 @@ function MetaConnection() {
         });
       }
 
-      // Open FB login popup
       (window as any).FB.login((response: any) => {
         if (response.authResponse) {
           const { accessToken } = response.authResponse;
@@ -540,31 +490,40 @@ function MetaConnection() {
   };
 
   const statusDotClass = status.connected ? 'status-dot active' : 'status-dot';
-  let statusLabel = status.connected ? 'Conectado a Meta' : 'No conectado';
 
+  let statusLabel = status.connected ? 'Conectado' : 'No conectado';
   if (status.connected && status.expiresAt) {
     const daysLeft = Math.ceil((new Date(status.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     if (daysLeft > 0 && daysLeft < 10) {
-      statusLabel = `Conectado a Meta (token expira en ${daysLeft} días)`;
+      statusLabel = `Conectado (expira en ${daysLeft}d)`;
     }
   }
 
   return (
-    <section className="card card-meta">
-      <div className="card-header">
-        <div className="card-header-icon card-header-icon-meta"><FacebookIcon /></div>
-        <div>
-          <h2 className="card-title">Conexión Meta</h2>
-          <p className="card-description">Facebook e Instagram para publicación directa</p>
+    <section className="card card-meta animate-in">
+      <div className="meta-status-row">
+        <div className="card-header-icon card-header-icon-meta" style={{ width: 32, height: 32, borderRadius: 8, flexShrink: 0 }}>
+          <FacebookIcon size={16} />
         </div>
+        <span className="meta-label">Conexión Meta</span>
         <div className="meta-status-inline">
           <span className={statusDotClass} />
           <span>{statusLabel}</span>
         </div>
+        {status.connected && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(!expanded)}>
+            <ChevronDown size={14} style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+          </button>
+        )}
+        {!status.connected && (
+          <button className="btn btn-meta btn-sm" onClick={handleConnect} disabled={loading} style={{ marginLeft: 'auto' }}>
+            <FacebookIcon size={14} /> Conectar
+          </button>
+        )}
       </div>
 
-      {status.connected ? (
-        <>
+      {status.connected && expanded && (
+        <div className="meta-expanded animate-in">
           <div className="meta-assets">
             {status.pages && status.pages.length > 0 && (
               <div className="meta-assets-list">
@@ -590,13 +549,6 @@ function MetaConnection() {
           <div className="meta-actions">
             <button className="btn btn-ghost btn-sm" onClick={handleDisconnect}>Desconectar</button>
           </div>
-        </>
-      ) : (
-        <div>
-          <button className="btn btn-meta" onClick={handleConnect}>
-            <FacebookIcon size={18} color="white" /> Conectar con Meta
-          </button>
-          <p className="hint hint-center">Se abrirá un popup para autorizar permisos</p>
         </div>
       )}
     </section>
@@ -644,15 +596,15 @@ function WebhookSettingsSection() {
   };
 
   return (
-    <section className="card">
+    <section className="card animate-in">
       <div className={`collapsible-section ${open ? 'open' : ''}`}>
         <div className="card-header card-header-clickable" onClick={() => setOpen(!open)}>
-          <div className="card-header-icon"><SettingsIcon /></div>
+          <div className="card-header-icon"><Settings size={18} /></div>
           <div>
-            <h2 className="card-title">Configuración de Webhooks</h2>
-            <p className="card-description">Configurar URLs de webhooks para Make.com, N8N, etc.</p>
+            <h2 className="card-title">Webhooks</h2>
+            <p className="card-description">Make.com, N8N, etc.</p>
           </div>
-          <ChevronIcon />
+          <ChevronDown size={18} className="chevron-icon" />
         </div>
 
         {open && (
@@ -798,15 +750,15 @@ function ManualTools() {
   };
 
   return (
-    <section className="card">
+    <section className="card animate-in">
       <div className={`collapsible-section ${open ? 'open' : ''}`}>
         <div className="card-header card-header-clickable" onClick={() => setOpen(!open)}>
-          <div className="card-header-icon"><ToolsIcon /></div>
+          <div className="card-header-icon"><Wrench size={18} /></div>
           <div>
             <h2 className="card-title">Herramientas Manuales</h2>
-            <p className="card-description">Crear placas, capturar audio y generar notas manualmente</p>
+            <p className="card-description">Placas, audio y notas manuales</p>
           </div>
-          <ChevronIcon />
+          <ChevronDown size={18} className="chevron-icon" />
         </div>
 
         {open && (
@@ -922,7 +874,6 @@ function History({ socket }: { socket: any }) {
   const [transTotal, setTransTotal] = useState(0);
   const [transOffset, setTransOffset] = useState(0);
 
-  // Load publications
   const loadPublications = useCallback(async (append = false) => {
     try {
       const offset = append ? pubOffset : 0;
@@ -940,7 +891,6 @@ function History({ socket }: { socket: any }) {
     }
   }, [pubOffset]);
 
-  // Load transcriptions
   const loadTranscriptions = useCallback(async (append = false) => {
     try {
       const offset = append ? transOffset : 0;
@@ -958,11 +908,9 @@ function History({ socket }: { socket: any }) {
     }
   }, [transOffset]);
 
-  // Initial load
   useEffect(() => { loadPublications(); }, []);
   useEffect(() => { loadTranscriptions(); }, []);
 
-  // Real-time updates via socket
   useEffect(() => {
     if (!socket) return;
 
@@ -1018,15 +966,16 @@ function History({ socket }: { socket: any }) {
   };
 
   return (
-    <section className="card">
+    <section className="card animate-in">
       <div className="card-header">
-        <div className="card-header-icon"><HistoryIcon /></div>
+        <div className="card-header-icon"><Clock size={18} /></div>
         <div>
           <h2 className="card-title">Historial</h2>
-          <p className="card-description">Publicaciones y transcripciones guardadas</p>
+          <p className="card-description">Publicaciones y transcripciones</p>
         </div>
       </div>
 
+      {/* Tab pills */}
       <div className="history-tabs">
         <button
           className={`history-tab ${activeTab === 'publications' ? 'active' : ''}`}
@@ -1042,7 +991,6 @@ function History({ socket }: { socket: any }) {
         </button>
       </div>
 
-      {/* Publications tab */}
       {activeTab === 'publications' && (
         <div>
           {publications.length === 0 ? (
@@ -1060,7 +1008,6 @@ function History({ socket }: { socket: any }) {
         </div>
       )}
 
-      {/* Transcriptions tab */}
       {activeTab === 'transcriptions' && (
         <div>
           {transcriptions.length === 0 ? (

@@ -117,11 +117,39 @@ input:-webkit-autofill {
 @keyframes borderGlow { 0%, 100% { border-color: rgba(34, 211, 238, 0.1); } 50% { border-color: rgba(34, 211, 238, 0.3); } }
 @keyframes ambientFloat { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(30px, -20px) scale(1.05); } 66% { transform: translate(-20px, 15px) scale(0.95); } }
 
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes subtlePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 @keyframes accordion-down { from { height: 0; } to { height: var(--radix-accordion-content-height); } }
 @keyframes accordion-up { from { height: var(--radix-accordion-content-height); } to { height: 0; } }
 
 .animate-accordion-down { animation: accordion-down 0.2s ease-out; }
 .animate-accordion-up { animation: accordion-up 0.2s ease-out; }
+
+.animate-fade-up {
+  animation: fadeSlideUp 0.4s ease-out both;
+}
+
+.animate-fade-in-delay-1 { animation: fadeSlideUp 0.4s ease-out 0.05s both; }
+.animate-fade-in-delay-2 { animation: fadeSlideUp 0.4s ease-out 0.1s both; }
+.animate-fade-in-delay-3 { animation: fadeSlideUp 0.4s ease-out 0.15s both; }
+.animate-fade-in-delay-4 { animation: fadeSlideUp 0.4s ease-out 0.2s both; }
+
+.animate-subtle-pulse {
+  animation: subtlePulse 2s ease-in-out infinite;
+}
 
 /* ============================================================
    LAYOUT — Ambient Backgrounds
@@ -249,6 +277,7 @@ input:-webkit-autofill {
 .layout-content {
   position: relative;
   z-index: 10;
+  scroll-behavior: smooth;
 }
 
 @media (max-width: 767px) {
@@ -596,6 +625,11 @@ input:-webkit-autofill {
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 20px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.glass-card-static:hover {
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 /* ============================================================
@@ -720,18 +754,18 @@ input:-webkit-autofill {
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 12px;
+  padding: 3px 8px;
   border-radius: 9999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
 
-.badge-success { background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.1); }
-.badge-warning { background: rgba(245, 158, 11, 0.1); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.1); }
-.badge-danger { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.1); }
-.badge-info { background: rgba(34, 211, 238, 0.08); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.08); }
-.badge-purple { background: rgba(124, 58, 237, 0.08); color: #a78bfa; border: 1px solid rgba(124, 58, 237, 0.08); }
+.badge-success { background: rgba(16, 185, 129, 0.07); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.08); }
+.badge-warning { background: rgba(245, 158, 11, 0.07); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.08); }
+.badge-danger { background: rgba(239, 68, 68, 0.07); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.08); }
+.badge-info { background: rgba(34, 211, 238, 0.06); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.06); }
+.badge-purple { background: rgba(124, 58, 237, 0.06); color: #a78bfa; border: 1px solid rgba(124, 58, 237, 0.06); }
 
 /* ============================================================
    SKELETON
