@@ -4,6 +4,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { v4 as uuidv4 } from "uuid";
+import axios from "axios";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,8 +94,84 @@ function detectSourceType(url: string): SourceType {
 }
 
 /**
+ * Extrae el video ID de una URL de YouTube.
+ */
+function extractYouTubeId(url: string): string | null {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Obtiene la URL directa de audio de YouTube via Piped/Invidious APIs.
+ * Estas APIs actúan como proxy y no tienen el problema de IP de datacenter.
+ */
+async function getYouTubeAudioUrl(videoId: string): Promise<string> {
+  // List of public API instances to try (rotated for reliability)
+  const pipedInstances = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.in.projectsegfau.lt",
+  ];
+
+  const invidiousInstances = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.jing.rocks",
+  ];
+
+  // Try Piped first (returns audioStreams directly)
+  for (const instance of pipedInstances) {
+    try {
+      console.log(`[Transcription] Intentando Piped: ${instance}...`);
+      const res = await axios.get(`${instance}/streams/${videoId}`, { timeout: 10000 });
+      const audioStreams = res.data?.audioStreams;
+      if (audioStreams?.length > 0) {
+        // Pick best quality audio stream
+        const best = audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        if (best?.url) {
+          console.log(`[Transcription] Piped OK — bitrate: ${best.bitrate}, codec: ${best.codec}`);
+          return best.url;
+        }
+      }
+    } catch (err: any) {
+      console.log(`[Transcription] Piped ${instance} falló: ${err.message}`);
+    }
+  }
+
+  // Try Invidious (returns adaptiveFormats)
+  for (const instance of invidiousInstances) {
+    try {
+      console.log(`[Transcription] Intentando Invidious: ${instance}...`);
+      const res = await axios.get(`${instance}/api/v1/videos/${videoId}`, { timeout: 10000 });
+      const formats = res.data?.adaptiveFormats;
+      if (formats?.length > 0) {
+        const audioFormats = formats.filter((f: any) => f.type?.startsWith("audio/"));
+        if (audioFormats.length > 0) {
+          const best = audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+          if (best?.url) {
+            console.log(`[Transcription] Invidious OK — bitrate: ${best.bitrate}`);
+            return best.url;
+          }
+        }
+      }
+    } catch (err: any) {
+      console.log(`[Transcription] Invidious ${instance} falló: ${err.message}`);
+    }
+  }
+
+  throw new Error("Ninguna instancia de Piped/Invidious pudo obtener el audio");
+}
+
+/**
  * Captura un segmento de audio de una fuente.
- * Para YouTube usa yt-dlp + ffmpeg, para radio/generic usa ffmpeg directo.
+ * Para YouTube usa Piped/Invidious API + ffmpeg, para radio/generic usa ffmpeg directo.
  * Retorna la ruta del archivo de audio capturado.
  */
 function captureAudioSegment(url: string, durationSeconds: number = 120): Promise<CaptureResult> {
@@ -106,67 +183,40 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
     );
 
     if (sourceType === "youtube") {
-      // Strategy: try multiple yt-dlp approaches, then ffmpeg direct
-      const strategies = [
-        // Strategy 1: iOS client (less bot detection)
-        [
-          `"${YTDLP}"`, `--js-runtimes`, `node`,
-          `--extractor-args`, `"youtube:player_client=ios,mweb"`,
-          `-f`, `"ba/b"`, `--no-part`,
-          `--download-sections`, `"*0-${durationSeconds}"`,
-          `-x`, `--audio-format`, `mp3`, `--audio-quality`, `4`,
-          `-o`, `"${outputFile}"`, `"${url}"`,
-        ],
-        // Strategy 2: web_creator client + no check cert
-        [
-          `"${YTDLP}"`, `--js-runtimes`, `node`,
-          `--extractor-args`, `"youtube:player_client=web_creator"`,
-          `-f`, `"ba/b"`, `--no-part`, `--no-check-certificates`,
-          `--download-sections`, `"*0-${durationSeconds}"`,
-          `-x`, `--audio-format`, `mp3`, `--audio-quality`, `4`,
-          `-o`, `"${outputFile}"`, `"${url}"`,
-        ],
-        // Strategy 3: extract URL only, then ffmpeg captures
-        [
-          `"${YTDLP}"`, `--js-runtimes`, `node`,
-          `--extractor-args`, `"youtube:player_client=ios"`,
-          `-f`, `"ba/b"`, `--get-url`, `--no-warnings`, `"${url}"`,
-        ],
-      ];
+      // Extract video ID from URL
+      const videoId = extractYouTubeId(url);
+      if (!videoId) {
+        reject(new Error(`No se pudo extraer el video ID de: ${url}`));
+        return;
+      }
 
-      let attempt = 0;
-      const tryNext = (): void => {
-        if (attempt >= strategies.length) {
-          // All yt-dlp strategies failed, try ffmpeg direct as last resort
-          console.log(`[Transcription] Todas las estrategias yt-dlp fallaron, intentando ffmpeg directo...`);
-          captureWithFfmpeg(url, durationSeconds, outputFile, sourceType, resolve, reject);
-          return;
-        }
+      // Strategy chain: Piped API → Invidious API → yt-dlp → ffmpeg direct
+      getYouTubeAudioUrl(videoId)
+        .then((audioUrl) => {
+          console.log(`[Transcription] URL de audio obtenida via API proxy, capturando con ffmpeg...`);
+          captureWithFfmpeg(audioUrl, durationSeconds, outputFile, sourceType, resolve, reject);
+        })
+        .catch((apiError) => {
+          console.log(`[Transcription] APIs proxy fallaron: ${apiError.message}. Intentando yt-dlp...`);
+          // Fallback to yt-dlp (works on VPS/local, fails on datacenter)
+          const ytdlpCmd = [
+            `"${YTDLP}"`, `--js-runtimes`, `node`,
+            `--extractor-args`, `"youtube:player_client=ios,mweb"`,
+            `-f`, `"ba/b"`, `--no-part`,
+            `--download-sections`, `"*0-${durationSeconds}"`,
+            `-x`, `--audio-format`, `mp3`, `--audio-quality`, `4`,
+            `-o`, `"${outputFile}"`, `"${url}"`,
+          ].join(" ");
 
-        const cmd = strategies[attempt].join(" ");
-        const isGetUrl = cmd.includes("--get-url");
-        console.log(`[Transcription] YouTube estrategia #${attempt + 1}${isGetUrl ? " (get-url)" : ""}...`);
-
-        exec(cmd, { timeout: (durationSeconds + 60) * 1000 }, (error, stdout) => {
-          if (isGetUrl) {
-            const streamUrl = stdout?.trim();
-            if (!error && streamUrl && streamUrl.startsWith("http")) {
-              console.log(`[Transcription] URL directa obtenida, capturando con ffmpeg...`);
-              captureWithFfmpeg(streamUrl, durationSeconds, outputFile, sourceType, resolve, reject);
+          exec(ytdlpCmd, { timeout: (durationSeconds + 60) * 1000 }, (error) => {
+            if (!error || fs.existsSync(outputFile)) {
+              resolve({ filePath: outputFile, sourceType });
               return;
             }
-          } else if (!error || fs.existsSync(outputFile)) {
-            resolve({ filePath: outputFile, sourceType });
-            return;
-          }
-
-          console.log(`[Transcription] Estrategia #${attempt + 1} falló: ${error?.message?.slice(0, 100)}`);
-          attempt++;
-          tryNext();
+            reject(new Error(`Todas las estrategias de captura fallaron para: ${url}`));
+          });
         });
-      };
 
-      tryNext();
       return;
     }
 
