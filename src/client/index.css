@@ -290,6 +290,16 @@ input:-webkit-autofill {
   flex-shrink: 0;
 }
 
+@media (max-width: 767px) {
+  .sidebar-root {
+    position: fixed;
+    inset: 0;
+    width: 272px;
+    z-index: 50;
+    flex-shrink: unset;
+  }
+}
+
 .sidebar-glow {
   position: absolute;
   top: -60px;
