@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Pencil, Trash2, Mic, Users, Link2, Star, ImageOff, X, ChevronDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, Mic, Users, Link2, Star, X, ChevronDown, Calendar } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -35,8 +35,30 @@ interface Conductor {
     photos?: ConductorPhoto[];
 }
 
+interface GuestPhoto {
+    id: string;
+    guestId: string;
+    mimeType: string;
+    isPrimary: boolean;
+}
+
+interface Guest {
+    id: string;
+    name: string;
+    role: string;
+    bio?: string;
+    scheduledDate: string;
+    scheduledTimeStart?: string;
+    scheduledTimeEnd?: string;
+    photos?: GuestPhoto[];
+}
+
 function photoSrc(conductorId: string, photoId: string): string {
     return `/api/conductors/${conductorId}/photos/${photoId}`;
+}
+
+function guestPhotoSrc(guestId: string, photoId: string): string {
+    return `/api/guests/${guestId}/photos/${photoId}`;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -56,6 +78,15 @@ const CONDUCTOR_ROLES = [
     { value: 'columnista', label: 'Columnista' },
     { value: 'productor', label: 'Productor' },
     { value: 'invitado', label: 'Invitado' },
+    { value: 'otro', label: 'Otro' },
+];
+
+const GUEST_ROLES = [
+    { value: 'entrevistado', label: 'Entrevistado' },
+    { value: 'panelista', label: 'Panelista' },
+    { value: 'especialista', label: 'Especialista' },
+    { value: 'artista', label: 'Artista' },
+    { value: 'politico', label: 'Político' },
     { value: 'otro', label: 'Otro' },
 ];
 
@@ -482,6 +513,317 @@ function ConductorDialog({ conductor, programId, onClose, onSaved }: ConductorDi
     );
 }
 
+// ─── Guest Dialog ─────────────────────────────────────────────────────────────
+
+interface GuestDialogProps {
+    guest: Partial<Guest> | null;
+    programId: string;
+    onClose: () => void;
+    onSaved: () => void;
+}
+
+function GuestDialog({ guest, programId, onClose, onSaved }: GuestDialogProps) {
+    const { fetchApi } = useApi();
+
+    const [guestId, setGuestId] = useState<string | null>(guest?.id ?? null);
+    const isEdit = !!guestId;
+
+    const [name, setName] = useState(guest?.name ?? '');
+    const [role, setRole] = useState(guest?.role ?? 'entrevistado');
+    const [bio, setBio] = useState(guest?.bio ?? '');
+    const [scheduledDate, setScheduledDate] = useState(guest?.scheduledDate ?? new Date().toISOString().split('T')[0]);
+    const [scheduledTimeStart, setScheduledTimeStart] = useState(guest?.scheduledTimeStart ?? '');
+    const [scheduledTimeEnd, setScheduledTimeEnd] = useState(guest?.scheduledTimeEnd ?? '');
+    const [photos, setPhotos] = useState<GuestPhoto[]>(guest?.photos ?? []);
+    const [photoUploading, setPhotoUploading] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [justCreated, setJustCreated] = useState(false);
+    const [error, setError] = useState('');
+    const photoInputRef = useRef<HTMLInputElement>(null);
+
+    const primaryPhoto = photos.find((p) => p.isPrimary) ?? photos[0] ?? null;
+    const initials = name
+        .split(' ')
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
+
+    const uploadPhoto = async (file: File) => {
+        if (file.size > 2 * 1024 * 1024) {
+            setError('El archivo supera los 2MB permitidos');
+            return;
+        }
+        if (!guestId) return;
+        setPhotoUploading(true);
+        try {
+            const fd = new FormData();
+            fd.append('photo', file);
+            const res = await fetchApi<{ photo: GuestPhoto }>(`/guests/${guestId}/photos`, { method: 'POST', body: fd });
+            setPhotos((prev) => [...prev, res.photo]);
+        } catch (err: any) {
+            setError(err.message || 'Error al subir la foto');
+        }
+        setPhotoUploading(false);
+    };
+
+    const deletePhoto = async (photoId: string) => {
+        if (!guestId) return;
+        try {
+            await fetchApi(`/guests/${guestId}/photos/${photoId}`, { method: 'DELETE' });
+            setPhotos((prev) => {
+                const remaining = prev.filter((p) => p.id !== photoId);
+                const wasDeleted = prev.find((p) => p.id === photoId);
+                if (wasDeleted?.isPrimary && remaining.length > 0) {
+                    return remaining.map((p, i) => ({ ...p, isPrimary: i === 0 }));
+                }
+                return remaining;
+            });
+        } catch (err: any) {
+            setError(err.message || 'Error al eliminar la foto');
+        }
+    };
+
+    const setPrimaryPhoto = async (photoId: string) => {
+        if (!guestId) return;
+        try {
+            await fetchApi(`/guests/${guestId}/photos/${photoId}/primary`, { method: 'PUT' });
+            setPhotos((prev) => prev.map((p) => ({ ...p, isPrimary: p.id === photoId })));
+        } catch (err: any) {
+            setError(err.message || 'Error al actualizar foto principal');
+        }
+    };
+
+    const save = async () => {
+        if (!name.trim()) { setError('El nombre es obligatorio'); return; }
+        if (!scheduledDate) { setError('La fecha es obligatoria'); return; }
+        if (scheduledTimeStart && scheduledTimeEnd && scheduledTimeEnd <= scheduledTimeStart) {
+            setError('La hora de fin debe ser posterior a la hora de inicio');
+            return;
+        }
+        setSaving(true);
+        setError('');
+        try {
+            const body = {
+                name: name.trim(),
+                role,
+                bio,
+                programId,
+                scheduledDate,
+                scheduledTimeStart: scheduledTimeStart || undefined,
+                scheduledTimeEnd: scheduledTimeEnd || undefined,
+            };
+            if (isEdit) {
+                await fetchApi(`/guests/${guestId}`, { method: 'PUT', body });
+                onSaved();
+                onClose();
+            } else {
+                const res = await fetchApi<{ guest: Guest }>('/guests', { method: 'POST', body });
+                setGuestId(res.guest.id);
+                setJustCreated(true);
+                onSaved();
+            }
+        } catch (err: any) {
+            setError(err.message || 'Error al guardar');
+        }
+        setSaving(false);
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="modal-content max-w-lg w-full">
+                <div className="modal-header">
+                    <h2 className="text-base font-semibold text-white/85">
+                        {isEdit ? (justCreated ? 'Invitado creado' : 'Editar invitado') : 'Nuevo invitado'}
+                    </h2>
+                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                        <X className="w-4 h-4 text-white/50" />
+                    </button>
+                </div>
+                <div className="modal-body space-y-5">
+                    {error && <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{error}</p>}
+
+                    {justCreated && (
+                        <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-green-500/10 border border-green-500/20">
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                            <p className="text-sm text-green-300">Invitado creado. Ahora podés agregar fotos.</p>
+                        </div>
+                    )}
+
+                    {isEdit && (
+                        <div className="flex items-center gap-4 px-1">
+                            <div className="relative shrink-0">
+                                <div className="w-20 h-20 rounded-2xl bg-white/[0.04] border border-white/[0.08] overflow-hidden flex items-center justify-center">
+                                    {primaryPhoto
+                                        ? <img
+                                            src={guestPhotoSrc(guestId!, primaryPhoto.id)}
+                                            alt={name}
+                                            className="w-full h-full object-cover"
+                                          />
+                                        : <span className="text-xl font-bold text-white/30">{initials || '?'}</span>
+                                    }
+                                </div>
+                                {primaryPhoto && (
+                                    <div className="absolute -top-1 -right-1 bg-yellow-400 rounded-full p-0.5 ring-2 ring-[#0c1018]">
+                                        <Star className="w-2.5 h-2.5 text-black" />
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold text-white/80 truncate">{name || 'Sin nombre'}</p>
+                                <p className="text-xs text-white/35 mt-0.5 capitalize">{GUEST_ROLES.find((r) => r.value === role)?.label ?? role}</p>
+                                {photos.length > 0 && (
+                                    <p className="text-xs text-white/25 mt-1">{photos.length} {photos.length === 1 ? 'foto' : 'fotos'}</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Nombre *</label>
+                        <input
+                            type="text"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            className="input-premium"
+                            placeholder="Ej: Juan Pérez"
+                            autoFocus={!isEdit}
+                        />
+                    </div>
+
+                    <div>
+                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Rol</label>
+                        <div className="relative">
+                            <select
+                                value={role}
+                                onChange={(e) => setRole(e.target.value)}
+                                className="input-premium appearance-none pr-8 cursor-pointer"
+                            >
+                                {GUEST_ROLES.map((r) => (
+                                    <option key={r.value} value={r.value} className="bg-[#0c1018]">{r.label}</option>
+                                ))}
+                            </select>
+                            <ChevronDown className="w-4 h-4 text-white/30 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Biografía</label>
+                        <textarea
+                            value={bio}
+                            onChange={(e) => setBio(e.target.value)}
+                            className="input-premium resize-none"
+                            rows={3}
+                            placeholder="Breve descripción del invitado..."
+                        />
+                    </div>
+
+                    <div>
+                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Fecha *</label>
+                        <input
+                            type="date"
+                            value={scheduledDate}
+                            onChange={(e) => setScheduledDate(e.target.value)}
+                            className="input-premium"
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Hora inicio</label>
+                            <input
+                                type="time"
+                                value={scheduledTimeStart}
+                                onChange={(e) => {
+                                    setScheduledTimeStart(e.target.value);
+                                    if (!e.target.value) setScheduledTimeEnd('');
+                                }}
+                                className="input-premium"
+                            />
+                        </div>
+                        <div>
+                            <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Hora fin</label>
+                            <input
+                                type="time"
+                                value={scheduledTimeEnd}
+                                onChange={(e) => setScheduledTimeEnd(e.target.value)}
+                                className="input-premium"
+                                disabled={!scheduledTimeStart}
+                            />
+                        </div>
+                    </div>
+
+                    {isEdit && (
+                        <div>
+                            <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">Fotos</label>
+                            {photos.length > 0 && (
+                                <div className="grid grid-cols-3 gap-2 mb-3">
+                                    {photos.map((photo) => (
+                                        <div key={photo.id} className="relative group rounded-xl overflow-hidden aspect-square bg-white/[0.03] border border-white/[0.07]">
+                                            <img
+                                                src={guestPhotoSrc(guestId!, photo.id)}
+                                                alt=""
+                                                className="w-full h-full object-cover"
+                                            />
+                                            {photo.isPrimary && (
+                                                <div className="absolute top-1.5 left-1.5 bg-yellow-400/90 rounded-full p-0.5">
+                                                    <Star className="w-3 h-3 text-black" />
+                                                </div>
+                                            )}
+                                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 p-1">
+                                                {!photo.isPrimary && (
+                                                    <button
+                                                        onClick={() => setPrimaryPhoto(photo.id)}
+                                                        className="text-xs text-yellow-300 hover:text-yellow-200 transition-colors font-medium"
+                                                    >
+                                                        Hacer principal
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => deletePhoto(photo.id)}
+                                                    className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                                                >
+                                                    Eliminar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {photos.length < 5 && (
+                                <button
+                                    onClick={() => photoInputRef.current?.click()}
+                                    disabled={photoUploading}
+                                    className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
+                                >
+                                    <Plus className="w-4 h-4" />
+                                    {photoUploading ? 'Subiendo...' : 'Agregar foto'}
+                                </button>
+                            )}
+                            <p className="text-xs text-white/25 mt-2">PNG o JPEG · Máximo 2MB · Hasta 5 fotos</p>
+                            <input
+                                ref={photoInputRef}
+                                type="file"
+                                accept="image/png,image/jpeg"
+                                className="hidden"
+                                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadPhoto(f); e.target.value = ''; }}
+                            />
+                        </div>
+                    )}
+                </div>
+                <div className="modal-footer">
+                    <button onClick={onClose} className="btn-secondary !py-2.5 !px-5 !text-sm">
+                        {justCreated ? 'Listo' : 'Cancelar'}
+                    </button>
+                    <button onClick={save} disabled={saving} className="btn-primary !py-2.5 !px-5 !text-sm inline-flex items-center gap-2">
+                        {saving ? 'Guardando...' : isEdit ? 'Guardar cambios' : 'Crear invitado'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Programs Page ─────────────────────────────────────────────────────────────
 
 export function ProgramsPage() {
@@ -493,10 +835,19 @@ export function ProgramsPage() {
     const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
     const [programDialog, setProgramDialog] = useState<{ open: boolean; program: Partial<Program> | null }>({ open: false, program: null });
 
+    // Tabs
+    const [activeTab, setActiveTab] = useState<'conductors' | 'guests'>('conductors');
+
     // Conductors
     const [conductors, setConductors] = useState<Conductor[]>([]);
     const [loadingConductors, setLoadingConductors] = useState(false);
     const [conductorDialog, setConductorDialog] = useState<{ open: boolean; conductor: Partial<Conductor> | null }>({ open: false, conductor: null });
+
+    // Guests
+    const [guests, setGuests] = useState<Guest[]>([]);
+    const [loadingGuests, setLoadingGuests] = useState(false);
+    const [guestDialog, setGuestDialog] = useState<{ open: boolean; guest: Partial<Guest> | null }>({ open: false, guest: null });
+    const [guestDateFilter, setGuestDateFilter] = useState(new Date().toISOString().split('T')[0]);
 
     const loadPrograms = async () => {
         setLoadingPrograms(true);
@@ -516,12 +867,27 @@ export function ProgramsPage() {
         setLoadingConductors(false);
     };
 
+    const loadGuests = async (programId: string, date?: string) => {
+        setLoadingGuests(true);
+        try {
+            const dateParam = date || guestDateFilter;
+            const data = await fetchApi<{ guests: Guest[] }>(`/guests?programId=${programId}&date=${dateParam}`);
+            setGuests(data.guests);
+        } catch { /* ignore */ }
+        setLoadingGuests(false);
+    };
+
     useEffect(() => { loadPrograms(); }, []);
 
     useEffect(() => {
         if (selectedProgram) loadConductors(selectedProgram.id);
         else setConductors([]);
     }, [selectedProgram]);
+
+    useEffect(() => {
+        if (selectedProgram && activeTab === 'guests') loadGuests(selectedProgram.id);
+        else setGuests([]);
+    }, [selectedProgram, activeTab, guestDateFilter]);
 
     const deleteProgram = async (id: string) => {
         if (!window.confirm('¿Eliminar este programa y todos sus conductores?')) return;
@@ -544,7 +910,17 @@ export function ProgramsPage() {
         }
     };
 
+    const deleteGuest = async (id: string) => {
+        if (!window.confirm('¿Eliminar este invitado?')) return;
+        try {
+            await fetchApi(`/guests/${id}`, { method: 'DELETE' });
+            if (selectedProgram) loadGuests(selectedProgram.id);
+        } catch { /* ignore */ }
+    };
+
     const roleLabelFor = (value: string) => CONDUCTOR_ROLES.find((r) => r.value === value)?.label ?? value;
+
+    const today = new Date().toISOString().split('T')[0];
 
     return (
         <div className="p-4 md:p-8 max-w-6xl mx-auto">
@@ -634,91 +1010,221 @@ export function ProgramsPage() {
                     )}
                 </div>
 
-                {/* ── Conductors Panel ── */}
+                {/* ── Right Panel (Conductors / Guests) ── */}
                 <div>
                     {selectedProgram ? (
                         <>
-                            <div className="flex items-center justify-between mb-5">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-8 h-8 rounded-xl bg-purple-400/[0.1] flex items-center justify-center">
-                                        <Users className="w-4 h-4 text-purple-400" />
-                                    </div>
-                                    <div>
-                                        <h2 className="text-base font-bold text-white/85 leading-tight">Conductores</h2>
-                                        <p className="text-xs text-white/30 leading-tight">{selectedProgram.name}</p>
-                                    </div>
+                            {/* Panel header */}
+                            <div className="flex items-center gap-2 mb-1">
+                                <div className="w-8 h-8 rounded-xl bg-purple-400/[0.1] flex items-center justify-center shrink-0">
+                                    <Users className="w-4 h-4 text-purple-400" />
                                 </div>
+                                <div className="min-w-0">
+                                    <p className="text-xs text-white/30 leading-tight truncate">{selectedProgram.name}</p>
+                                </div>
+                            </div>
+
+                            {/* Tab bar */}
+                            <div className="flex items-center gap-1 border-b border-white/[0.06] mb-4">
                                 <button
-                                    onClick={() => setConductorDialog({ open: true, conductor: null })}
-                                    className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
+                                    onClick={() => setActiveTab('conductors')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                        activeTab === 'conductors'
+                                            ? 'border-cyan-400 text-cyan-400'
+                                            : 'border-transparent text-white/40 hover:text-white/60'
+                                    }`}
                                 >
-                                    <Plus className="w-4 h-4" />
-                                    Nuevo Conductor
+                                    Conductores {conductors.length > 0 && `(${conductors.length})`}
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('guests')}
+                                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                        activeTab === 'guests'
+                                            ? 'border-cyan-400 text-cyan-400'
+                                            : 'border-transparent text-white/40 hover:text-white/60'
+                                    }`}
+                                >
+                                    Invitados {guests.length > 0 && `(${guests.length})`}
                                 </button>
                             </div>
 
-                            {loadingConductors ? (
-                                <div className="space-y-3">
-                                    {[1, 2].map((i) => (
-                                        <div key={i} className="skeleton h-20 rounded-2xl" />
-                                    ))}
-                                </div>
-                            ) : conductors.length === 0 ? (
-                                <div className="glass-card-static p-10 text-center">
-                                    <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                                        <Users className="w-6 h-6 text-white/15" />
+                            {/* ── Conductors tab ── */}
+                            {activeTab === 'conductors' && (
+                                <>
+                                    <div className="flex items-center justify-between mb-4">
+                                        <p className="text-xs text-white/30">{conductors.length} {conductors.length === 1 ? 'conductor' : 'conductores'}</p>
+                                        <button
+                                            onClick={() => setConductorDialog({ open: true, conductor: null })}
+                                            className="btn-secondary inline-flex items-center gap-2 !py-2 !px-3 !text-xs"
+                                        >
+                                            <Plus className="w-3.5 h-3.5" />
+                                            Nuevo Conductor
+                                        </button>
                                     </div>
-                                    <p className="text-white/30 text-sm">Este programa todavía no tiene conductores.</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    {conductors.map((conductor) => {
-                                        const primary = conductor.photos?.find((p) => p.isPrimary) ?? conductor.photos?.[0];
-                                        const initials = conductor.name
-                                            .split(' ')
-                                            .map((w) => w[0])
-                                            .slice(0, 2)
-                                            .join('')
-                                            .toUpperCase();
-                                        return (
-                                            <div key={conductor.id} className="glass-card-static p-4">
-                                                <div className="flex items-center gap-3">
-                                                    <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.07] flex items-center justify-center overflow-hidden shrink-0">
-                                                        {primary
-                                                            ? <img src={photoSrc(conductor.id, primary.id)} alt={conductor.name} className="w-full h-full object-cover" />
-                                                            : <span className="text-sm font-bold text-white/40">{initials}</span>
-                                                        }
-                                                    </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <p className="text-sm font-semibold text-white/85 truncate">{conductor.name}</p>
-                                                        <div className="flex items-center gap-2 mt-1">
-                                                            <span className="badge badge-purple capitalize">{roleLabelFor(conductor.role)}</span>
-                                                            {(conductor.photos?.length ?? 0) > 0 && (
-                                                                <span className="text-xs text-white/25">
-                                                                    {conductor.photos!.length} {conductor.photos!.length === 1 ? 'foto' : 'fotos'}
-                                                                </span>
-                                                            )}
+
+                                    {loadingConductors ? (
+                                        <div className="space-y-3">
+                                            {[1, 2].map((i) => (
+                                                <div key={i} className="skeleton h-20 rounded-2xl" />
+                                            ))}
+                                        </div>
+                                    ) : conductors.length === 0 ? (
+                                        <div className="glass-card-static p-10 text-center">
+                                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
+                                                <Users className="w-6 h-6 text-white/15" />
+                                            </div>
+                                            <p className="text-white/30 text-sm">Este programa todavía no tiene conductores.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {conductors.map((conductor) => {
+                                                const primary = conductor.photos?.find((p) => p.isPrimary) ?? conductor.photos?.[0];
+                                                const initials = conductor.name
+                                                    .split(' ')
+                                                    .map((w) => w[0])
+                                                    .slice(0, 2)
+                                                    .join('')
+                                                    .toUpperCase();
+                                                return (
+                                                    <div key={conductor.id} className="glass-card-static p-4">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.07] flex items-center justify-center overflow-hidden shrink-0">
+                                                                {primary
+                                                                    ? <img src={photoSrc(conductor.id, primary.id)} alt={conductor.name} className="w-full h-full object-cover" />
+                                                                    : <span className="text-sm font-bold text-white/40">{initials}</span>
+                                                                }
+                                                            </div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-sm font-semibold text-white/85 truncate">{conductor.name}</p>
+                                                                <div className="flex items-center gap-2 mt-1">
+                                                                    <span className="badge badge-purple capitalize">{roleLabelFor(conductor.role)}</span>
+                                                                    {(conductor.photos?.length ?? 0) > 0 && (
+                                                                        <span className="text-xs text-white/25">
+                                                                            {conductor.photos!.length} {conductor.photos!.length === 1 ? 'foto' : 'fotos'}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                                <button
+                                                                    onClick={() => setConductorDialog({ open: true, conductor })}
+                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                                >
+                                                                    <Pencil className="w-3.5 h-3.5" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => deleteConductor(conductor.id)}
+                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
+                                                                >
+                                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                    <div className="flex items-center gap-1.5 shrink-0">
-                                                        <button
-                                                            onClick={() => setConductorDialog({ open: true, conductor })}
-                                                            className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
-                                                        >
-                                                            <Pencil className="w-3.5 h-3.5" />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => deleteConductor(conductor.id)}
-                                                            className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
-                                                        >
-                                                            <Trash2 className="w-3.5 h-3.5" />
-                                                        </button>
-                                                    </div>
-                                                </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            {/* ── Guests tab ── */}
+                            {activeTab === 'guests' && (
+                                <>
+                                    {/* Date filter bar */}
+                                    <div className="flex items-center gap-2 mb-4">
+                                        <button
+                                            onClick={() => setGuestDateFilter(today)}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                                                guestDateFilter === today
+                                                    ? 'bg-cyan-400/15 text-cyan-400 border border-cyan-400/20'
+                                                    : 'bg-white/[0.04] text-white/40 hover:text-white/60 border border-white/[0.06]'
+                                            }`}
+                                        >
+                                            Hoy
+                                        </button>
+                                        <div className="relative flex-1">
+                                            <Calendar className="w-3.5 h-3.5 text-white/30 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                                            <input
+                                                type="date"
+                                                value={guestDateFilter}
+                                                onChange={(e) => setGuestDateFilter(e.target.value)}
+                                                className="input-premium !py-1.5 !pl-9 !text-xs w-full"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={() => setGuestDialog({ open: true, guest: null })}
+                                            className="btn-secondary inline-flex items-center gap-2 !py-2 !px-3 !text-xs shrink-0"
+                                        >
+                                            <Plus className="w-3.5 h-3.5" />
+                                            Nuevo Invitado
+                                        </button>
+                                    </div>
+
+                                    {loadingGuests ? (
+                                        <div className="space-y-3">
+                                            {[1, 2].map((i) => (
+                                                <div key={i} className="skeleton h-16 rounded-2xl" />
+                                            ))}
+                                        </div>
+                                    ) : guests.length === 0 ? (
+                                        <div className="glass-card-static p-10 text-center">
+                                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
+                                                <Users className="w-6 h-6 text-white/15" />
                                             </div>
-                                        );
-                                    })}
-                                </div>
+                                            <p className="text-white/30 text-sm">No hay invitados para esta fecha.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {guests.map((guest) => {
+                                                const primaryPhoto = guest.photos?.find((p) => p.isPrimary) ?? guest.photos?.[0];
+                                                const initials = guest.name
+                                                    .split(' ')
+                                                    .map((w) => w[0])
+                                                    .slice(0, 2)
+                                                    .join('')
+                                                    .toUpperCase();
+                                                return (
+                                                    <div key={guest.id} className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-10 h-10 rounded-full bg-white/[0.06] overflow-hidden flex items-center justify-center shrink-0">
+                                                                {primaryPhoto
+                                                                    ? <img src={guestPhotoSrc(guest.id, primaryPhoto.id)} className="w-full h-full object-cover" alt={guest.name} />
+                                                                    : <span className="text-xs font-bold text-white/30">{initials}</span>
+                                                                }
+                                                            </div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-sm font-medium text-white/80 truncate">{guest.name}</p>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-xs text-white/40">{GUEST_ROLES.find((r) => r.value === guest.role)?.label ?? guest.role}</span>
+                                                                    {guest.scheduledTimeStart && (
+                                                                        <span className="text-xs text-cyan-400/60">
+                                                                            {guest.scheduledTimeStart}{guest.scheduledTimeEnd ? ` - ${guest.scheduledTimeEnd}` : ''}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                                <button
+                                                                    onClick={() => setGuestDialog({ open: true, guest })}
+                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                                >
+                                                                    <Pencil className="w-3.5 h-3.5" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => deleteGuest(guest.id)}
+                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
+                                                                >
+                                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </>
                     ) : (
@@ -726,7 +1232,7 @@ export function ProgramsPage() {
                             <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
                                 <Users className="w-6 h-6 text-white/15" />
                             </div>
-                            <p className="text-white/25 text-sm">Seleccioná un programa para ver sus conductores</p>
+                            <p className="text-white/25 text-sm">Seleccioná un programa para ver sus conductores e invitados</p>
                         </div>
                     )}
                 </div>
@@ -747,6 +1253,15 @@ export function ProgramsPage() {
                     programId={selectedProgram.id}
                     onClose={() => setConductorDialog({ open: false, conductor: null })}
                     onSaved={() => loadConductors(selectedProgram.id)}
+                />
+            )}
+
+            {guestDialog.open && selectedProgram && (
+                <GuestDialog
+                    guest={guestDialog.guest}
+                    programId={selectedProgram.id}
+                    onClose={() => setGuestDialog({ open: false, guest: null })}
+                    onSaved={() => loadGuests(selectedProgram.id)}
                 />
             )}
         </div>

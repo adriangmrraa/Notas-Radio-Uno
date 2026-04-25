@@ -15,6 +15,7 @@ export const publications = pgTable(
     imageUrl: text('image_url'),
     source: publicationSourceEnum('source').notNull().default('manual'),
     publishResults: jsonb('publish_results').notNull().default({}),
+    quotes: jsonb('quotes'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

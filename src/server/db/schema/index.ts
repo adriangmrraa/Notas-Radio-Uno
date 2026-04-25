@@ -14,6 +14,7 @@ export * from './misc.js';
 export * from './customTypes.js';
 export * from './programs.js';
 export * from './conductors.js';
+export * from './guests.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -27,6 +28,7 @@ import { socialPortfolios, businessAssets } from './social.js';
 import { settings, notifications, auditLog, dailyMetrics, teamInvitations, refreshTokens } from './misc.js';
 import { programs, programUrls } from './programs.js';
 import { conductors, conductorPhotos } from './conductors.js';
+import { guests, guestPhotos } from './guests.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -52,6 +54,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   notifications: many(notifications),
   programs: many(programs),
   conductors: many(conductors),
+  guests: many(guests),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -163,6 +166,7 @@ export const programsRelations = relations(programs, ({ one, many }) => ({
   tenant: one(tenants, { fields: [programs.tenantId], references: [tenants.id] }),
   urls: many(programUrls),
   conductors: many(conductors),
+  guests: many(guests),
 }));
 
 export const programUrlsRelations = relations(programUrls, ({ one }) => ({
@@ -178,4 +182,15 @@ export const conductorsRelations = relations(conductors, ({ one, many }) => ({
 
 export const conductorPhotosRelations = relations(conductorPhotos, ({ one }) => ({
   conductor: one(conductors, { fields: [conductorPhotos.conductorId], references: [conductors.id] }),
+}));
+
+// ── guests relations ──────────────────────────────────────────────────────────
+export const guestsRelations = relations(guests, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [guests.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [guests.programId], references: [programs.id] }),
+  photos: many(guestPhotos),
+}));
+
+export const guestPhotosRelations = relations(guestPhotos, ({ one }) => ({
+  guest: one(guests, { fields: [guestPhotos.guestId], references: [guests.id] }),
 }));

@@ -118,6 +118,14 @@ export interface TopicAnalysisResult {
   retakenTopics: string[];
 }
 
+// Quote Attribution
+export interface AttributedQuote {
+  speaker: string;
+  role: string;
+  text: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
 // Insights
 export interface Insights {
   topics: string[];
@@ -125,6 +133,7 @@ export interface Insights {
   keyFacts: string[];
   searchQueries: string[];
   summary: string;
+  quotes?: AttributedQuote[];
 }
 
 // Search
@@ -296,3 +305,27 @@ export const BUILTIN_NODES: PipelineNodeDefinition[] = [
 ];
 
 export const DEFAULT_NODE_ORDER = ['capture', 'transcribe', 'analyze', 'insights', 'search', 'generate_news', 'generate_title', 'generate_flyer', 'publish'];
+
+// Guest
+export interface Guest {
+  id: string;
+  tenantId: string;
+  programId: string;
+  name: string;
+  role: string;
+  bio: string | null;
+  scheduledDate: string;
+  scheduledTimeStart: string | null;
+  scheduledTimeEnd: string | null;
+  isActive: boolean;
+  photos: GuestPhoto[];
+  createdAt: string;
+}
+
+export interface GuestPhoto {
+  id: string;
+  guestId: string;
+  mimeType: string;
+  isPrimary: boolean;
+  createdAt: string;
+}

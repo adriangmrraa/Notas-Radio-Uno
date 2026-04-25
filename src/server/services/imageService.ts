@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { getFontFamily } from "./fontService.js";
 import { renderTemplate } from "./templateService.js";
-import type { BrandingConfig } from "../../shared/types.js";
+import type { BrandingConfig, AttributedQuote } from "../../shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -119,6 +119,127 @@ async function processImage(imagePath: string, title: string, branding?: Brandin
     console.error("Error al procesar la imagen:", error);
     throw error;
   }
+}
+
+function wrapText(ctx: any, text: string, maxWidth: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+export async function processQuoteFlyer(
+  quote: AttributedQuote,
+  speakerPhotoData: Buffer | null,
+  branding: BrandingConfig | null,
+): Promise<string> {
+  const canvas = createCanvas(1080, 1080);
+  const ctx = canvas.getContext('2d');
+
+  // 1. Background: radial gradient
+  const gradient = ctx.createRadialGradient(540, 540, 0, 540, 540, 760);
+  gradient.addColorStop(0, '#1a1a2e');
+  gradient.addColorStop(1, '#0a0a0f');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 1080, 1080);
+
+  // 2. Decorative opening quote mark
+  ctx.font = 'bold 200px serif';
+  ctx.fillStyle = 'rgba(232, 201, 126, 0.15)';
+  ctx.fillText('"', 80, 200);
+
+  // 3. Quote text (centered, white, bold)
+  const fontFamily = branding ? getFontFamily(branding.fontFamily) : 'sans-serif';
+  ctx.font = `bold 46px ${fontFamily}`;
+  ctx.fillStyle = 'white';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 10;
+
+  let lines = wrapText(ctx, quote.quote, 820);
+  if (lines.length > 5) {
+    lines = lines.slice(0, 5);
+    const last = lines[4];
+    lines[4] = last.length > 3 ? last.slice(0, -3) + '...' : '...';
+  }
+
+  const blockHeight = lines.length * 65;
+  const availableStart = 220;
+  const availableEnd = 720;
+  const availableHeight = availableEnd - availableStart;
+  const startY = availableStart + (availableHeight - blockHeight) / 2 + 46; // +46 for baseline offset
+
+  lines.forEach((line, index) => {
+    ctx.fillText(line, 540, startY + index * 65);
+  });
+
+  // Reset shadow
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+
+  // 4. Separator line
+  ctx.fillStyle = 'rgba(232, 201, 126, 0.3)';
+  ctx.fillRect(440, 760, 200, 2);
+
+  // 5. Speaker photo (circle, diameter 100px, centered at x=540, y=830)
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(540, 830, 50, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+  if (speakerPhotoData) {
+    const photo = await loadImage(speakerPhotoData);
+    ctx.drawImage(photo, 490, 780, 100, 100);
+  } else {
+    ctx.fillStyle = '#444';
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // 6. Speaker name
+  ctx.font = `bold 26px ${fontFamily}`;
+  ctx.fillStyle = 'white';
+  ctx.textAlign = 'center';
+  ctx.fillText(quote.speaker, 540, 905);
+
+  // 7. Speaker role
+  ctx.font = `20px ${fontFamily}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.textAlign = 'center';
+  ctx.fillText(quote.role ?? '', 540, 935);
+
+  // 8. Platform name (bottom center)
+  const platformName = branding?.platformName ?? 'Noticias';
+  ctx.font = `16px ${fontFamily}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.textAlign = 'center';
+  ctx.fillText(platformName, 540, 1040);
+
+  // 9. Logo (top right, if available) — non-fatal if fails
+  if (branding?.logoBuffer) {
+    try {
+      const logoImage = await loadImage(branding.logoBuffer);
+      ctx.drawImage(logoImage, 1080 - 120 - 10, 10, 120, (logoImage.height / logoImage.width) * 120);
+    } catch (_) {
+      // non-fatal
+    }
+  }
+
+  // 10. Save to file and return path
+  const buffer = canvas.toBuffer('image/jpeg');
+  const outputPath = path.join(PROJECT_ROOT, 'output', `quote_${uuidv4()}.jpg`);
+  await fs.writeFile(outputPath, buffer);
+  return outputPath;
 }
 
 export { processImage };

@@ -2,7 +2,7 @@ import { captureAudioSegment, transcribeAudio, detectSourceType } from "./transc
 import { extractInsights } from "./insightService.js";
 import { searchAndEnrich, searchReferenceImage } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "./newsService.js";
-import { processImage } from "./imageService.js";
+import { processImage, processQuoteFlyer } from "./imageService.js";
 import { loadTenantBranding } from "./brandingService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
 import { publishToAllMeta } from "./metaPublishService.js";
@@ -18,6 +18,10 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
+import { db } from "../db/index.js";
+import { conductors, conductorPhotos } from "../db/schema/conductors.js";
+import { guests, guestPhotos } from "../db/schema/guests.js";
+import { eq, and, sql } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
 import type { Server } from "socket.io";
@@ -592,6 +596,75 @@ class AutoPipeline {
     return currentContext;
   }
 
+  private async loadSpeakerContext(): Promise<string | null> {
+    if (!this.config.programId) return null;
+    try {
+      const [programConductors, todaysGuests] = await Promise.all([
+        db.select({ name: conductors.name, role: conductors.role })
+          .from(conductors)
+          .where(and(
+            eq(conductors.tenantId, this.tenantId),
+            eq(conductors.programId, this.config.programId),
+            eq(conductors.isActive, true)
+          ))
+          .limit(10),
+        db.select({ name: guests.name, role: guests.role })
+          .from(guests)
+          .where(and(
+            eq(guests.tenantId, this.tenantId),
+            eq(guests.programId, this.config.programId),
+            eq(guests.isActive, true),
+            eq(guests.scheduledDate, new Date().toISOString().split('T')[0])
+          ))
+          .limit(10),
+      ]);
+      const all = [...programConductors, ...todaysGuests].slice(0, 20);
+      if (all.length === 0) return null;
+      return all.map(s => `- ${s.name} — ${s.role || 'Participante'}`).join('\n');
+    } catch (err) {
+      console.warn('[Pipeline] Error loading speaker context:', err);
+      return null;
+    }
+  }
+
+  private async resolveSpeakerPhoto(speakerName: string): Promise<Buffer | null> {
+    if (!this.config.programId) return null;
+    try {
+      // Try conductor first
+      const [conductorPhoto] = await db
+        .select({ photoData: conductorPhotos.photoData })
+        .from(conductorPhotos)
+        .innerJoin(conductors, eq(conductorPhotos.conductorId, conductors.id))
+        .where(and(
+          eq(conductors.tenantId, this.tenantId),
+          eq(conductors.programId, this.config.programId),
+          eq(conductorPhotos.isPrimary, true),
+          sql`LOWER(${conductors.name}) = LOWER(${speakerName})`
+        ))
+        .limit(1);
+      if (conductorPhoto?.photoData) return Buffer.from(conductorPhoto.photoData);
+
+      // Try guest
+      const [guestPhoto] = await db
+        .select({ photoData: guestPhotos.photoData })
+        .from(guestPhotos)
+        .innerJoin(guests, eq(guestPhotos.guestId, guests.id))
+        .where(and(
+          eq(guests.tenantId, this.tenantId),
+          eq(guests.programId, this.config.programId),
+          eq(guestPhotos.isPrimary, true),
+          sql`LOWER(${guests.name}) = LOWER(${speakerName})`
+        ))
+        .limit(1);
+      if (guestPhoto?.photoData) return Buffer.from(guestPhoto.photoData);
+
+      return null;
+    } catch (err) {
+      console.warn('[Pipeline] Error resolving speaker photo:', err);
+      return null;
+    }
+  }
+
   /**
    * Procesa un segmento temático completado: genera nota + placa + publica.
    */
@@ -634,7 +707,8 @@ class AutoPipeline {
       icon: "brain",
     });
 
-    const insights: Insights = await extractInsights(transcriptionForNote);
+    const speakerContext = await this.loadSpeakerContext();
+    const insights: Insights = await extractInsights(transcriptionForNote, speakerContext);
     this.io.emit("pipeline-node-status", { nodeId: "insights", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after insights
@@ -767,6 +841,53 @@ class AutoPipeline {
     pipelineContext = { ...pipelineContext, flyerPath, imagePath: flyerPath };
     pipelineContext = await this.runAgentsAfterStep("generate_flyer", pipelineContext);
 
+    // --- QUOTE FLYERS ---
+    if (enrichedInsights.quotes?.length && this.config.programId) {
+      const branding = await loadTenantBranding(this.tenantId);
+      for (const quote of enrichedInsights.quotes.slice(0, 2)) {
+        try {
+          const photoData = await this.resolveSpeakerPhoto(quote.speaker);
+          const quoteFlyerPath = await processQuoteFlyer(quote, photoData, branding);
+          this.emit('quote_flyer', { speaker: quote.speaker, text: quote.text.substring(0, 50) });
+
+          // Publish quote flyer via the same channels as the regular flyer
+          const webhookUrl = await getWebhookPipelineUrl();
+          let quoteDriveUrl = "";
+          try {
+            const auth = await this.authorizeGoogleDrive();
+            quoteDriveUrl = await this.uploadToGoogleDrive(auth, quoteFlyerPath);
+          } catch (_) { /* Google Drive optional */ }
+
+          if (webhookUrl) {
+            try {
+              await axios.post(webhookUrl, {
+                title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
+                datePublished: new Date().toISOString(),
+                content: quote.text,
+                imageUrl: quoteDriveUrl,
+                linkUrl: quoteDriveUrl,
+                imageDriveUrl: quoteDriveUrl,
+                source: "pipeline-quote",
+              });
+            } catch (_) { /* non-fatal */ }
+          }
+
+          if (await isMetaConnected()) {
+            try {
+              await publishToAllMeta({
+                title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
+                content: quote.text,
+                imageUrl: quoteDriveUrl,
+                imagePath: quoteFlyerPath,
+              });
+            } catch (_) { /* non-fatal */ }
+          }
+        } catch (err) {
+          console.error('[Pipeline] Quote flyer failed:', err);
+        }
+      }
+    }
+
     // --- PUBLISH ---
     if (this.config.autoPublish) {
       this.io.emit("pipeline-node-status", { nodeId: "publish", status: "running", timestamp: new Date().toISOString() });
@@ -779,7 +900,7 @@ class AutoPipeline {
         icon: "upload",
       });
 
-      await this.publish(finalTitle, agentNewsText, flyerPath);
+      await this.publish(finalTitle, agentNewsText, flyerPath, enrichedInsights.quotes ?? null);
       this.io.emit("pipeline-node-status", { nodeId: "publish", status: "completed", timestamp: new Date().toISOString() });
 
       this.publishedNotes.push({
@@ -1265,7 +1386,7 @@ class AutoPipeline {
   /**
    * Publicar en todas las plataformas.
    */
-  private async publish(title: string, content: string, flyerPath: string): Promise<void> {
+  private async publish(title: string, content: string, flyerPath: string, quotes?: import("../../shared/types.js").AttributedQuote[] | null): Promise<void> {
     const errors: string[] = [];
 
     // 1. Upload image to Google Drive
@@ -1399,6 +1520,7 @@ class AutoPipeline {
       imageUrl: imageDriveUrl || null,
       source: "pipeline",
       publishResults: { errors },
+      quotes: quotes?.length ? quotes : null,
     });
     this.io.emit("history-new-publication", dbPublication);
 

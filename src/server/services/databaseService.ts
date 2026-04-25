@@ -348,6 +348,7 @@ interface CreatePublicationInput {
   imageUrl?: string | null;
   source?: string;
   publishResults?: unknown;
+  quotes?: unknown | null;
 }
 
 /**
@@ -368,6 +369,7 @@ export async function createPublication(
       imageUrl: input.imageUrl ?? null,
       source: normalizePublicationSource(input.source),
       publishResults: input.publishResults ?? {},
+      quotes: input.quotes ?? null,
     })
     .returning();
 

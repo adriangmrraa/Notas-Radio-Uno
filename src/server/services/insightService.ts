@@ -1,5 +1,5 @@
 import { chatCompletion } from "./aiSdkService.js";
-import type { Insights } from "../../shared/types.js";
+import type { AttributedQuote, Insights } from "../../shared/types.js";
 
 /**
  * Extract JSON from text response (for backward compatibility)
@@ -47,10 +47,43 @@ CRITERIOS DE ANALISIS:
 FORMATO: Responde SOLO en JSON valido, sin markdown ni backticks.`;
 
 /**
+ * Parsea los nombres conocidos del speakerContext.
+ * Formato esperado: "Nombre — rol\nNombre2 — rol2\n..."
+ */
+function parseKnownSpeakers(speakerContext: string): string[] {
+  return speakerContext
+    .split("\n")
+    .map((line) => line.split(" — ")[0].trim())
+    .filter((name) => name.length > 0);
+}
+
+/**
+ * Filtra y valida las citas atribuidas según las reglas de post-procesamiento.
+ */
+function filterQuotes(
+  quotes: AttributedQuote[],
+  knownSpeakers: string[]
+): AttributedQuote[] {
+  const knownLower = knownSpeakers.map((s) => s.toLowerCase());
+
+  const filtered = quotes.filter((q) => {
+    if (q.confidence === "low") return false;
+    if (q.speaker === "Desconocido") return false;
+    if (!knownLower.includes(q.speaker.toLowerCase())) return false;
+    return true;
+  });
+
+  return filtered.slice(0, 5);
+}
+
+/**
  * Extrae insights clave de un bloque de transcripcion.
  */
-async function extractInsights(transcriptionText: string): Promise<Insights> {
-  const userPrompt = `TRANSCRIPCION:
+async function extractInsights(
+  transcriptionText: string,
+  speakerContext?: string | null
+): Promise<Insights> {
+  const basePrompt = `TRANSCRIPCION:
 """
 ${transcriptionText}
 """
@@ -61,7 +94,8 @@ Extrae la informacion clave en esta estructura JSON:
   "people": ["Nombre Completo - cargo/rol (si se menciona)"],
   "keyFacts": ["dato concreto y citable 1", "dato concreto 2"],
   "searchQueries": ["busqueda Google especifica 1", "busqueda 2"],
-  "summary": "Resumen ejecutivo de 2-3 oraciones con los hechos principales"
+  "summary": "Resumen ejecutivo de 2-3 oraciones con los hechos principales",
+  "quotes": [{"speaker": "...", "role": "...", "text": "...", "confidence": "high|medium|low"}]
 }
 
 Reglas:
@@ -69,7 +103,15 @@ Reglas:
 - "people": nombres propios mencionados con contexto
 - "keyFacts": datos duros: cifras, fechas, declaraciones textuales, decisiones
 - "searchQueries": busquedas que ayuden a verificar o ampliar la informacion (en espanol)
+- "quotes": campo opcional, incluilo solo si se indica mas abajo
 - Si no hay contenido noticioso, devuelve arrays vacios y un summary indicandolo`;
+
+  const speakerBlock =
+    speakerContext && speakerContext.trim().length > 0
+      ? `\n\nTambién, identifica citas textuales relevantes de los participantes conocidos del programa:\n${speakerContext}\n\nPara cada cita textual encontrada, incluí en el JSON un campo "quotes" como array de objetos con:\n- "speaker": nombre exacto del participante (debe coincidir con la lista anterior)\n- "role": rol del participante\n- "text": la cita textual exacta (sin modificar las palabras)\n- "confidence": "high" si el hablante se identifica explícitamente en el texto, "medium" si se puede inferir del contexto, "low" si es una suposición\n\nIMPORTANTE: NO inventes atribuciones. Si no estás seguro de quién habla, usá "Desconocido" como speaker.`
+      : "";
+
+  const userPrompt = basePrompt + speakerBlock;
 
   try {
     const { text } = await chatCompletion({
@@ -80,15 +122,25 @@ Reglas:
       jsonMode: true,
     });
 
-    const insights = extractJSON(text) as Partial<Insights> | null;
-    if (insights) {
-      return {
-        topics: insights.topics || [],
-        people: insights.people || [],
-        keyFacts: insights.keyFacts || [],
-        searchQueries: insights.searchQueries || [],
-        summary: insights.summary || "",
+    const raw = extractJSON(text) as Partial<Insights & { quotes: AttributedQuote[] }> | null;
+    if (raw) {
+      const base: Insights = {
+        topics: raw.topics || [],
+        people: raw.people || [],
+        keyFacts: raw.keyFacts || [],
+        searchQueries: raw.searchQueries || [],
+        summary: raw.summary || "",
       };
+
+      if (speakerContext && speakerContext.trim().length > 0 && Array.isArray(raw.quotes)) {
+        const knownSpeakers = parseKnownSpeakers(speakerContext);
+        const filtered = filterQuotes(raw.quotes, knownSpeakers);
+        if (filtered.length > 0) {
+          base.quotes = filtered;
+        }
+      }
+
+      return base;
     }
 
     return {

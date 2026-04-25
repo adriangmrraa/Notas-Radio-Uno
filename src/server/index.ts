@@ -24,6 +24,7 @@ import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
 import { registerBrandingRoutes } from "./routes/branding.js";
 import { registerProgramRoutes } from "./routes/programs.js";
 import { registerConductorRoutes } from "./routes/conductors.js";
+import { registerGuestRoutes } from "./routes/guests.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
@@ -191,6 +192,7 @@ registerPipelineConfigRoutes(app);
 registerBrandingRoutes(app);
 registerProgramRoutes(app);
 registerConductorRoutes(app);
+registerGuestRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
