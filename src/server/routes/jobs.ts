@@ -89,9 +89,10 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
 // ---------------------------------------------------------------------------
 router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [job] = await db.select().from(scheduledJobs)
             .where(and(
-                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.id, id),
                 eq(scheduledJobs.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
@@ -127,9 +128,10 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [job] = await db.select().from(scheduledJobs)
             .where(and(
-                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.id, id),
                 eq(scheduledJobs.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
@@ -154,9 +156,10 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/:id/toggle', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [job] = await db.select().from(scheduledJobs)
             .where(and(
-                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.id, id),
                 eq(scheduledJobs.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
@@ -183,9 +186,10 @@ router.post('/:id/toggle', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/:id/stop', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [job] = await db.select().from(scheduledJobs)
             .where(and(
-                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.id, id),
                 eq(scheduledJobs.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
@@ -204,9 +208,10 @@ router.post('/:id/stop', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.get('/:id/executions', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [job] = await db.select().from(scheduledJobs)
             .where(and(
-                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.id, id),
                 eq(scheduledJobs.tenantId, req.auth!.tenantId)
             ))
             .limit(1);

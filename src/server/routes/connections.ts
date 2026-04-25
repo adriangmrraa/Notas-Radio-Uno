@@ -104,9 +104,10 @@ router.post('/portfolios', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/portfolios/:id', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [portfolio] = await db.select().from(socialPortfolios)
             .where(and(
-                eq(socialPortfolios.id, req.params.id),
+                eq(socialPortfolios.id, id),
                 eq(socialPortfolios.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
@@ -136,7 +137,7 @@ router.delete('/portfolios/:id', requireAuth, async (req: Request, res: Response
 router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
-        const portfolioId = req.params.id;
+        const portfolioId = String(req.params.id);
         const { accessToken, code } = req.body;
 
         const [portfolio] = await db.select().from(socialPortfolios)
@@ -267,7 +268,7 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
 router.post('/portfolios/:id/twitter', requireAuth, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
-        const portfolioId = req.params.id;
+        const portfolioId = String(req.params.id);
         const { code, codeVerifier, redirectUri } = req.body;
 
         const [portfolio] = await db.select().from(socialPortfolios)
@@ -396,9 +397,10 @@ router.get('/twitter/auth-url', requireAuth, (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/assets/:id', requireAuth, async (req: Request, res: Response) => {
     try {
+        const id = String(req.params.id);
         const [asset] = await db.select().from(businessAssets)
             .where(and(
-                eq(businessAssets.id, req.params.id),
+                eq(businessAssets.id, id),
                 eq(businessAssets.tenantId, req.auth!.tenantId)
             ))
             .limit(1);
