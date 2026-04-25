@@ -492,6 +492,9 @@ interface CreateTranscriptionInput {
   audioFile?: string | null;
   source?: string;
   durationSeconds?: number | null;
+  diarized?: boolean;
+  speakerCount?: number;
+  provider?: string;
 }
 
 /**
@@ -510,6 +513,9 @@ export async function createTranscription(
       audioFile: input.audioFile ?? null,
       source: normalizePublicationSource(input.source),
       durationSeconds: input.durationSeconds ?? null,
+      diarized: input.diarized ?? false,
+      speakerCount: input.speakerCount ?? null,
+      provider: input.provider ?? null,
     })
     .returning();
 

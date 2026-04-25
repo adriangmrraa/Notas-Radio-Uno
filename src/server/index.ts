@@ -241,6 +241,13 @@ app.get("*", (_req, res) => {
   // Register all fonts from /fonts directory
   registerAllFonts(PROJECT_ROOT);
 
+  // Diarization provider status
+  if (process.env.ASSEMBLYAI_API_KEY) {
+    console.log('[Diarization] AssemblyAI configured — speaker diarization enabled');
+  } else {
+    console.log('[Diarization] AssemblyAI not configured — using Whisper (no diarization)');
+  }
+
   httpServer.listen(PORT, () => {
     console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);
   });

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index } from 'drizzle-orm/pg-core';
 import { publicationSourceEnum } from './enums.js';
 import { tenants } from './tenants.js';
 
@@ -35,6 +35,9 @@ export const transcriptions = pgTable(
     audioFile: text('audio_file'),
     source: publicationSourceEnum('source').notNull().default('manual'),
     durationSeconds: integer('duration_seconds'),
+    diarized: boolean('diarized').default(false),
+    speakerCount: integer('speaker_count'),
+    provider: varchar('provider', { length: 30 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

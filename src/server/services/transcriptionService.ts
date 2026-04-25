@@ -1,10 +1,12 @@
 import { exec, execSync, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import fsAsync from "fs/promises";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
+import type { DiarizedTranscription, Utterance } from "../../shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -284,18 +286,105 @@ function captureWithFfmpeg(
     });
 }
 
+function formatDiarizedText(utterances: Utterance[]): string {
+  if (!utterances.length) return '';
+
+  const merged: { speaker: string; text: string }[] = [];
+  for (const u of utterances) {
+    const last = merged[merged.length - 1];
+    if (last && last.speaker === u.speaker) {
+      last.text += ' ' + u.text;
+    } else {
+      merged.push({ speaker: u.speaker, text: u.text });
+    }
+  }
+
+  return merged.map(m => `[${m.speaker}]: ${m.text}`).join('\n');
+}
+
+async function transcribeWithAssemblyAI(filePath: string): Promise<DiarizedTranscription> {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) throw new Error('ASSEMBLYAI_API_KEY not configured');
+
+  const baseUrl = 'https://api.assemblyai.com/v2';
+  const headers = { authorization: apiKey };
+
+  // 1. Upload the audio file
+  const audioData = await fsAsync.readFile(filePath);
+  const uploadRes = await axios.post(`${baseUrl}/upload`, audioData, {
+    headers: { ...headers, 'content-type': 'application/octet-stream' },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+  });
+  const uploadUrl = uploadRes.data.upload_url;
+
+  // 2. Create transcript with diarization
+  const transcriptRes = await axios.post(`${baseUrl}/transcript`, {
+    audio_url: uploadUrl,
+    speaker_labels: true,
+    language_code: 'es',
+  }, { headers });
+  const transcriptId = transcriptRes.data.id;
+
+  // 3. Poll until complete (max 120s)
+  let result: any;
+  const maxAttempts = 60;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const pollRes = await axios.get(`${baseUrl}/transcript/${transcriptId}`, { headers });
+    result = pollRes.data;
+    if (result.status === 'completed') break;
+    if (result.status === 'error') throw new Error(`AssemblyAI error: ${result.error}`);
+  }
+
+  if (!result || result.status !== 'completed') {
+    throw new Error('AssemblyAI transcription timed out');
+  }
+
+  // 4. Parse utterances
+  const utterances: Utterance[] = (result.utterances || []).map((u: any) => ({
+    speaker: u.speaker,
+    text: u.text,
+    start: u.start,
+    end: u.end,
+  }));
+
+  // 5. Format diarized text (merge consecutive same-speaker)
+  const diarizedText = formatDiarizedText(utterances);
+  const speakerCount = new Set(utterances.map(u => u.speaker)).size;
+
+  return {
+    text: result.text || '',
+    diarizedText,
+    speakerCount,
+    utterances,
+    provider: 'assemblyai',
+  };
+}
+
 /**
- * Transcribe un archivo de audio usando OpenAI Whisper API.
- * Retorna el texto transcrito.
+ * Transcribe un archivo de audio.
+ * Provider dispatch: AssemblyAI (diarization, si ASSEMBLYAI_API_KEY configurada) → Whisper (fallback).
+ * Retorna DiarizedTranscription con texto, diarización y metadatos del proveedor.
  */
-async function transcribeAudio(filePath: string): Promise<string> {
+async function transcribeAudio(filePath: string): Promise<DiarizedTranscription> {
+  // Provider dispatch: AssemblyAI (if configured) → Whisper (fallback)
+  if (process.env.ASSEMBLYAI_API_KEY) {
+    try {
+      console.log('[Transcription] Using AssemblyAI (diarization enabled)');
+      return await transcribeWithAssemblyAI(filePath);
+    } catch (err) {
+      console.warn('[Transcription] AssemblyAI failed, falling back to Whisper:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  console.log('[Transcription] Using Whisper');
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY no configurada. Necesaria para transcripción.');
   }
 
   const FormData = (await import('form-data')).default;
-  const { default: axios } = await import('axios');
 
   const form = new FormData();
   form.append('file', fs.createReadStream(filePath));
@@ -317,7 +406,14 @@ async function transcribeAudio(filePath: string): Promise<string> {
     },
   );
 
-  return response.data.text;
+  const text: string = response.data.text;
+  return {
+    text,
+    diarizedText: '', // No diarization with Whisper
+    speakerCount: 0,
+    utterances: [],
+    provider: 'whisper',
+  };
 }
 
 /**
@@ -326,13 +422,13 @@ async function transcribeAudio(filePath: string): Promise<string> {
  */
 async function captureAndTranscribe(url: string, durationSeconds: number = 120): Promise<TranscriptionResult> {
   const { filePath, sourceType } = await captureAudioSegment(url, durationSeconds);
-  const text = await transcribeAudio(filePath);
+  const diarized = await transcribeAudio(filePath);
 
   // Clean up audio file after transcription
   try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
 
   return {
-    text,
+    text: diarized.text,
     filePath,
     sourceType,
     timestamp: new Date().toISOString(),
@@ -343,6 +439,8 @@ export {
   detectSourceType,
   captureAudioSegment,
   transcribeAudio,
+  transcribeWithAssemblyAI,
+  formatDiarizedText,
   captureAndTranscribe,
 };
 

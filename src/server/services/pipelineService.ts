@@ -68,6 +68,7 @@ class AutoPipeline {
   public running: boolean;
   public config: PipelineConfig;
   private fullTranscription: string;
+  private fullDiarizedTranscription: string;
   private chunks: TranscriptionChunk[];
   private publishedTopics: string[];
   public publishedNotes: PublishedNote[];
@@ -96,6 +97,8 @@ class AutoPipeline {
 
     // Complete accumulated transcription (entire broadcast)
     this.fullTranscription = "";
+    // Accumulated diarized transcription (Speaker A/B format, if available)
+    this.fullDiarizedTranscription = "";
     // Individual chunks with timestamps
     this.chunks = [];
     // Already-published topics (to avoid repeats)
@@ -137,6 +140,7 @@ class AutoPipeline {
     this.config = { ...this.config, ...config };
     this.running = true;
     this.fullTranscription = "";
+    this.fullDiarizedTranscription = "";
     this.chunks = [];
     this.publishedTopics = [];
     this.pendingConfirmation = [];
@@ -238,9 +242,16 @@ class AutoPipeline {
 
         const currentFilePath = filePath;
         const currentChunkNumber = chunkNumber;
-        pendingTranscription = transcribeAudio(currentFilePath).then((text): TranscriptionChunk => {
+        pendingTranscription = transcribeAudio(currentFilePath).then((result): TranscriptionChunk => {
           try { fs.unlinkSync(currentFilePath); } catch (_) { /* ignore */ }
-          return { text, timestamp: new Date().toISOString(), chunkNumber: currentChunkNumber };
+          return {
+            text: result.text,
+            diarizedText: result.diarizedText,
+            speakerCount: result.speakerCount,
+            provider: result.provider,
+            timestamp: new Date().toISOString(),
+            chunkNumber: currentChunkNumber,
+          };
         }).catch((error: Error): null => {
           this.emit("detail", {
             step: "capturing", sub: "transcribe_error",
@@ -286,6 +297,10 @@ class AutoPipeline {
   private async onChunkTranscribed(result: TranscriptionChunk, chunkNumber: number): Promise<void> {
     // Accumulate full transcription
     this.fullTranscription += (this.fullTranscription ? " " : "") + result.text;
+    // Accumulate diarized transcription (only when available)
+    if (result.diarizedText) {
+      this.fullDiarizedTranscription += result.diarizedText + "\n";
+    }
     this.chunks.push(result);
 
     // Memory management: keep only last 30 minutes of full transcription for analysis
@@ -299,12 +314,20 @@ class AutoPipeline {
         icon: "info",
       });
     }
+    if (this.fullDiarizedTranscription.length > maxCharsForAnalysis * 1.5) {
+      this.fullDiarizedTranscription = this.fullDiarizedTranscription.slice(-maxCharsForAnalysis);
+    }
+
+    const isDiarized = (result.speakerCount ?? 0) > 0;
 
     // Persist in DB
     const dbTranscription = await createTranscription({
       text: result.text,
       source: "pipeline",
       durationSeconds: this.config.segmentDuration,
+      diarized: isDiarized,
+      speakerCount: result.speakerCount,
+      provider: result.provider,
     });
     this.io.emit("history-new-transcription", dbTranscription);
 
@@ -317,6 +340,8 @@ class AutoPipeline {
     this.emit("transcription", {
       step: "transcribed",
       text: result.text,
+      provider: result.provider,
+      diarized: isDiarized,
       timestamp: result.timestamp,
       bufferSize: this.chunks.length,
       totalMinutes: Math.round((this.chunks.length * this.config.segmentDuration) / 60),
@@ -699,6 +724,11 @@ class AutoPipeline {
     const segmentText = extractSegmentText(this.fullTranscription, segment);
     const transcriptionForNote = segmentText || segment.summary;
 
+    // Use diarized text for insights if available — enables proper speaker attribution
+    const diarizedSegmentText = this.fullDiarizedTranscription
+      ? extractSegmentText(this.fullDiarizedTranscription, segment) || this.fullDiarizedTranscription
+      : "";
+
     // --- INSIGHTS ---
     this.io.emit("pipeline-node-status", { nodeId: "insights", status: "running", timestamp: new Date().toISOString() });
     this.emit("detail", {
@@ -708,7 +738,11 @@ class AutoPipeline {
     });
 
     const speakerContext = await this.loadSpeakerContext();
-    const insights: Insights = await extractInsights(transcriptionForNote, speakerContext);
+    // Prefer diarized text when both speaker context and diarization are available
+    const textForInsights = (diarizedSegmentText && speakerContext)
+      ? diarizedSegmentText
+      : transcriptionForNote;
+    const insights: Insights = await extractInsights(textForInsights, speakerContext);
     this.io.emit("pipeline-node-status", { nodeId: "insights", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after insights

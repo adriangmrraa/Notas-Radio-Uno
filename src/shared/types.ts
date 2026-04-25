@@ -306,6 +306,22 @@ export const BUILTIN_NODES: PipelineNodeDefinition[] = [
 
 export const DEFAULT_NODE_ORDER = ['capture', 'transcribe', 'analyze', 'insights', 'search', 'generate_news', 'generate_title', 'generate_flyer', 'publish'];
 
+// Diarization
+export interface Utterance {
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface DiarizedTranscription {
+  text: string;
+  diarizedText: string;
+  speakerCount: number;
+  utterances: Utterance[];
+  provider: 'assemblyai' | 'whisper';
+}
+
 // Guest
 export interface Guest {
   id: string;

@@ -28,6 +28,9 @@ export interface TranscriptionChunk {
     text: string;
     timestamp: string;
     chunkNumber: number;
+    diarizedText?: string;
+    speakerCount?: number;
+    provider?: 'assemblyai' | 'whisper';
 }
 export interface TopicSegment {
     topic: string;
