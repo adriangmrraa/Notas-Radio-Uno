@@ -8,7 +8,7 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
-    "build": "npm run build:client && npm run build:server && npx drizzle-kit generate",
+    "build": "npm run build:client && npm run build:server",
     "start": "node dist/server/index.js",
     "db:generate": "npx drizzle-kit generate",
     "db:migrate": "npx drizzle-kit migrate",

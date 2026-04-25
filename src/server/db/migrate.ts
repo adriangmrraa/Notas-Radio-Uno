@@ -1,26 +1,13 @@
-import { migrate } from 'drizzle-orm/neon-serverless/migrator';
 import { db } from './index.js';
-import fs from 'fs';
-import path from 'path';
+import { sql } from 'drizzle-orm';
 
 export async function runMigrations(): Promise<void> {
-  const migrationsFolder = './drizzle';
-
-  // Check if migrations folder exists and has migration files
-  if (!fs.existsSync(migrationsFolder)) {
-    console.log('[DB] No migrations folder found, skipping migrations.');
-    return;
+  try {
+    // Verify database connection
+    await db.execute(sql`SELECT 1`);
+    console.log('[DB] Connected to database.');
+  } catch (err) {
+    console.error('[DB] Failed to connect to database:', err);
+    throw err;
   }
-
-  const files = fs.readdirSync(migrationsFolder);
-  const hasMigrations = files.some(f => f.endsWith('.sql'));
-
-  if (!hasMigrations) {
-    console.log('[DB] No migration files found, skipping.');
-    return;
-  }
-
-  console.log('[DB] Running migrations...');
-  await migrate(db, { migrationsFolder });
-  console.log('[DB] Migrations complete.');
 }
