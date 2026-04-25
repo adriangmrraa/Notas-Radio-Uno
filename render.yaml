@@ -4,7 +4,10 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    buildCommand: npm install && npm run build
+    buildCommand: |
+      curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp && chmod +x ./yt-dlp &&
+      curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ --strip-components=1 --wildcards '*/ffmpeg' &&
+      npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -79,4 +82,6 @@ services:
       - key: PLATFORM_NAME
         sync: false
       - key: SYSTEM_TENANT_ID
+        sync: false
+      - key: OPENAI_API_KEY
         sync: false

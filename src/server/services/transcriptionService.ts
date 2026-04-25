@@ -20,6 +20,11 @@ if (!fs.existsSync(outputDir)) {
 const TOOLS_DIR = process.env.TOOLS_DIR || path.join(process.env.HOME || process.env.USERPROFILE || "", "tools");
 
 function findBinary(name: string): string {
+  // Check project root first (Render installs binaries here during build)
+  const projectRoot = path.resolve(__dirname, "..", "..", "..");
+  const projectPath = path.join(projectRoot, name);
+  if (fs.existsSync(projectPath)) return projectPath;
+  // Check tools dir
   const toolsPath = path.join(TOOLS_DIR, process.platform === "win32" ? `${name}.exe` : name);
   if (fs.existsSync(toolsPath)) return toolsPath;
   return name; // fallback to PATH
@@ -196,46 +201,39 @@ function captureWithFfmpeg(
 }
 
 /**
- * Transcribe un archivo de audio usando Whisper (vía Python).
+ * Transcribe un archivo de audio usando OpenAI Whisper API.
  * Retorna el texto transcrito.
  */
-function transcribeAudio(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const pythonScript = `
-import whisper
-import json
-import sys
+async function transcribeAudio(filePath: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY no configurada. Necesaria para transcripción.');
+  }
 
-model = whisper.load_model("base")
-result = model.transcribe("${filePath.replace(/\\/g, "\\\\")}", fp16=False)
-print(json.dumps({"text": result["text"]}))
-`;
-    const tempScript = path.join(outputDir, `transcribe_${Date.now()}.py`);
-    fs.writeFileSync(tempScript, pythonScript);
+  const FormData = (await import('form-data')).default;
+  const { default: axios } = await import('axios');
 
-    // Add tools dir to PATH so Whisper can find ffmpeg internally
-    const envWithTools = {
-      ...process.env,
-      PATH: `${TOOLS_DIR}${path.delimiter}${process.env.PATH || ""}`,
-    };
+  const form = new FormData();
+  form.append('file', fs.createReadStream(filePath));
+  form.append('model', 'whisper-1');
+  form.append('language', 'es');
+  form.append('response_format', 'json');
 
-    exec(`${PYTHON} "${tempScript}"`, { timeout: 120000, env: envWithTools }, (error, stdout, _stderr) => {
-      // Clean up temp script
-      try { fs.unlinkSync(tempScript); } catch (_) { /* ignore */ }
+  const response = await axios.post(
+    'https://api.openai.com/v1/audio/transcriptions',
+    form,
+    {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        ...form.getHeaders(),
+      },
+      timeout: 120000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    },
+  );
 
-      if (error) {
-        reject(new Error(`Error en transcripción: ${error.message}`));
-        return;
-      }
-
-      try {
-        const result = JSON.parse(stdout.trim()) as { text: string };
-        resolve(result.text);
-      } catch (_parseError) {
-        reject(new Error(`Error parseando resultado de Whisper: ${stdout}`));
-      }
-    });
-  });
+  return response.data.text;
 }
 
 /**

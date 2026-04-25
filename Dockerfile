@@ -1,76 +1,67 @@
 # ============================================
-# STAGE 1: Build TypeScript + Generate Prisma
+# STAGE 1: Build
 # ============================================
 FROM node:20-slim AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
-COPY prisma/ prisma/
-COPY tsconfig.json ./
+COPY tsconfig*.json ./
+COPY drizzle.config.ts ./
 
 RUN npm ci
 
-# Generar Prisma Client (tipos TypeScript)
-RUN npx prisma generate
-
 COPY src/ src/
+COPY index.html ./
+COPY vite.config.ts ./
+COPY postcss.config.js ./
+COPY public/ public/
 
-RUN npm run build:server
+# Build client + server
+RUN npm run build:client && npm run build:server
+
+# Generate drizzle migrations
+RUN npx drizzle-kit generate
 
 # ============================================
 # STAGE 2: Runtime
 # ============================================
 FROM node:20-slim
 
-# Dependencias del sistema: ffmpeg, python/whisper, yt-dlp
+# System deps: ffmpeg + yt-dlp (no Python/Whisper needed — using OpenAI API)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    python3 \
-    python3-pip \
-    python3-venv \
     curl \
     ca-certificates \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Whisper en venv aislado
-RUN python3 -m venv /opt/whisper-venv \
-    && /opt/whisper-venv/bin/pip install --no-cache-dir openai-whisper
-
-# yt-dlp
+# yt-dlp binary
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
     -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp
 
-ENV PATH="/opt/whisper-venv/bin:$PATH"
-
 WORKDIR /app
 
-# Solo producción
+# Production deps only
 COPY package*.json ./
-COPY prisma/ prisma/
 RUN npm ci --omit=dev
 
-# Regenerar Prisma Client en imagen runtime
-RUN npx prisma generate
-
-# Copiar build compilado
+# Compiled output from builder
 COPY --from=builder /app/dist/ dist/
 
-# Assets
+# Drizzle migrations
+COPY --from=builder /app/drizzle/ drizzle/
+
+# Static assets
 COPY public/ public/
-COPY fonts/ fonts/
 
 RUN mkdir -p output uploads
 
 ENV NODE_ENV=production
-ENV PORT=3001
 
-EXPOSE 3001
+EXPOSE 10000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:3001/api/health || exit 1
+    CMD curl -f http://localhost:${PORT:-10000}/api/health || exit 1
 
-# Prisma migrate deploy + start server
-# (mismo patrón que alembic upgrade head en start.sh de ClinicForge)
-CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed || true && node dist/server/index.js"]
+CMD ["node", "dist/server/index.js"]
