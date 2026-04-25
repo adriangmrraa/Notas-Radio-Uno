@@ -181,19 +181,9 @@ export function ConnectionsPage() {
     }
 
     return (
-        <div className="p-8 max-w-4xl mx-auto">
-            <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-cyan-600/5 flex items-center justify-center ring-1 ring-cyan-500/20">
-                    <Share2 className="w-5 h-5 text-cyan-400" />
-                </div>
-                <div>
-                    <h1 className="text-2xl font-bold">Conexiones</h1>
-                    <p className="text-white/30 text-sm">Conecta tus redes sociales para publicar automaticamente</p>
-                </div>
-            </div>
-
+        <div className="p-4 md:p-8 max-w-4xl mx-auto">
             {/* Create Portfolio */}
-            <div className="flex gap-3 mt-8 mb-8">
+            <div className="flex flex-col sm:flex-row gap-3 mb-8">
                 <div className="relative flex-1 group">
                     <FolderOpen className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20 group-focus-within:text-cyan-400 transition-colors duration-300" />
                     <input
@@ -229,15 +219,15 @@ export function ConnectionsPage() {
             <div className="space-y-5 stagger-children">
                 {portfolios.map((portfolio) => (
                     <div key={portfolio.id} className="glass-card p-6">
-                        <div className="flex items-center justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center ring-1 ring-white/[0.08]">
+                        <div className="flex items-center justify-between gap-3 mb-4 min-w-0">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center ring-1 ring-white/[0.08] shrink-0">
                                     <FolderOpen className="w-4 h-4 text-white/40" />
                                 </div>
-                                <h3 className="text-lg font-semibold">{portfolio.name}</h3>
-                                <span className="badge badge-info">{portfolio.assets.length} conectado{portfolio.assets.length !== 1 ? 's' : ''}</span>
+                                <h3 className="text-lg font-semibold truncate">{portfolio.name}</h3>
+                                <span className="badge badge-info shrink-0">{portfolio.assets.length} conectado{portfolio.assets.length !== 1 ? 's' : ''}</span>
                             </div>
-                            <button onClick={() => deletePortfolio(portfolio.id)} className="p-2 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300">
+                            <button onClick={() => deletePortfolio(portfolio.id)} className="p-2 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300 shrink-0">
                                 <Trash2 className="w-4 h-4" />
                             </button>
                         </div>
@@ -261,7 +251,7 @@ export function ConnectionsPage() {
                         )}
 
                         {/* Connect Buttons */}
-                        <div className="flex gap-3">
+                        <div className="flex flex-wrap gap-3">
                             <button
                                 onClick={() => connectMeta(portfolio.id)}
                                 disabled={connectingMeta === portfolio.id}

@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   Workflow,
@@ -26,11 +26,26 @@ const NAV_BOTTOM = [
   { to: '/billing', icon: CreditCard, label: 'Billing' },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { user, logout } = useAuth();
 
   return (
-    <aside className="sidebar-root">
+    <aside
+      className={[
+        'sidebar-root',
+        // Mobile: fixed overlay, slides in/out
+        'fixed inset-y-0 left-0 z-50',
+        'transition-transform duration-300 ease-in-out',
+        isOpen ? 'translate-x-0' : '-translate-x-full',
+        // Desktop: always visible, part of normal flow
+        'md:relative md:translate-x-0 md:z-auto',
+      ].join(' ')}
+    >
       {/* Ambient glow */}
       <div className="sidebar-glow" />
       <div className="sidebar-glow-2" />
@@ -59,6 +74,7 @@ export function Sidebar() {
             className={({ isActive }) =>
               `sidebar-item ${isActive ? 'active' : ''}`
             }
+            onClick={() => onClose()}
           >
             {({ isActive }) => (
               <>
@@ -83,6 +99,7 @@ export function Sidebar() {
             className={({ isActive }) =>
               `sidebar-item ${isActive ? 'active' : ''}`
             }
+            onClick={() => onClose()}
           >
             {({ isActive }) => (
               <>

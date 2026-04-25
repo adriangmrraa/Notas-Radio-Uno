@@ -1,14 +1,8 @@
 /* ========================================= */
-/* RESET & BASE                              */
+/* PIPELINE SCOPE                            */
 /* ========================================= */
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-:root {
+.pipeline-scope {
   --bg-primary: #0b0d17;
   --bg-secondary: #111427;
   --bg-card: rgba(17, 20, 39, 0.8);
@@ -48,27 +42,6 @@
   --shadow: 0 4px 16px rgba(0,0,0,0.3);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.4);
   --shadow-glow: 0 0 30px rgba(6, 182, 212, 0.08);
-}
-
-body {
-  font-family: var(--font);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.6;
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* Subtle background pattern */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(ellipse at 20% 50%, rgba(6, 182, 212, 0.04), transparent 60%),
-    radial-gradient(ellipse at 80% 20%, rgba(0, 212, 170, 0.03), transparent 50%);
-  pointer-events: none;
-  z-index: 0;
 }
 
 /* ========================================= */
@@ -124,7 +97,7 @@ body::before {
   gap: 6px;
 }
 
-.badge {
+.pipeline-scope .badge {
   font-size: 10px;
   font-weight: 600;
   padding: 3px 8px;
@@ -383,23 +356,23 @@ textarea {
   width: 100%;
 }
 
-.btn-primary {
+.pipeline-scope .btn-primary {
   background: linear-gradient(135deg, var(--accent), #0891b2);
   box-shadow: 0 2px 12px rgba(6, 182, 212, 0.3);
 }
 
-.btn-primary:hover:not(:disabled) {
+.pipeline-scope .btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 4px 20px rgba(6, 182, 212, 0.4);
 }
 
-.btn-secondary {
+.pipeline-scope .btn-secondary {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--border-hover);
   color: var(--text-primary);
 }
 
-.btn-secondary:hover:not(:disabled) {
+.pipeline-scope .btn-secondary:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.2);
 }
@@ -1287,19 +1260,19 @@ textarea {
 /* MODAL                                     */
 /* ========================================= */
 
-.modal-overlay {
+.pipeline-scope .modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 1060;
   padding: 40px;
   animation: fadeIn 0.2s ease;
   overflow-y: auto;
 }
-.modal-content {
+.pipeline-scope .modal-content {
   background: var(--bg-secondary);
   border-radius: var(--radius-xl);
   max-width: 800px;

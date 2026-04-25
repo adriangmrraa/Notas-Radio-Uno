@@ -33,24 +33,14 @@ export function SettingsPage() {
     ];
 
     return (
-        <div className="p-8 max-w-4xl mx-auto">
-            <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-cyan-600/5 flex items-center justify-center ring-1 ring-cyan-500/20">
-                    <Settings className="w-5 h-5 text-cyan-400" />
-                </div>
-                <div>
-                    <h1 className="text-2xl font-bold">Configuracion</h1>
-                    <p className="text-white/30 text-sm">Gestiona tu organizacion, webhooks y equipo</p>
-                </div>
-            </div>
-
+        <div className="p-4 md:p-8 max-w-4xl mx-auto">
             {/* Tabs */}
-            <div className="flex gap-1 bg-white/[0.03] rounded-2xl p-1.5 mt-8 mb-8 border border-white/[0.04]">
+            <div className="flex gap-1 bg-white/[0.03] rounded-2xl p-1.5 mb-8 border border-white/[0.04] overflow-x-auto scrollbar-none">
                 {tabs.map(({ key, label, icon: Icon }) => (
                     <button
                         key={key}
                         onClick={() => setActiveTab(key)}
-                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm transition-all duration-300 ${
+                        className={`flex items-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-sm transition-all duration-300 shrink-0 ${
                             activeTab === key
                                 ? 'bg-white/[0.08] text-white font-medium shadow-soft'
                                 : 'text-white/35 hover:text-white/60 hover:bg-white/[0.03]'

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CreditCard, Check, X, AlertTriangle, Zap, Clock, Crown, Sparkles } from 'lucide-react';
+import { CreditCard, Check, X, AlertTriangle, Zap, Clock, Sparkles } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -144,20 +144,12 @@ export function BillingPage() {
     const isExpired = subscription?.status === 'expired' || subscription?.status === 'canceled';
     const paidPlans = plans.filter(p => p.name !== 'trial');
 
-    return (
-        <div className="p-8 max-w-6xl mx-auto">
-            <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-cyan-600/5 flex items-center justify-center ring-1 ring-cyan-500/20">
-                    <CreditCard className="w-5 h-5 text-cyan-400" />
-                </div>
-                <div>
-                    <h1 className="text-2xl font-bold">Billing</h1>
-                    <p className="text-white/30 text-sm">Gestiona tu suscripcion y facturacion</p>
-                </div>
-            </div>
+    const visiblePlans = paidPlans.filter(p => p.name === 'owner' ? user?.role === 'owner' : true);
 
+    return (
+        <div className="p-4 md:p-8 max-w-6xl mx-auto">
             {/* Banners */}
-            <div className="mt-8 space-y-4">
+            <div className="space-y-4">
                 {isTrialing && subscription.trialDaysRemaining !== null && (
                     <div className="toast toast-info flex items-center gap-3 animate-slide-up">
                         <Clock className="w-5 h-5 shrink-0" />
@@ -196,7 +188,7 @@ export function BillingPage() {
             {(isActive || isTrialing) && usage && subscription && (
                 <div className="mt-8">
                     <h2 className="text-lg font-semibold mb-4">Uso este mes</h2>
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 stagger-children">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 stagger-children">
                         <UsageCard label="Publicaciones" used={usage.publicationsCount} limit={subscription.limits.maxPublicationsPerMonth} />
                         <UsageCard label="Pipeline (horas)" used={Math.round(usage.pipelineHoursUsed * 10) / 10} limit={subscription.limits.maxPipelineHoursPerMonth} />
                         <UsageCard label="Transcripcion (min)" used={Math.round(usage.transcriptionMinutes)} limit={-1} />
@@ -206,7 +198,7 @@ export function BillingPage() {
             )}
 
             {/* Period & Currency toggles */}
-            <div className="flex items-center gap-4 mt-8 mb-6">
+            <div className="flex flex-wrap items-center gap-4 mt-8 mb-6">
                 <div className="flex bg-white/[0.03] rounded-xl p-1 border border-white/[0.04]">
                     <button
                         onClick={() => setBillingPeriod('monthly')}
@@ -232,23 +224,23 @@ export function BillingPage() {
             </div>
 
             {/* Plan Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10 stagger-children">
-                {paidPlans.map((plan, idx) => {
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-10 stagger-children">
+                {visiblePlans.map((plan) => {
                     const isCurrent = subscription?.planName === plan.name && isActive;
-                    const isPopular = idx === 1;
+                    const isPopular = plan.name === 'professional';
                     return (
                         <div key={plan.id} className={`glass-card-static p-6 flex flex-col relative overflow-hidden transition-all duration-300 hover:border-white/[0.12] ${
-                            isCurrent ? '!border-cyan-500/30 shadow-glow-cyan' : isPopular ? '!border-purple-500/20' : ''
+                            isCurrent ? '!border-cyan-500/30 shadow-glow-cyan' : isPopular ? '!border-cyan-500/30 shadow-glow-cyan scale-[1.02]' : ''
                         }`}>
                             {/* Top accent */}
                             <div className={`absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r ${
-                                isCurrent ? 'from-transparent via-cyan-500/60 to-transparent' : isPopular ? 'from-transparent via-purple-500/40 to-transparent' : 'from-transparent via-white/10 to-transparent'
+                                isCurrent ? 'from-transparent via-cyan-500/60 to-transparent' : isPopular ? 'from-transparent via-cyan-500/60 to-transparent' : 'from-transparent via-white/10 to-transparent'
                             }`} />
 
                             {isPopular && !isCurrent && (
-                                <span className="badge badge-purple self-start mb-3 flex items-center gap-1">
-                                    <Crown className="w-3 h-3" />
-                                    POPULAR
+                                <span className="badge badge-success self-start mb-3 flex items-center gap-1">
+                                    <Sparkles className="w-3 h-3" />
+                                    Popular
                                 </span>
                             )}
                             {isCurrent && (

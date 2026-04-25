@@ -1,8 +1,9 @@
+import { useState, useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
-import { Search } from 'lucide-react';
+import { Menu } from 'lucide-react';
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -27,6 +28,11 @@ const PAGE_DESCRIPTIONS: Record<string, string> = {
 export function Layout() {
   const { user } = useAuth();
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
 
   const pageTitle = Object.entries(PAGE_TITLES).find(
     ([path]) => location.pathname.startsWith(path)
@@ -43,12 +49,28 @@ export function Layout() {
       <div className="layout-ambient-2" />
       <div className="layout-ambient-3" />
 
-      <Sidebar />
+      {/* Backdrop overlay — mobile only, when sidebar is open */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 min-w-0 flex flex-col relative z-10">
         {/* Header */}
         <header className="layout-header">
           <div className="layout-header-left">
+            {/* Hamburger — mobile only */}
+            <button
+              className="md:hidden p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/5"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <Menu size={22} />
+            </button>
+
             <div>
               <h1 className="layout-header-title">{pageTitle}</h1>
               <p className="layout-header-desc">{pageDesc}</p>

@@ -31,14 +31,14 @@ export function Dashboard() {
   const trialDays = user?.subscription?.trialDaysRemaining;
 
   return (
-    <div className="p-8 lg:p-10 space-y-8 max-w-[1440px] mx-auto">
+    <div className="p-4 md:p-8 lg:p-10 space-y-6 md:space-y-8 max-w-[1440px] mx-auto">
       {/* Welcome */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 animate-slide-up">
         <div>
           <p className="text-white/30 text-sm font-medium mb-1">
             {new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
-          <h1 className="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">
+          <h1 className="text-2xl md:text-3xl lg:text-4xl font-bold tracking-tight leading-tight">
             {greeting()},{' '}
             <span className="bg-gradient-to-r from-cyan-400 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
               {firstName}
@@ -86,7 +86,9 @@ export function Dashboard() {
         </div>
 
         <div className="glass-card-static overflow-hidden rounded-2xl">
-          <App />
+          <div className="pipeline-scope">
+            <App />
+          </div>
         </div>
       </div>
     </div>

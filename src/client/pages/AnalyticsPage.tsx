@@ -52,18 +52,8 @@ export function AnalyticsPage() {
     };
 
     return (
-        <div className="p-8 max-w-5xl mx-auto">
-            <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-cyan-600/5 flex items-center justify-center ring-1 ring-cyan-500/20">
-                    <BarChart3 className="w-5 h-5 text-cyan-400" />
-                </div>
-                <div>
-                    <h1 className="text-2xl font-bold">Analytics</h1>
-                    <p className="text-white/30 text-sm">Metricas de uso de este mes</p>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-8 stagger-children">
+        <div className="p-4 md:p-8 max-w-5xl mx-auto">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 stagger-children">
                 {metrics.map(({ label, value, icon: Icon, color, gradient }) => (
                     <div key={label} className="glass-card group p-5 relative overflow-hidden">
                         {/* Decorative gradient orb */}

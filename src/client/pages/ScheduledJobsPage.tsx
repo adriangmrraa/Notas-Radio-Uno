@@ -110,17 +110,8 @@ export function ScheduledJobsPage() {
     if (loading) return <div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" /></div>;
 
     return (
-        <div className="p-8 max-w-4xl mx-auto">
-            <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/15 to-cyan-600/5 flex items-center justify-center ring-1 ring-cyan-500/20">
-                        <CalendarClock className="w-5 h-5 text-cyan-400" />
-                    </div>
-                    <div>
-                        <h1 className="text-2xl font-bold">Jobs Programados</h1>
-                        <p className="text-white/30 text-sm">Configura capturas automaticas — el sistema detecta el live y arranca solo</p>
-                    </div>
-                </div>
+        <div className="p-4 md:p-8 max-w-4xl mx-auto">
+            <div className="flex items-center justify-end mb-6">
                 <button onClick={() => setShowForm(!showForm)} className="btn-primary inline-flex items-center gap-2">
                     {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                     {showForm ? 'Cancelar' : 'Nuevo Job'}
@@ -138,7 +129,7 @@ export function ScheduledJobsPage() {
                     </div>
 
                     <div className="space-y-5">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="text-xs font-medium text-white/40 mb-2 block uppercase tracking-wider">Nombre del job</label>
                                 <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
@@ -151,7 +142,7 @@ export function ScheduledJobsPage() {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             <div>
                                 <label className="text-xs font-medium text-white/40 mb-2 block uppercase tracking-wider">Hora de inicio</label>
                                 <input type="time" value={form.startTime} onChange={e => setForm({ ...form, startTime: e.target.value })}
@@ -164,7 +155,7 @@ export function ScheduledJobsPage() {
                             </div>
                             <div>
                                 <label className="text-xs font-medium text-white/40 mb-2 block uppercase tracking-wider">Dias de la semana</label>
-                                <div className="flex gap-1">
+                                <div className="flex flex-wrap gap-1">
                                     {DAY_NAMES.map((name, i) => (
                                         <button key={i} onClick={() => toggleDay(i)}
                                             className={`px-2.5 py-2 rounded-lg text-xs font-medium transition-all duration-300 ${
@@ -179,7 +170,7 @@ export function ScheduledJobsPage() {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             <div>
                                 <label className="text-xs font-medium text-white/40 mb-2 block uppercase tracking-wider">Tono</label>
                                 <select value={form.tone} onChange={e => setForm({ ...form, tone: e.target.value })}
@@ -262,7 +253,7 @@ export function ScheduledJobsPage() {
                                 </div>
                             </div>
                             <p className="text-sm text-white/30 mb-3 truncate font-mono text-xs">{job.streamUrl}</p>
-                            <div className="flex items-center gap-4 text-xs text-white/25">
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-white/25">
                                 <span className="flex items-center gap-1.5"><Clock className="w-3 h-3" />{job.startTime} — {job.durationMinutes}min</span>
                                 <span className="flex gap-1">{job.daysOfWeek.map((d: number) => (
                                     <span key={d} className="px-1.5 py-0.5 rounded bg-white/[0.04] text-[10px]">{DAY_NAMES[d]}</span>
