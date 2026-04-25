@@ -24,9 +24,9 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // GET /api/meta/status - Connection status
   // ------------------------------------------------------------------
-  app.get("/api/meta/status", requireAuth, (_req: Request, res: Response) => {
+  app.get("/api/meta/status", requireAuth, async (_req: Request, res: Response) => {
     try {
-      const status = getConnectionStatus();
+      const status = await getConnectionStatus();
       res.json(status);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -92,9 +92,9 @@ export function registerMetaRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // POST /api/meta/disconnect
   // ------------------------------------------------------------------
-  app.post("/api/meta/disconnect", requireAuth, (_req: Request, res: Response) => {
+  app.post("/api/meta/disconnect", requireAuth, async (_req: Request, res: Response) => {
     try {
-      const result = disconnectMeta();
+      const result = await disconnectMeta();
       res.json(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

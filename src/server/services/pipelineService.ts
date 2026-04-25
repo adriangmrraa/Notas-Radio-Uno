@@ -38,8 +38,8 @@ const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
 const outputDir = path.join(PROJECT_ROOT, "output");
 
 // Webhooks: configurable via DB settings, then .env, then empty
-function getWebhookPipelineUrl(): string {
-  return getSetting("webhook_pipeline") || process.env.WEBHOOK_URL_PIPELINE || "";
+async function getWebhookPipelineUrl(): Promise<string> {
+  return (await getSetting("webhook_pipeline")) || process.env.WEBHOOK_URL_PIPELINE || "";
 }
 
 /**
@@ -219,7 +219,7 @@ class AutoPipeline {
 
           const prevResult = await pendingTranscription;
           if (prevResult && this.running) {
-            this.onChunkTranscribed(prevResult, chunkNumber - 1);
+            await this.onChunkTranscribed(prevResult, chunkNumber - 1);
           }
         }
 
@@ -270,7 +270,7 @@ class AutoPipeline {
     // Resolve last pending transcription
     if (pendingTranscription) {
       const lastResult = await pendingTranscription;
-      if (lastResult) this.onChunkTranscribed(lastResult, chunkNumber);
+      if (lastResult) await this.onChunkTranscribed(lastResult, chunkNumber);
     }
   }
 
@@ -278,7 +278,7 @@ class AutoPipeline {
    * Callback cuando un chunk se transcribe exitosamente.
    * Acumula la transcripción y decide si analizar temas.
    */
-  private onChunkTranscribed(result: TranscriptionChunk, chunkNumber: number): void {
+  private async onChunkTranscribed(result: TranscriptionChunk, chunkNumber: number): Promise<void> {
     // Accumulate full transcription
     this.fullTranscription += (this.fullTranscription ? " " : "") + result.text;
     this.chunks.push(result);
@@ -296,7 +296,7 @@ class AutoPipeline {
     }
 
     // Persist in DB
-    const dbTranscription = createTranscription({
+    const dbTranscription = await createTranscription({
       text: result.text,
       source: "pipeline",
       durationSeconds: this.config.segmentDuration,
@@ -494,9 +494,9 @@ class AutoPipeline {
   /**
    * Gets custom agents that should run after a specific built-in step.
    */
-  private getAgentsAfterStep(step: string): CustomAgent[] {
+  private async getAgentsAfterStep(step: string): Promise<CustomAgent[]> {
     try {
-      const config = getActivePipelineConfig();
+      const config = await getActivePipelineConfig() as { node_order?: string[] } | null;
       if (!config || !config.node_order) return [];
 
       const order = config.node_order as string[];
@@ -510,7 +510,7 @@ class AutoPipeline {
         const nodeId = order[i];
         if (nodeId.startsWith('agent_')) {
           const agentId = nodeId.replace('agent_', '');
-          const agent = getAgent(agentId);
+          const agent = await getAgent(agentId) as CustomAgent | null;
           if (agent && agent.is_enabled) {
             agents.push(agent);
           }
@@ -534,7 +534,7 @@ class AutoPipeline {
     stepName: string,
     context: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const agents = this.getAgentsAfterStep(stepName);
+    const agents = await this.getAgentsAfterStep(stepName);
     let currentContext = { ...context };
 
     for (const agent of agents) {
@@ -607,7 +607,7 @@ class AutoPipeline {
     }
 
     // Check against DB (publications from last 24 hours)
-    const dupCheck = isDuplicateTopic(segment.topic, segment.summary);
+    const dupCheck = await isDuplicateTopic(segment.topic, segment.summary);
     if (dupCheck.isDuplicate) {
       const matchedAt = dupCheck.matchedPublication?.created_at;
       const hoursAgo = matchedAt
@@ -1295,7 +1295,7 @@ class AutoPipeline {
       message: "Enviando a webhook (Make.com/N8N)...",
       icon: "send",
     });
-    const webhookUrl = getWebhookPipelineUrl();
+    const webhookUrl = await getWebhookPipelineUrl();
     if (!webhookUrl) {
       this.emit("detail", {
         step: "publishing", sub: "webhook_skip",
@@ -1355,7 +1355,7 @@ class AutoPipeline {
 
     // 4. Publish directly via Meta API if connected
     try {
-      if (isMetaConnected()) {
+      if (await isMetaConnected()) {
         this.emit("detail", {
           step: "publishing",
           sub: "meta",
@@ -1390,7 +1390,7 @@ class AutoPipeline {
     }
 
     // Persist publication in DB
-    const dbPublication = createPublication({
+    const dbPublication = await createPublication({
       title,
       content,
       imagePath: flyerPath,

@@ -1,9 +1,11 @@
 import type { Server } from 'socket.io';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { detectLiveStream } from './liveDetectorService.js';
 import { AutoPipeline } from './pipelineService.js';
 import { jobNotify } from './notificationService.js';
 import { trackPipelineMinutes, trackPublication } from './usageTracker.js';
+import { scheduledJobs, jobExecutions } from '../db/schema/index.js';
+import { eq } from 'drizzle-orm';
 
 const MAX_RETRY_ATTEMPTS = 15; // 15 x 2min = 30 min window
 const RETRY_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
@@ -44,9 +46,8 @@ async function checkAndRunJobs() {
     const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     // Get active jobs that match current time and day
-    const jobs = await prisma.scheduledJob.findMany({
-        where: { isActive: true },
-    });
+    const jobs = await db.select().from(scheduledJobs)
+        .where(eq(scheduledJobs.isActive, true));
 
     for (const job of jobs) {
         // Skip if already running or retrying
@@ -87,14 +88,12 @@ async function startJobDetection(job: any) {
     await jobNotify.detecting(tenantId, job.id, job.name);
 
     // Create execution record
-    const execution = await prisma.jobExecution.create({
-        data: {
-            jobId: job.id,
-            tenantId,
-            status: 'pending',
-            scheduledFor: new Date(),
-        },
-    });
+    const [execution] = await db.insert(jobExecutions).values({
+        jobId: job.id,
+        tenantId,
+        status: 'pending',
+        scheduledFor: new Date(),
+    }).returning();
 
     attemptDetection(job, execution.id, 1);
 }
@@ -114,15 +113,13 @@ async function attemptDetection(job: any, executionId: string, attempt: number) 
 
             await jobNotify.started(tenantId, job.id, job.name, result.title || undefined);
 
-            await prisma.jobExecution.update({
-                where: { id: executionId },
-                data: { status: 'running', startedAt: new Date() },
-            });
+            await db.update(jobExecutions)
+                .set({ status: 'running', startedAt: new Date() })
+                .where(eq(jobExecutions.id, executionId));
 
-            await prisma.scheduledJob.update({
-                where: { id: job.id },
-                data: { lastRunAt: new Date(), lastRunStatus: 'running' },
-            });
+            await db.update(scheduledJobs)
+                .set({ lastRunAt: new Date(), lastRunStatus: 'running' })
+                .where(eq(scheduledJobs.id, job.id));
 
             startJobPipeline(job, executionId, result.liveUrl);
         } else if (attempt < MAX_RETRY_ATTEMPTS) {
@@ -139,15 +136,17 @@ async function attemptDetection(job: any, executionId: string, attempt: number) 
             retryState.delete(job.id);
             await jobNotify.noLiveFound(tenantId, job.id, job.name);
 
-            await prisma.jobExecution.update({
-                where: { id: executionId },
-                data: { status: 'failed', finishedAt: new Date(), errorMessage: 'No se encontro live despues de 30 minutos de reintentos' },
-            });
+            await db.update(jobExecutions)
+                .set({
+                    status: 'failed',
+                    finishedAt: new Date(),
+                    errorMessage: 'No se encontro live despues de 30 minutos de reintentos',
+                })
+                .where(eq(jobExecutions.id, executionId));
 
-            await prisma.scheduledJob.update({
-                where: { id: job.id },
-                data: { lastRunStatus: 'failed' },
-            });
+            await db.update(scheduledJobs)
+                .set({ lastRunStatus: 'failed' })
+                .where(eq(scheduledJobs.id, job.id));
         }
     } catch (err) {
         console.error(`[JobScheduler] Detection error for ${job.name}:`, err);
@@ -232,24 +231,24 @@ async function stopJobPipeline(jobId: string, reason: 'duration_limit' | 'manual
     const status = reason === 'error' ? 'failed' : 'completed';
 
     // Get job info for notification
-    const job = await prisma.scheduledJob.findUnique({ where: { id: jobId } });
+    const [job] = await db.select().from(scheduledJobs)
+        .where(eq(scheduledJobs.id, jobId))
+        .limit(1);
     const tenantId = job?.tenantId || '';
 
-    await prisma.jobExecution.update({
-        where: { id: executionId },
-        data: {
+    await db.update(jobExecutions)
+        .set({
             status,
             finishedAt: new Date(),
             publicationsGenerated: publications,
-            transcriptionMinutes: durationMin,
+            transcriptionMinutes: String(durationMin),
             errorMessage: errorMsg,
-        },
-    });
+        })
+        .where(eq(jobExecutions.id, executionId));
 
-    await prisma.scheduledJob.update({
-        where: { id: jobId },
-        data: { lastRunStatus: status },
-    });
+    await db.update(scheduledJobs)
+        .set({ lastRunStatus: status })
+        .where(eq(scheduledJobs.id, jobId));
 
     // Track usage
     if (tenantId) {

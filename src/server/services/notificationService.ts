@@ -1,5 +1,6 @@
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import type { Server } from 'socket.io';
+import { notifications } from '../db/schema/index.js';
 
 let ioRef: Server | null = null;
 
@@ -24,17 +25,15 @@ interface NotifyParams {
 export async function notify(params: NotifyParams) {
     const { tenantId, jobId, type, title, message, icon, metadata } = params;
 
-    const notification = await prisma.notification.create({
-        data: {
-            tenantId,
-            jobId,
-            type,
-            title,
-            message,
-            icon,
-            metadata: (metadata || {}) as any,
-        },
-    });
+    const [notification] = await db.insert(notifications).values({
+        tenantId,
+        jobId,
+        type,
+        title,
+        message,
+        icon,
+        metadata: (metadata || {}) as any,
+    }).returning();
 
     // Push real-time to tenant room
     if (ioRef) {
@@ -78,7 +77,6 @@ export const jobNotify = {
     /** Generic pipeline detail step — mirrors every detail event from the canvas */
     pipelineDetail: (tenantId: string, jobId: string, data: Record<string, unknown>) => {
         const step = String(data.step || '');
-        const sub = String(data.sub || '');
         const message = String(data.message || '');
         const iconKey = String(data.icon || '');
         const icon = ICON_MAP[iconKey] || '📋';

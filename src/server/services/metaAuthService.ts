@@ -120,10 +120,10 @@ export async function exchangeToken({ code, accessToken, redirectUri }: Exchange
   const expiresIn: number | undefined = longTokenResponse.data.expires_in;
 
   // Save encrypted token in DB
-  setCredential("META_USER_LONG_TOKEN", longLivedToken, "meta");
+  await setCredential("META_USER_LONG_TOKEN", longLivedToken, "meta");
   if (expiresIn) {
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-    setCredential("META_TOKEN_EXPIRES_AT", expiresAt, "meta");
+    await setCredential("META_TOKEN_EXPIRES_AT", expiresAt, "meta");
   }
 
   return { longLivedToken, expiresIn };
@@ -133,13 +133,13 @@ export async function exchangeToken({ code, accessToken, redirectUri }: Exchange
  * Descubre todos los assets del usuario: Facebook Pages e Instagram accounts.
  */
 export async function discoverAssets(userToken?: string): Promise<DiscoverAssetsResult> {
-  const token = userToken || getCredential("META_USER_LONG_TOKEN");
+  const token = userToken || await getCredential("META_USER_LONG_TOKEN");
   if (!token) {
     throw new Error("No hay token de Meta disponible");
   }
 
   // Deactivate previous assets
-  deactivateAllAssets();
+  await deactivateAllAssets();
 
   const result: DiscoverAssetsResult = {
     pages: [],
@@ -157,10 +157,10 @@ export async function discoverAssets(userToken?: string): Promise<DiscoverAssets
 
   for (const page of pagesResponse.data.data || []) {
     // Save page token (automatically long-lived for pages)
-    setCredential(`META_PAGE_TOKEN_${page.id}`, page.access_token, "meta");
+    await setCredential(`META_PAGE_TOKEN_${page.id}`, page.access_token, "meta");
 
     // Save page as asset
-    upsertAsset("facebook_page", page.id, page.name, {
+    await upsertAsset("facebook_page", page.id, page.name, {
       access_token_ref: `META_PAGE_TOKEN_${page.id}`,
     });
 
@@ -174,9 +174,9 @@ export async function discoverAssets(userToken?: string): Promise<DiscoverAssets
       const igAccount = page.instagram_business_account;
 
       // The page token works for IG publishing
-      setCredential(`META_IG_TOKEN_${igAccount.id}`, page.access_token, "meta");
+      await setCredential(`META_IG_TOKEN_${igAccount.id}`, page.access_token, "meta");
 
-      upsertAsset("instagram_account", igAccount.id, igAccount.name || igAccount.username, {
+      await upsertAsset("instagram_account", igAccount.id, igAccount.name || igAccount.username, {
         username: igAccount.username,
         profile_picture_url: igAccount.profile_picture_url,
         linked_page_id: page.id,
@@ -200,10 +200,10 @@ export async function discoverAssets(userToken?: string): Promise<DiscoverAssets
  * Obtiene el estado actual de conexión Meta.
  * Respuesta sanitizada (sin tokens).
  */
-export function getConnectionStatus(): ConnectionStatus {
-  const connected = isMetaConnected();
-  const assets: MetaAsset[] = connected ? getAllActiveAssets() : [];
-  const expiresAt = getCredential("META_TOKEN_EXPIRES_AT");
+export async function getConnectionStatus(): Promise<ConnectionStatus> {
+  const connected = await isMetaConnected();
+  const assets: MetaAsset[] = connected ? await getAllActiveAssets() : [];
+  const expiresAt = await getCredential("META_TOKEN_EXPIRES_AT");
 
   return {
     connected,
@@ -215,8 +215,8 @@ export function getConnectionStatus(): ConnectionStatus {
     instagramAccounts: assets.filter((a) => a.asset_type === "instagram_account").map((a) => ({
       id: a.external_id,
       name: a.name,
-      username: a.metadata?.username,
-      profilePicture: a.metadata?.profile_picture_url,
+      username: a.metadata?.username as string | undefined,
+      profilePicture: a.metadata?.profile_picture_url as string | undefined,
     })),
   };
 }
@@ -224,9 +224,9 @@ export function getConnectionStatus(): ConnectionStatus {
 /**
  * Desconecta Meta: elimina todos los tokens y assets.
  */
-export function disconnectMeta(): { success: boolean; message: string } {
-  deleteCredentialsByCategory("meta");
-  deactivateAllAssets();
+export async function disconnectMeta(): Promise<{ success: boolean; message: string }> {
+  await deleteCredentialsByCategory("meta");
+  await deactivateAllAssets();
   return { success: true, message: "Meta desconectado correctamente" };
 }
 
@@ -234,7 +234,7 @@ export function disconnectMeta(): { success: boolean; message: string } {
  * Verifica que los permisos necesarios estén otorgados.
  */
 export async function checkPermissions(userToken?: string): Promise<PermissionsResult> {
-  const token = userToken || getCredential("META_USER_LONG_TOKEN");
+  const token = userToken || await getCredential("META_USER_LONG_TOKEN");
   if (!token) return { valid: false, permissions: [] };
 
   try {

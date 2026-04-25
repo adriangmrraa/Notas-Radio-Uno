@@ -12,7 +12,7 @@ import { dirname } from "path";
 
 dotenv.config();
 
-import { initDatabase } from "./services/databaseService.js";
+import { runMigrations } from "./db/migrate.js";
 import { registerPipelineRoutes } from "./routes/pipeline.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerHistoryRoutes } from "./routes/history.js";
@@ -28,7 +28,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
-import { disconnectPrisma } from "./lib/prisma.js";
+import { disconnectDb } from "./db/index.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -75,18 +75,13 @@ fs.writeFileSync(TRANSCRIPTION_FILE, JSON.stringify(initialData, null, 4), "utf-
 console.log("Archivo JSON de transcripciones inicializado.");
 
 // ---------------------------------------------------------------------------
-// Initialize database
-// ---------------------------------------------------------------------------
-initDatabase();
-
-// ---------------------------------------------------------------------------
 // Express + Socket.IO setup
 // ---------------------------------------------------------------------------
 const app = express();
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: true,
+    origin: process.env.FRONTEND_URL || true,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -119,12 +114,13 @@ io.on("connection", (socket) => {
 });
 
 const upload = multer({ dest: path.join(PROJECT_ROOT, "uploads") });
-const PORT = 3001;
+const PORT = parseInt(process.env.PORT || "3001", 10);
 
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
-app.use(cors({ origin: true, credentials: true }));
+const CORS_ORIGIN = process.env.FRONTEND_URL || true;
+app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -191,7 +187,7 @@ registerPipelineConfigRoutes(app);
 async function gracefulShutdown(): Promise<void> {
   console.log("\n[Server] Cerrando servidor...");
 
-  await disconnectPrisma();
+  await disconnectDb();
 
   httpServer.close(() => {
     console.log("[Server] Servidor cerrado.");
@@ -219,10 +215,19 @@ app.get("*", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Start listening
+// Start listening (after running DB migrations)
 // ---------------------------------------------------------------------------
-httpServer.listen(PORT, () => {
-  console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);
-});
+(async () => {
+  try {
+    await runMigrations();
+  } catch (err) {
+    console.error("[Server] Error running migrations:", err);
+    process.exit(1);
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);
+  });
+})();
 
 export { app, io, httpServer, TRANSCRIPTION_FILE, OUTPUT_DIR, PROJECT_ROOT };

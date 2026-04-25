@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
 import crypto from 'crypto';
+import { socialPortfolios, businessAssets, subscriptions, plans, credentials } from '../db/schema/index.js';
+import { eq, and, sql } from 'drizzle-orm';
 
 const router = Router();
 
@@ -10,12 +12,35 @@ const router = Router();
 // ---------------------------------------------------------------------------
 router.get('/portfolios', requireAuth, async (req: Request, res: Response) => {
     try {
-        const portfolios = await prisma.socialPortfolio.findMany({
-            where: { tenantId: req.auth!.tenantId },
-            include: { assets: { where: { isActive: true } } },
-            orderBy: { sortOrder: 'asc' },
-        });
-        res.json(portfolios);
+        const tenantId = req.auth!.tenantId;
+
+        const portfolioRows = await db.select().from(socialPortfolios)
+            .where(eq(socialPortfolios.tenantId, tenantId))
+            .orderBy(socialPortfolios.sortOrder);
+
+        // Fetch active assets for each portfolio
+        const assetRows = await db.select().from(businessAssets)
+            .where(and(
+                eq(businessAssets.tenantId, tenantId),
+                eq(businessAssets.isActive, true)
+            ));
+
+        // Group assets by portfolioId
+        const assetsByPortfolio = new Map<string, typeof assetRows>();
+        for (const asset of assetRows) {
+            if (!asset.portfolioId) continue;
+            if (!assetsByPortfolio.has(asset.portfolioId)) {
+                assetsByPortfolio.set(asset.portfolioId, []);
+            }
+            assetsByPortfolio.get(asset.portfolioId)!.push(asset);
+        }
+
+        const result = portfolioRows.map((p) => ({
+            ...p,
+            assets: assetsByPortfolio.get(p.id) || [],
+        }));
+
+        res.json(result);
     } catch (err) {
         console.error('[Connections] Error:', err);
         res.status(500).json({ error: 'Error al obtener portfolios' });
@@ -36,12 +61,17 @@ router.post('/portfolios', requireAuth, async (req: Request, res: Response) => {
         }
 
         // Check plan limit
-        const subscription = await prisma.subscription.findUnique({
-            where: { tenantId },
-            include: { plan: true },
-        });
-        const maxPortfolios = subscription?.plan?.maxConnectedPlatforms ?? 2;
-        const currentCount = await prisma.socialPortfolio.count({ where: { tenantId } });
+        const [subRow] = await db.select({ sub: subscriptions, plan: plans })
+            .from(subscriptions)
+            .leftJoin(plans, eq(subscriptions.planId, plans.id))
+            .where(eq(subscriptions.tenantId, tenantId))
+            .limit(1);
+        const maxPortfolios = subRow?.plan?.maxConnectedPlatforms ?? 2;
+
+        const countResult = await db.select({ count: sql<number>`count(*)` })
+            .from(socialPortfolios)
+            .where(eq(socialPortfolios.tenantId, tenantId));
+        const currentCount = Number(countResult[0]?.count ?? 0);
 
         if (maxPortfolios !== -1 && currentCount >= maxPortfolios) {
             res.status(403).json({
@@ -51,14 +81,16 @@ router.post('/portfolios', requireAuth, async (req: Request, res: Response) => {
             return;
         }
 
-        const portfolio = await prisma.socialPortfolio.create({
-            data: { tenantId, name: name.trim(), sortOrder: currentCount },
-            include: { assets: true },
-        });
+        const [portfolio] = await db.insert(socialPortfolios).values({
+            tenantId,
+            name: name.trim(),
+            sortOrder: currentCount,
+        }).returning();
 
-        res.status(201).json(portfolio);
+        res.status(201).json({ ...portfolio, assets: [] });
     } catch (err: any) {
-        if (err.code === 'P2002') {
+        // Unique constraint violation
+        if (err.code === '23505' || err.code === 'P2002') {
             res.status(409).json({ error: 'Ya existe un portfolio con ese nombre' });
             return;
         }
@@ -72,20 +104,24 @@ router.post('/portfolios', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/portfolios/:id', requireAuth, async (req: Request, res: Response) => {
     try {
-        const portfolio = await prisma.socialPortfolio.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [portfolio] = await db.select().from(socialPortfolios)
+            .where(and(
+                eq(socialPortfolios.id, req.params.id),
+                eq(socialPortfolios.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!portfolio) {
             res.status(404).json({ error: 'Portfolio no encontrado' });
             return;
         }
 
         // Deactivate assets, then delete portfolio
-        await prisma.businessAsset.updateMany({
-            where: { portfolioId: portfolio.id },
-            data: { isActive: false, portfolioId: null },
-        });
-        await prisma.socialPortfolio.delete({ where: { id: portfolio.id } });
+        await db.update(businessAssets)
+            .set({ isActive: false, portfolioId: null })
+            .where(eq(businessAssets.portfolioId, portfolio.id));
+
+        await db.delete(socialPortfolios)
+            .where(eq(socialPortfolios.id, portfolio.id));
 
         res.json({ success: true });
     } catch (err) {
@@ -100,12 +136,15 @@ router.delete('/portfolios/:id', requireAuth, async (req: Request, res: Response
 router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
-        const portfolioId = req.params.id as string;
+        const portfolioId = req.params.id;
         const { accessToken, code } = req.body;
 
-        const portfolio = await prisma.socialPortfolio.findFirst({
-            where: { id: portfolioId, tenantId },
-        });
+        const [portfolio] = await db.select().from(socialPortfolios)
+            .where(and(
+                eq(socialPortfolios.id, portfolioId),
+                eq(socialPortfolios.tenantId, tenantId)
+            ))
+            .limit(1);
         if (!portfolio) {
             res.status(404).json({ error: 'Portfolio no encontrado' });
             return;
@@ -139,15 +178,25 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
         const expiresIn = llData.expires_in || 5184000; // 60 days
 
         // Store user token
-        await prisma.credential.upsert({
-            where: { tenantId_name: { tenantId, name: `META_TOKEN_${portfolioId}` } },
-            update: { value: longLivedToken, isValid: true },
-            create: { tenantId, name: `META_TOKEN_${portfolioId}`, value: longLivedToken, category: 'meta' },
+        await db.insert(credentials).values({
+            tenantId,
+            name: `META_TOKEN_${portfolioId}`,
+            value: longLivedToken,
+            category: 'meta',
+            isValid: true,
+        }).onConflictDoUpdate({
+            target: [credentials.tenantId, credentials.name],
+            set: { value: longLivedToken, isValid: true },
         });
-        await prisma.credential.upsert({
-            where: { tenantId_name: { tenantId, name: `META_EXPIRES_${portfolioId}` } },
-            update: { value: new Date(Date.now() + expiresIn * 1000).toISOString() },
-            create: { tenantId, name: `META_EXPIRES_${portfolioId}`, value: new Date(Date.now() + expiresIn * 1000).toISOString(), category: 'meta' },
+
+        await db.insert(credentials).values({
+            tenantId,
+            name: `META_EXPIRES_${portfolioId}`,
+            value: new Date(Date.now() + expiresIn * 1000).toISOString(),
+            category: 'meta',
+        }).onConflictDoUpdate({
+            target: [credentials.tenantId, credentials.name],
+            set: { value: new Date(Date.now() + expiresIn * 1000).toISOString() },
         });
 
         // Discover pages
@@ -157,15 +206,23 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
 
         const assets = [];
         for (const page of pages) {
-            const asset = await prisma.businessAsset.upsert({
-                where: { tenantId_externalId: { tenantId, externalId: page.id } },
-                update: { name: page.name, portfolioId, isActive: true, metadata: { pageAccessToken: page.access_token } },
-                create: {
-                    tenantId, portfolioId, assetType: 'facebook_page',
-                    externalId: page.id, name: page.name,
+            const [asset] = await db.insert(businessAssets).values({
+                tenantId,
+                portfolioId,
+                assetType: 'facebook_page',
+                externalId: page.id,
+                name: page.name,
+                metadata: { pageAccessToken: page.access_token },
+                isActive: true,
+            }).onConflictDoUpdate({
+                target: [businessAssets.tenantId, businessAssets.externalId],
+                set: {
+                    name: page.name,
+                    portfolioId,
+                    isActive: true,
                     metadata: { pageAccessToken: page.access_token },
                 },
-            });
+            }).returning();
             assets.push(asset);
 
             // Check for linked Instagram
@@ -176,15 +233,23 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
                 const igInfoResp = await fetch(`https://graph.facebook.com/v22.0/${igId}?fields=name,username,profile_picture_url&access_token=${page.access_token}`);
                 const igInfo = await igInfoResp.json() as any;
 
-                const igAsset = await prisma.businessAsset.upsert({
-                    where: { tenantId_externalId: { tenantId, externalId: igId } },
-                    update: { name: igInfo.username || igInfo.name, portfolioId, isActive: true, metadata: { username: igInfo.username, linkedPageId: page.id } },
-                    create: {
-                        tenantId, portfolioId, assetType: 'instagram_account',
-                        externalId: igId, name: igInfo.username || igInfo.name,
+                const [igAsset] = await db.insert(businessAssets).values({
+                    tenantId,
+                    portfolioId,
+                    assetType: 'instagram_account',
+                    externalId: igId,
+                    name: igInfo.username || igInfo.name,
+                    metadata: { username: igInfo.username, linkedPageId: page.id },
+                    isActive: true,
+                }).onConflictDoUpdate({
+                    target: [businessAssets.tenantId, businessAssets.externalId],
+                    set: {
+                        name: igInfo.username || igInfo.name,
+                        portfolioId,
+                        isActive: true,
                         metadata: { username: igInfo.username, linkedPageId: page.id },
                     },
-                });
+                }).returning();
                 assets.push(igAsset);
             }
         }
@@ -202,12 +267,15 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
 router.post('/portfolios/:id/twitter', requireAuth, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
-        const portfolioId = req.params.id as string;
+        const portfolioId = req.params.id;
         const { code, codeVerifier, redirectUri } = req.body;
 
-        const portfolio = await prisma.socialPortfolio.findFirst({
-            where: { id: portfolioId, tenantId },
-        });
+        const [portfolio] = await db.select().from(socialPortfolios)
+            .where(and(
+                eq(socialPortfolios.id, portfolioId),
+                eq(socialPortfolios.tenantId, tenantId)
+            ))
+            .limit(1);
         if (!portfolio) {
             res.status(404).json({ error: 'Portfolio no encontrado' });
             return;
@@ -246,31 +314,47 @@ router.post('/portfolios/:id/twitter', requireAuth, async (req: Request, res: Re
         const twitterUser = userData.data;
 
         // Store tokens
-        await prisma.credential.upsert({
-            where: { tenantId_name: { tenantId, name: `TWITTER_TOKEN_${portfolioId}` } },
-            update: { value: tokenData.access_token, isValid: true },
-            create: { tenantId, name: `TWITTER_TOKEN_${portfolioId}`, value: tokenData.access_token, category: 'twitter' },
+        await db.insert(credentials).values({
+            tenantId,
+            name: `TWITTER_TOKEN_${portfolioId}`,
+            value: tokenData.access_token,
+            category: 'twitter',
+            isValid: true,
+        }).onConflictDoUpdate({
+            target: [credentials.tenantId, credentials.name],
+            set: { value: tokenData.access_token, isValid: true },
         });
 
         if (tokenData.refresh_token) {
-            await prisma.credential.upsert({
-                where: { tenantId_name: { tenantId, name: `TWITTER_REFRESH_${portfolioId}` } },
-                update: { value: tokenData.refresh_token },
-                create: { tenantId, name: `TWITTER_REFRESH_${portfolioId}`, value: tokenData.refresh_token, category: 'twitter' },
+            await db.insert(credentials).values({
+                tenantId,
+                name: `TWITTER_REFRESH_${portfolioId}`,
+                value: tokenData.refresh_token,
+                category: 'twitter',
+            }).onConflictDoUpdate({
+                target: [credentials.tenantId, credentials.name],
+                set: { value: tokenData.refresh_token },
             });
         }
 
         // Create asset
-        const asset = await prisma.businessAsset.upsert({
-            where: { tenantId_externalId: { tenantId, externalId: twitterUser?.id || 'unknown' } },
-            update: { name: `@${twitterUser?.username}`, portfolioId, isActive: true, metadata: { username: twitterUser?.username, name: twitterUser?.name } },
-            create: {
-                tenantId, portfolioId, assetType: 'twitter_account',
-                externalId: twitterUser?.id || 'unknown',
+        const [asset] = await db.insert(businessAssets).values({
+            tenantId,
+            portfolioId,
+            assetType: 'twitter_account',
+            externalId: twitterUser?.id || 'unknown',
+            name: `@${twitterUser?.username}`,
+            metadata: { username: twitterUser?.username, name: twitterUser?.name },
+            isActive: true,
+        }).onConflictDoUpdate({
+            target: [businessAssets.tenantId, businessAssets.externalId],
+            set: {
                 name: `@${twitterUser?.username}`,
+                portfolioId,
+                isActive: true,
                 metadata: { username: twitterUser?.username, name: twitterUser?.name },
             },
-        });
+        }).returning();
 
         res.json({ success: true, asset, user: twitterUser });
     } catch (err) {
@@ -312,18 +396,20 @@ router.get('/twitter/auth-url', requireAuth, (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/assets/:id', requireAuth, async (req: Request, res: Response) => {
     try {
-        const asset = await prisma.businessAsset.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [asset] = await db.select().from(businessAssets)
+            .where(and(
+                eq(businessAssets.id, req.params.id),
+                eq(businessAssets.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!asset) {
             res.status(404).json({ error: 'Asset no encontrado' });
             return;
         }
 
-        await prisma.businessAsset.update({
-            where: { id: asset.id },
-            data: { isActive: false },
-        });
+        await db.update(businessAssets)
+            .set({ isActive: false })
+            .where(eq(businessAssets.id, asset.id));
 
         res.json({ success: true });
     } catch (err) {

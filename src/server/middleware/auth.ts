@@ -1,8 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
-import type { UserRole } from '@prisma/client';
+import type { UserRole } from '../db/schema/enums.js';
+import { subscriptions } from '../db/schema/index.js';
+import { eq } from 'drizzle-orm';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
@@ -68,9 +70,9 @@ export async function requireActiveSubscription(req: Request, res: Response, nex
         return;
     }
 
-    const subscription = await prisma.subscription.findUnique({
-        where: { tenantId: req.auth.tenantId },
-    });
+    const [subscription] = await db.select().from(subscriptions)
+        .where(eq(subscriptions.tenantId, req.auth.tenantId))
+        .limit(1);
 
     if (!subscription) {
         res.status(402).json({ error: 'No tienes una suscripcion activa', code: 'NO_SUBSCRIPTION' });
@@ -89,10 +91,9 @@ export async function requireActiveSubscription(req: Request, res: Response, nex
 
     if (subscription.status === 'trialing' && subscription.trialEndsAt) {
         if (new Date() > subscription.trialEndsAt) {
-            await prisma.subscription.update({
-                where: { id: subscription.id },
-                data: { status: 'expired' },
-            });
+            await db.update(subscriptions)
+                .set({ status: 'expired' })
+                .where(eq(subscriptions.id, subscription.id));
             res.status(402).json({
                 error: 'Tu periodo de prueba ha expirado',
                 code: 'TRIAL_EXPIRED',

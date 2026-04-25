@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
 import Stripe from 'stripe';
 import { MercadoPagoConfig, PreApproval, Payment } from 'mercadopago';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
+import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
+import { users } from '../db/schema/index.js';
+import { eq, and, desc } from 'drizzle-orm';
 
 const router = Router();
 
@@ -26,11 +29,10 @@ function getMercadoPago() {
 // ---------------------------------------------------------------------------
 router.get('/plans', async (_req: Request, res: Response) => {
     try {
-        const plans = await prisma.plan.findMany({
-            where: { isActive: true },
-            orderBy: { sortOrder: 'asc' },
-        });
-        res.json(plans);
+        const allPlans = await db.select().from(plans)
+            .where(eq(plans.isActive, true))
+            .orderBy(plans.sortOrder);
+        res.json(allPlans);
     } catch (err) {
         console.error('[Billing] Error fetching plans:', err);
         res.status(500).json({ error: 'Error al obtener planes' });
@@ -42,12 +44,20 @@ router.get('/plans', async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.get('/my-subscription', requireAuth, async (req: Request, res: Response) => {
     try {
-        const subscription = await prisma.subscription.findUnique({
-            where: { tenantId: req.auth!.tenantId },
-            include: { plan: true },
-        });
+        const rows = await db.select({ sub: subscriptions, plan: plans })
+            .from(subscriptions)
+            .leftJoin(plans, eq(subscriptions.planId, plans.id))
+            .where(eq(subscriptions.tenantId, req.auth!.tenantId))
+            .limit(1);
 
-        if (!subscription) {
+        if (!rows[0]) {
+            res.json({ subscription: null });
+            return;
+        }
+
+        const { sub: subscription, plan } = rows[0];
+
+        if (!subscription || !plan) {
             res.json({ subscription: null });
             return;
         }
@@ -57,10 +67,9 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
             const diff = subscription.trialEndsAt.getTime() - Date.now();
             trialDaysRemaining = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
             if (trialDaysRemaining === 0) {
-                await prisma.subscription.update({
-                    where: { id: subscription.id },
-                    data: { status: 'expired' },
-                });
+                await db.update(subscriptions)
+                    .set({ status: 'expired' })
+                    .where(eq(subscriptions.id, subscription.id));
                 subscription.status = 'expired';
             }
         }
@@ -69,22 +78,22 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
             subscription: {
                 id: subscription.id,
                 status: subscription.status,
-                planName: subscription.plan.name,
-                planDisplayName: subscription.plan.displayName,
+                planName: plan.name,
+                planDisplayName: plan.displayName,
                 trialEndsAt: subscription.trialEndsAt,
                 trialDaysRemaining,
                 currentPeriodEnd: subscription.currentPeriodEnd,
                 cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
                 limits: {
-                    maxPipelineHoursPerMonth: subscription.plan.maxPipelineHoursPerMonth,
-                    maxPublicationsPerMonth: subscription.plan.maxPublicationsPerMonth,
-                    maxScheduledJobs: subscription.plan.maxScheduledJobs,
-                    maxCustomAgents: subscription.plan.maxCustomAgents,
-                    maxTeamMembers: subscription.plan.maxTeamMembers,
-                    maxConnectedPlatforms: subscription.plan.maxConnectedPlatforms,
-                    maxStorageGb: subscription.plan.maxStorageGb,
+                    maxPipelineHoursPerMonth: plan.maxPipelineHoursPerMonth,
+                    maxPublicationsPerMonth: plan.maxPublicationsPerMonth,
+                    maxScheduledJobs: plan.maxScheduledJobs,
+                    maxCustomAgents: plan.maxCustomAgents,
+                    maxTeamMembers: plan.maxTeamMembers,
+                    maxConnectedPlatforms: plan.maxConnectedPlatforms,
+                    maxStorageGb: plan.maxStorageGb,
                 },
-                features: subscription.plan.features,
+                features: plan.features,
             },
         });
     } catch (err) {
@@ -99,16 +108,20 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
 router.get('/usage', requireAuth, async (req: Request, res: Response) => {
     try {
         const now = new Date();
-        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const periodStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
-        let usage = await prisma.usageRecord.findFirst({
-            where: { tenantId: req.auth!.tenantId, periodStart },
-        });
+        let [usage] = await db.select().from(usageRecords)
+            .where(and(
+                eq(usageRecords.tenantId, req.auth!.tenantId),
+                eq(usageRecords.periodStart, periodStart)
+            ))
+            .limit(1);
 
         if (!usage) {
-            usage = await prisma.usageRecord.create({
-                data: { tenantId: req.auth!.tenantId, periodStart },
-            });
+            [usage] = await db.insert(usageRecords).values({
+                tenantId: req.auth!.tenantId,
+                periodStart,
+            }).returning();
         }
 
         res.json({
@@ -130,12 +143,11 @@ router.get('/usage', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
     try {
-        const invoices = await prisma.invoice.findMany({
-            where: { tenantId: req.auth!.tenantId },
-            orderBy: { createdAt: 'desc' },
-            take: 50,
-        });
-        res.json(invoices);
+        const allInvoices = await db.select().from(invoices)
+            .where(eq(invoices.tenantId, req.auth!.tenantId))
+            .orderBy(desc(invoices.createdAt))
+            .limit(50);
+        res.json(allInvoices);
     } catch (err) {
         console.error('[Billing] Error fetching invoices:', err);
         res.status(500).json({ error: 'Error al obtener facturas' });
@@ -149,16 +161,17 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
     try {
         const { planName, billingPeriod = 'monthly', provider = 'stripe' } = req.body;
 
-        const plan = await prisma.plan.findUnique({ where: { name: planName } });
+        const [plan] = await db.select().from(plans)
+            .where(eq(plans.name, planName))
+            .limit(1);
         if (!plan) {
             res.status(400).json({ error: 'Plan no encontrado' });
             return;
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id: req.auth!.userId },
-            select: { email: true },
-        });
+        const [user] = await db.select({ email: users.email }).from(users)
+            .where(eq(users.id, req.auth!.userId))
+            .limit(1);
 
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
@@ -241,22 +254,21 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/cancel', requireAuth, async (req: Request, res: Response) => {
     try {
-        const subscription = await prisma.subscription.findUnique({
-            where: { tenantId: req.auth!.tenantId },
-        });
+        const [subscription] = await db.select().from(subscriptions)
+            .where(eq(subscriptions.tenantId, req.auth!.tenantId))
+            .limit(1);
 
         if (!subscription) {
             res.status(404).json({ error: 'No hay suscripcion activa' });
             return;
         }
 
-        await prisma.subscription.update({
-            where: { id: subscription.id },
-            data: {
+        await db.update(subscriptions)
+            .set({
                 cancelAtPeriodEnd: true,
                 canceledAt: new Date(),
-            },
-        });
+            })
+            .where(eq(subscriptions.id, subscription.id));
 
         // Cancel on Stripe if applicable
         if (subscription.paymentProvider === 'stripe' && subscription.externalSubscriptionId) {
@@ -305,12 +317,26 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                 const { tenantId, planName, billingPeriod } = session.metadata || {};
                 if (!tenantId || !planName) break;
 
-                const plan = await prisma.plan.findUnique({ where: { name: planName } });
+                const [plan] = await db.select().from(plans)
+                    .where(eq(plans.name, planName))
+                    .limit(1);
                 if (!plan) break;
 
-                await prisma.subscription.upsert({
-                    where: { tenantId },
-                    update: {
+                await db.insert(subscriptions).values({
+                    tenantId,
+                    planId: plan.id,
+                    status: 'active',
+                    paymentProvider: 'stripe',
+                    billingPeriod: billingPeriod || 'monthly',
+                    externalSubscriptionId: session.subscription as string,
+                    externalCustomerId: session.customer as string,
+                    currentPeriodStart: new Date(),
+                    trialEndsAt: null,
+                    cancelAtPeriodEnd: false,
+                    canceledAt: null,
+                }).onConflictDoUpdate({
+                    target: subscriptions.tenantId,
+                    set: {
                         planId: plan.id,
                         status: 'active',
                         paymentProvider: 'stripe',
@@ -322,43 +348,31 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                         cancelAtPeriodEnd: false,
                         canceledAt: null,
                     },
-                    create: {
-                        tenantId,
-                        planId: plan.id,
-                        status: 'active',
-                        paymentProvider: 'stripe',
-                        billingPeriod: billingPeriod || 'monthly',
-                        externalSubscriptionId: session.subscription as string,
-                        externalCustomerId: session.customer as string,
-                        currentPeriodStart: new Date(),
-                    },
                 });
                 console.log(`[Stripe] Subscription activated for tenant ${tenantId}, plan ${planName}`);
                 break;
             }
 
             case 'invoice.paid': {
-                const invoice = event.data.object as Stripe.Invoice;
-                const customerId = invoice.customer as string;
+                const stripeInvoice = event.data.object as Stripe.Invoice;
+                const customerId = stripeInvoice.customer as string;
 
-                const subscription = await prisma.subscription.findFirst({
-                    where: { externalCustomerId: customerId },
-                });
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalCustomerId, customerId))
+                    .limit(1);
                 if (!subscription) break;
 
-                await prisma.invoice.create({
-                    data: {
-                        tenantId: subscription.tenantId,
-                        subscriptionId: subscription.id,
-                        amount: (invoice.amount_paid || 0) / 100,
-                        currency: invoice.currency?.toUpperCase() || 'USD',
-                        status: 'paid',
-                        paymentProvider: 'stripe',
-                        externalInvoiceId: invoice.id,
-                        paidAt: new Date(),
-                        billingPeriodStart: invoice.period_start ? new Date(invoice.period_start * 1000) : undefined,
-                        billingPeriodEnd: invoice.period_end ? new Date(invoice.period_end * 1000) : undefined,
-                    },
+                await db.insert(invoices).values({
+                    tenantId: subscription.tenantId,
+                    subscriptionId: subscription.id,
+                    amount: String((stripeInvoice.amount_paid || 0) / 100),
+                    currency: stripeInvoice.currency?.toUpperCase() || 'USD',
+                    status: 'paid',
+                    paymentProvider: 'stripe',
+                    externalInvoiceId: stripeInvoice.id,
+                    paidAt: new Date(),
+                    billingPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : undefined,
+                    billingPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
                 });
                 break;
             }
@@ -367,19 +381,17 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                 const failedInvoice = event.data.object as Stripe.Invoice;
                 const custId = failedInvoice.customer as string;
 
-                await prisma.subscription.updateMany({
-                    where: { externalCustomerId: custId },
-                    data: { status: 'past_due' },
-                });
+                await db.update(subscriptions)
+                    .set({ status: 'past_due' })
+                    .where(eq(subscriptions.externalCustomerId, custId));
                 break;
             }
 
             case 'customer.subscription.deleted': {
                 const deletedSub = event.data.object as Stripe.Subscription;
-                await prisma.subscription.updateMany({
-                    where: { externalSubscriptionId: deletedSub.id },
-                    data: { status: 'canceled', canceledAt: new Date() },
-                });
+                await db.update(subscriptions)
+                    .set({ status: 'canceled', canceledAt: new Date() })
+                    .where(eq(subscriptions.externalSubscriptionId, deletedSub.id));
                 break;
             }
         }
@@ -410,15 +422,28 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             if (!match) { res.json({ received: true }); return; }
 
             const [, tenantId, planName, billingPeriod] = match;
-            const plan = await prisma.plan.findUnique({ where: { name: planName } });
+            const [plan] = await db.select().from(plans)
+                .where(eq(plans.name, planName))
+                .limit(1);
             if (!plan) { res.json({ received: true }); return; }
 
             const mpStatus = result.status;
 
             if (mpStatus === 'authorized') {
-                await prisma.subscription.upsert({
-                    where: { tenantId },
-                    update: {
+                await db.insert(subscriptions).values({
+                    tenantId,
+                    planId: plan.id,
+                    status: 'active',
+                    paymentProvider: 'mercadopago',
+                    billingPeriod,
+                    externalSubscriptionId: String(data.id),
+                    currentPeriodStart: new Date(),
+                    trialEndsAt: null,
+                    cancelAtPeriodEnd: false,
+                    canceledAt: null,
+                }).onConflictDoUpdate({
+                    target: subscriptions.tenantId,
+                    set: {
                         planId: plan.id,
                         status: 'active',
                         paymentProvider: 'mercadopago',
@@ -429,22 +454,12 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                         cancelAtPeriodEnd: false,
                         canceledAt: null,
                     },
-                    create: {
-                        tenantId,
-                        planId: plan.id,
-                        status: 'active',
-                        paymentProvider: 'mercadopago',
-                        billingPeriod,
-                        externalSubscriptionId: String(data.id),
-                        currentPeriodStart: new Date(),
-                    },
                 });
                 console.log(`[MercadoPago] Subscription activated for tenant ${tenantId}`);
             } else if (mpStatus === 'paused' || mpStatus === 'cancelled') {
-                await prisma.subscription.updateMany({
-                    where: { tenantId },
-                    data: { status: 'canceled', canceledAt: new Date() },
-                });
+                await db.update(subscriptions)
+                    .set({ status: 'canceled', canceledAt: new Date() })
+                    .where(eq(subscriptions.tenantId, tenantId));
             }
         }
 
@@ -459,19 +474,19 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                 const match = paymentData.external_reference.match(/^tenant_(.+?)_/);
                 if (match) {
                     const tenantId = match[1];
-                    const sub = await prisma.subscription.findUnique({ where: { tenantId } });
+                    const [sub] = await db.select().from(subscriptions)
+                        .where(eq(subscriptions.tenantId, tenantId))
+                        .limit(1);
                     if (sub) {
-                        await prisma.invoice.create({
-                            data: {
-                                tenantId,
-                                subscriptionId: sub.id,
-                                amount: paymentData.transaction_amount || 0,
-                                currency: 'ARS',
-                                status: 'paid',
-                                paymentProvider: 'mercadopago',
-                                externalPaymentId: String(data.id),
-                                paidAt: new Date(),
-                            },
+                        await db.insert(invoices).values({
+                            tenantId,
+                            subscriptionId: sub.id,
+                            amount: String(paymentData.transaction_amount || 0),
+                            currency: 'ARS',
+                            status: 'paid',
+                            paymentProvider: 'mercadopago',
+                            externalPaymentId: String(data.id),
+                            paidAt: new Date(),
                         });
                     }
                 }

@@ -1,4 +1,4 @@
-import { getDb } from "./databaseService.js";
+import { findRecentPublications } from "./databaseService.js";
 import type { DuplicateCheckResult, Publication } from "../../shared/types.js";
 
 /**
@@ -13,23 +13,10 @@ import type { DuplicateCheckResult, Publication } from "../../shared/types.js";
  */
 
 interface RecentPublication {
-  id: number;
+  id: string;
   title: string;
   content: string | null;
   created_at: string;
-}
-
-/**
- * Busca publicaciones recientes dentro de un rango de horas.
- * @param hoursBack - Cuántas horas hacia atrás buscar (default 24)
- * @returns Publicaciones recientes
- */
-export function findRecentPublications(hoursBack: number = 24): RecentPublication[] {
-  const db = getDb();
-  const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
-  return db
-    .prepare("SELECT id, title, content, created_at FROM publications WHERE created_at > ? ORDER BY created_at DESC")
-    .all(cutoff) as RecentPublication[];
 }
 
 /**
@@ -70,13 +57,13 @@ function wordOverlap(wordsA: string[], wordsB: string[]): number {
  * @param threshold - Umbral de similitud 0-1 (default 0.5)
  * @returns Resultado de la verificación de duplicados
  */
-export function isDuplicateTopic(
+export async function isDuplicateTopic(
   topic: string,
   summary: string = "",
   hoursBack: number = 24,
   threshold: number = 0.5,
-): DuplicateCheckResult {
-  const recentPubs = findRecentPublications(hoursBack);
+): Promise<DuplicateCheckResult> {
+  const recentPubs = await findRecentPublications(hoursBack);
   if (recentPubs.length === 0) {
     return { isDuplicate: false, matchedPublication: null, similarity: 0 };
   }

@@ -1,11 +1,14 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } from './emailService.js';
 import slugify from 'slugify';
-import { UserRole, UserStatus } from '@prisma/client';
+import { UserRole, UserStatus } from '../db/schema/enums.js';
+import { users, tenants, subscriptions, plans, refreshTokens } from '../db/schema/index.js';
+import { auditLog } from '../db/schema/index.js';
+import { eq, and, isNull } from 'drizzle-orm';
 
 const BCRYPT_ROUNDS = 12;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
@@ -25,18 +28,16 @@ export async function register(input: {
     const { email, password, fullName, organizationName } = input;
     const normalizedEmail = email.toLowerCase().trim();
 
-    const existing = await prisma.user.findUnique({
-        where: { email: normalizedEmail },
-    });
-    if (existing) {
+    const existingRows = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    if (existingRows[0]) {
         throw new AppError('Este email ya esta registrado', 409);
     }
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     let slug = slugify(organizationName, { lower: true, strict: true });
-    const slugExists = await prisma.tenant.findUnique({ where: { slug } });
-    if (slugExists) {
+    const slugRows = await db.select().from(tenants).where(eq(tenants.slug, slug)).limit(1);
+    if (slugRows[0]) {
         slug = `${slug}-${Date.now().toString(36)}`;
     }
 
@@ -45,44 +46,37 @@ export async function register(input: {
         Date.now() + VERIFICATION_TOKEN_TTL_HOURS * 60 * 60 * 1000
     );
 
-    const result = await prisma.$transaction(async (tx) => {
-        const tenant = await tx.tenant.create({
-            data: {
-                name: organizationName,
-                slug,
-                platformName: organizationName,
-            },
-        });
+    const result = await db.transaction(async (tx) => {
+        const [tenant] = await tx.insert(tenants).values({
+            name: organizationName,
+            slug,
+            platformName: organizationName,
+        }).returning();
 
         const isDev = process.env.NODE_ENV !== 'production';
-        const user = await tx.user.create({
-            data: {
-                email: normalizedEmail,
-                passwordHash,
-                fullName,
-                tenantId: tenant.id,
-                role: UserRole.owner,
-                status: isDev ? UserStatus.active : UserStatus.pending,
-                isVerified: isDev ? true : false,
-                verificationToken: isDev ? null : verificationToken,
-                verificationTokenExpiresAt: isDev ? null : tokenExpires,
-            },
-        });
+        const [user] = await tx.insert(users).values({
+            email: normalizedEmail,
+            passwordHash,
+            fullName,
+            tenantId: tenant.id,
+            role: UserRole.owner,
+            status: isDev ? UserStatus.active : UserStatus.pending,
+            isVerified: isDev ? true : false,
+            verificationToken: isDev ? null : verificationToken,
+            verificationTokenExpiresAt: isDev ? null : tokenExpires,
+        }).returning();
 
-        await tx.tenant.update({
-            where: { id: tenant.id },
-            data: { ownerId: user.id },
-        });
+        await tx.update(tenants)
+            .set({ ownerId: user.id })
+            .where(eq(tenants.id, tenant.id));
 
-        const trialPlan = await tx.plan.findUnique({ where: { name: 'trial' } });
+        const [trialPlan] = await tx.select().from(plans).where(eq(plans.name, 'trial')).limit(1);
         if (trialPlan) {
-            await tx.subscription.create({
-                data: {
-                    tenantId: tenant.id,
-                    planId: trialPlan.id,
-                    status: 'trialing',
-                    trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                },
+            await tx.insert(subscriptions).values({
+                tenantId: tenant.id,
+                planId: trialPlan.id,
+                status: 'trialing',
+                trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
             });
         }
 
@@ -91,13 +85,11 @@ export async function register(input: {
 
     sendVerificationEmail(normalizedEmail, fullName, result.verificationToken).catch(console.error);
 
-    await prisma.auditLog.create({
-        data: {
-            tenantId: result.tenantId,
-            userId: result.userId,
-            action: 'register',
-            metadata: { email: normalizedEmail },
-        },
+    await db.insert(auditLog).values({
+        tenantId: result.tenantId,
+        userId: result.userId,
+        action: 'register',
+        metadata: { email: normalizedEmail },
     });
 
     return { message: 'Cuenta creada. Revisa tu email para verificar tu cuenta.' };
@@ -107,9 +99,9 @@ export async function register(input: {
 // VERIFICACION DE EMAIL
 // =============================================
 export async function verifyEmail(token: string) {
-    const user = await prisma.user.findFirst({
-        where: { verificationToken: token, isVerified: false },
-    });
+    const [user] = await db.select().from(users)
+        .where(and(eq(users.verificationToken, token as any), eq(users.isVerified, false)))
+        .limit(1);
 
     if (!user) throw new AppError('Token de verificacion invalido o ya utilizado', 400);
 
@@ -117,20 +109,21 @@ export async function verifyEmail(token: string) {
         throw new AppError('Token de verificacion expirado. Solicita uno nuevo.', 400);
     }
 
-    await prisma.user.update({
-        where: { id: user.id },
-        data: {
+    await db.update(users)
+        .set({
             isVerified: true,
             status: UserStatus.active,
             verificationToken: null,
             verificationTokenExpiresAt: null,
-        },
-    });
+        })
+        .where(eq(users.id, user.id));
 
     sendWelcomeEmail(user.email, user.fullName).catch(console.error);
 
-    await prisma.auditLog.create({
-        data: { tenantId: user.tenantId, userId: user.id, action: 'email_verified' },
+    await db.insert(auditLog).values({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: 'email_verified',
     });
 
     return { message: 'Email verificado exitosamente. Ya puedes iniciar sesion.' };
@@ -146,28 +139,29 @@ export async function login(
 ) {
     const normalizedEmail = input.email.toLowerCase().trim();
 
-    const user = await prisma.user.findUnique({
-        where: { email: normalizedEmail },
-        include: {
-            tenant: {
-                select: {
-                    id: true, name: true, slug: true,
-                    platformName: true, logoUrl: true, timezone: true,
-                },
-            },
-        },
-    });
+    const rows = await db.select({
+        user: users,
+        tenant: tenants,
+    })
+        .from(users)
+        .leftJoin(tenants, eq(users.tenantId, tenants.id))
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
 
-    if (!user) throw new AppError('Credenciales invalidas', 401);
+    const row = rows[0];
+    if (!row) throw new AppError('Credenciales invalidas', 401);
+
+    const user = row.user;
+    const tenant = row.tenant;
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) {
-        await prisma.auditLog.create({
-            data: {
-                tenantId: user.tenantId, userId: user.id,
-                action: 'login_failed', ipAddress,
-                metadata: { reason: 'invalid_password' },
-            },
+        await db.insert(auditLog).values({
+            tenantId: user.tenantId,
+            userId: user.id,
+            action: 'login_failed',
+            ipAddress,
+            metadata: { reason: 'invalid_password' },
         });
         throw new AppError('Credenciales invalidas', 401);
     }
@@ -194,16 +188,16 @@ export async function login(
         expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256',
     });
 
-    await prisma.user.update({
-        where: { id: user.id },
-        data: { lastLoginAt: new Date() },
-    });
+    await db.update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, user.id));
 
-    await prisma.auditLog.create({
-        data: {
-            tenantId: user.tenantId, userId: user.id,
-            action: 'login_success', ipAddress, userAgent,
-        },
+    await db.insert(auditLog).values({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: 'login_success',
+        ipAddress,
+        userAgent,
     });
 
     return {
@@ -211,7 +205,10 @@ export async function login(
             id: user.id, email: user.email, fullName: user.fullName,
             role: user.role, status: user.status, isVerified: user.isVerified,
         },
-        tenant: user.tenant,
+        tenant: tenant ? {
+            id: tenant.id, name: tenant.name, slug: tenant.slug,
+            platformName: tenant.platformName, logoUrl: tenant.logoUrl, timezone: tenant.timezone,
+        } : null,
         accessToken,
     };
 }
@@ -220,16 +217,27 @@ export async function login(
 // GET ME
 // =============================================
 export async function getMe(userId: string) {
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        include: { tenant: true },
-    });
-    if (!user) throw new AppError('Usuario no encontrado', 404);
+    const rows = await db.select({ user: users, tenant: tenants })
+        .from(users)
+        .leftJoin(tenants, eq(users.tenantId, tenants.id))
+        .where(eq(users.id, userId))
+        .limit(1);
 
-    const subscription = await prisma.subscription.findUnique({
-        where: { tenantId: user.tenantId },
-        include: { plan: true },
-    });
+    const row = rows[0];
+    if (!row) throw new AppError('Usuario no encontrado', 404);
+
+    const { user, tenant } = row;
+    if (!tenant) throw new AppError('Tenant no encontrado', 404);
+
+    const subRows = await db.select({ sub: subscriptions, plan: plans })
+        .from(subscriptions)
+        .leftJoin(plans, eq(subscriptions.planId, plans.id))
+        .where(eq(subscriptions.tenantId, user.tenantId))
+        .limit(1);
+
+    const subRow = subRows[0];
+    const subscription = subRow?.sub ?? null;
+    const plan = subRow?.plan ?? null;
 
     let trialDaysRemaining: number | null = null;
     if (subscription?.status === 'trialing' && subscription.trialEndsAt) {
@@ -237,10 +245,9 @@ export async function getMe(userId: string) {
         trialDaysRemaining = Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
 
         if (trialDaysRemaining === 0) {
-            await prisma.subscription.update({
-                where: { id: subscription.id },
-                data: { status: 'expired' },
-            });
+            await db.update(subscriptions)
+                .set({ status: 'expired' })
+                .where(eq(subscriptions.id, subscription.id));
         }
     }
 
@@ -252,30 +259,30 @@ export async function getMe(userId: string) {
             createdAt: user.createdAt,
         },
         tenant: {
-            id: user.tenant.id, name: user.tenant.name, slug: user.tenant.slug,
-            platformName: user.tenant.platformName, logoUrl: user.tenant.logoUrl,
-            timezone: user.tenant.timezone, config: user.tenant.config,
+            id: tenant.id, name: tenant.name, slug: tenant.slug,
+            platformName: tenant.platformName, logoUrl: tenant.logoUrl,
+            timezone: tenant.timezone, config: tenant.config,
         },
-        subscription: subscription ? {
+        subscription: subscription && plan ? {
             id: subscription.id,
             status: subscription.status,
-            planName: subscription.plan.name,
-            planDisplayName: subscription.plan.displayName,
-            priceUsd: Number(subscription.plan.priceUsd),
+            planName: plan.name,
+            planDisplayName: plan.displayName,
+            priceUsd: Number(plan.priceUsd),
             billingPeriod: subscription.billingPeriod,
             trialEndsAt: subscription.trialEndsAt,
             trialDaysRemaining,
             cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
             limits: {
-                maxPipelineHoursPerMonth: subscription.plan.maxPipelineHoursPerMonth,
-                maxPublicationsPerMonth: subscription.plan.maxPublicationsPerMonth,
-                maxScheduledJobs: subscription.plan.maxScheduledJobs,
-                maxCustomAgents: subscription.plan.maxCustomAgents,
-                maxTeamMembers: subscription.plan.maxTeamMembers,
-                maxConnectedPlatforms: subscription.plan.maxConnectedPlatforms,
-                maxStorageGb: subscription.plan.maxStorageGb,
+                maxPipelineHoursPerMonth: plan.maxPipelineHoursPerMonth,
+                maxPublicationsPerMonth: plan.maxPublicationsPerMonth,
+                maxScheduledJobs: plan.maxScheduledJobs,
+                maxCustomAgents: plan.maxCustomAgents,
+                maxTeamMembers: plan.maxTeamMembers,
+                maxConnectedPlatforms: plan.maxConnectedPlatforms,
+                maxStorageGb: plan.maxStorageGb,
             },
-            features: subscription.plan.features as Record<string, boolean>,
+            features: plan.features as Record<string, boolean>,
         } : null,
     };
 }
@@ -288,18 +295,17 @@ export async function forgotPassword(email: string) {
         message: 'Si el email existe, recibiras instrucciones para resetear tu contrasena.',
     };
 
-    const user = await prisma.user.findUnique({
-        where: { email: email.toLowerCase().trim() },
-    });
+    const [user] = await db.select().from(users)
+        .where(eq(users.email, email.toLowerCase().trim()))
+        .limit(1);
     if (!user) return genericResponse;
 
     const resetToken = crypto.randomUUID();
     const tokenExpires = new Date(Date.now() + RESET_TOKEN_TTL_HOURS * 60 * 60 * 1000);
 
-    await prisma.user.update({
-        where: { id: user.id },
-        data: { resetPasswordToken: resetToken, resetPasswordExpiresAt: tokenExpires },
-    });
+    await db.update(users)
+        .set({ resetPasswordToken: resetToken, resetPasswordExpiresAt: tokenExpires })
+        .where(eq(users.id, user.id));
 
     sendPasswordResetEmail(user.email, user.fullName, resetToken).catch(console.error);
 
@@ -310,9 +316,9 @@ export async function forgotPassword(email: string) {
 // RESET PASSWORD
 // =============================================
 export async function resetPassword(token: string, newPassword: string) {
-    const user = await prisma.user.findFirst({
-        where: { resetPasswordToken: token },
-    });
+    const [user] = await db.select().from(users)
+        .where(eq(users.resetPasswordToken, token as any))
+        .limit(1);
 
     if (!user) throw new AppError('Token invalido', 400);
 
@@ -322,17 +328,18 @@ export async function resetPassword(token: string, newPassword: string) {
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
 
-    await prisma.user.update({
-        where: { id: user.id },
-        data: {
+    await db.update(users)
+        .set({
             passwordHash,
             resetPasswordToken: null,
             resetPasswordExpiresAt: null,
-        },
-    });
+        })
+        .where(eq(users.id, user.id));
 
-    await prisma.auditLog.create({
-        data: { tenantId: user.tenantId, userId: user.id, action: 'password_reset' },
+    await db.insert(auditLog).values({
+        tenantId: user.tenantId,
+        userId: user.id,
+        action: 'password_reset',
     });
 
     return { message: 'Contrasena actualizada exitosamente.' };

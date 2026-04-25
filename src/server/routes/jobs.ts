@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { prisma } from '../lib/prisma.js';
+import { db } from '../db/index.js';
 import { requireAuth, requireActiveSubscription } from '../middleware/auth.js';
 import { stopJob, isJobRunning, getActiveJobIds } from '../services/jobSchedulerService.js';
+import { scheduledJobs, subscriptions, plans, jobExecutions, notifications } from '../db/schema/index.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
 
 const router = Router();
 
@@ -10,12 +12,11 @@ const router = Router();
 // ---------------------------------------------------------------------------
 router.get('/', requireAuth, async (req: Request, res: Response) => {
     try {
-        const jobs = await prisma.scheduledJob.findMany({
-            where: { tenantId: req.auth!.tenantId },
-            orderBy: { createdAt: 'desc' },
-        });
+        const jobs = await db.select().from(scheduledJobs)
+            .where(eq(scheduledJobs.tenantId, req.auth!.tenantId))
+            .orderBy(desc(scheduledJobs.createdAt));
 
-        const activeIds = getActiveJobIds();
+        getActiveJobIds(); // called for side effects check
         const enriched = jobs.map((job) => ({
             ...job,
             isRunning: isJobRunning(job.id),
@@ -42,12 +43,17 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
         }
 
         // Check plan limit
-        const subscription = await prisma.subscription.findUnique({
-            where: { tenantId },
-            include: { plan: true },
-        });
-        const maxJobs = subscription?.plan?.maxScheduledJobs ?? 1;
-        const currentCount = await prisma.scheduledJob.count({ where: { tenantId } });
+        const [subRow] = await db.select({ sub: subscriptions, plan: plans })
+            .from(subscriptions)
+            .leftJoin(plans, eq(subscriptions.planId, plans.id))
+            .where(eq(subscriptions.tenantId, tenantId))
+            .limit(1);
+        const maxJobs = subRow?.plan?.maxScheduledJobs ?? 1;
+
+        const countResult = await db.select({ count: sql<number>`count(*)` })
+            .from(scheduledJobs)
+            .where(eq(scheduledJobs.tenantId, tenantId));
+        const currentCount = Number(countResult[0]?.count ?? 0);
 
         if (maxJobs !== -1 && currentCount >= maxJobs) {
             res.status(403).json({
@@ -57,21 +63,19 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
             return;
         }
 
-        const job = await prisma.scheduledJob.create({
-            data: {
-                tenantId,
-                createdById: req.auth!.userId,
-                name: name.trim(),
-                description: description || null,
-                streamUrl: streamUrl.trim(),
-                scheduleType: scheduleType || 'recurring',
-                daysOfWeek: daysOfWeek || [],
-                startTime,
-                durationMinutes: durationMinutes || 120,
-                pipelineConfig: pipelineConfig || {},
-                isActive: true,
-            },
-        });
+        const [job] = await db.insert(scheduledJobs).values({
+            tenantId,
+            createdById: req.auth!.userId,
+            name: name.trim(),
+            description: description || null,
+            streamUrl: streamUrl.trim(),
+            scheduleType: scheduleType || 'recurring',
+            daysOfWeek: daysOfWeek || [],
+            startTime,
+            durationMinutes: durationMinutes || 120,
+            pipelineConfig: pipelineConfig || {},
+            isActive: true,
+        }).returning();
 
         res.status(201).json(job);
     } catch (err) {
@@ -85,27 +89,31 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
 // ---------------------------------------------------------------------------
 router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     try {
-        const job = await prisma.scheduledJob.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [job] = await db.select().from(scheduledJobs)
+            .where(and(
+                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
         const { name, description, streamUrl, scheduleType, daysOfWeek, startTime, durationMinutes, pipelineConfig, isActive } = req.body;
 
-        const updated = await prisma.scheduledJob.update({
-            where: { id: job.id },
-            data: {
-                ...(name && { name: name.trim() }),
-                ...(description !== undefined && { description }),
-                ...(streamUrl && { streamUrl: streamUrl.trim() }),
-                ...(scheduleType && { scheduleType }),
-                ...(daysOfWeek && { daysOfWeek }),
-                ...(startTime && { startTime }),
-                ...(durationMinutes && { durationMinutes }),
-                ...(pipelineConfig && { pipelineConfig }),
-                ...(isActive !== undefined && { isActive }),
-            },
-        });
+        const updateData: Partial<typeof job> = {};
+        if (name) updateData.name = name.trim();
+        if (description !== undefined) updateData.description = description;
+        if (streamUrl) updateData.streamUrl = streamUrl.trim();
+        if (scheduleType) updateData.scheduleType = scheduleType;
+        if (daysOfWeek) updateData.daysOfWeek = daysOfWeek;
+        if (startTime) updateData.startTime = startTime;
+        if (durationMinutes) updateData.durationMinutes = durationMinutes;
+        if (pipelineConfig) updateData.pipelineConfig = pipelineConfig;
+        if (isActive !== undefined) updateData.isActive = isActive;
+
+        const [updated] = await db.update(scheduledJobs)
+            .set(updateData)
+            .where(eq(scheduledJobs.id, job.id))
+            .returning();
 
         res.json(updated);
     } catch (err) {
@@ -119,9 +127,12 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     try {
-        const job = await prisma.scheduledJob.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [job] = await db.select().from(scheduledJobs)
+            .where(and(
+                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
         // Stop if running
@@ -129,7 +140,8 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
             await stopJob(job.id);
         }
 
-        await prisma.scheduledJob.delete({ where: { id: job.id } });
+        await db.delete(scheduledJobs)
+            .where(eq(scheduledJobs.id, job.id));
         res.json({ success: true });
     } catch (err) {
         console.error('[Jobs] Delete error:', err);
@@ -142,19 +154,22 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/:id/toggle', requireAuth, async (req: Request, res: Response) => {
     try {
-        const job = await prisma.scheduledJob.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [job] = await db.select().from(scheduledJobs)
+            .where(and(
+                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
         if (isJobRunning(job.id) && job.isActive) {
             await stopJob(job.id);
         }
 
-        const updated = await prisma.scheduledJob.update({
-            where: { id: job.id },
-            data: { isActive: !job.isActive },
-        });
+        const [updated] = await db.update(scheduledJobs)
+            .set({ isActive: !job.isActive })
+            .where(eq(scheduledJobs.id, job.id))
+            .returning();
 
         res.json(updated);
     } catch (err) {
@@ -168,9 +183,12 @@ router.post('/:id/toggle', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/:id/stop', requireAuth, async (req: Request, res: Response) => {
     try {
-        const job = await prisma.scheduledJob.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [job] = await db.select().from(scheduledJobs)
+            .where(and(
+                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
         await stopJob(job.id);
@@ -186,16 +204,18 @@ router.post('/:id/stop', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.get('/:id/executions', requireAuth, async (req: Request, res: Response) => {
     try {
-        const job = await prisma.scheduledJob.findFirst({
-            where: { id: req.params.id as string, tenantId: req.auth!.tenantId },
-        });
+        const [job] = await db.select().from(scheduledJobs)
+            .where(and(
+                eq(scheduledJobs.id, req.params.id),
+                eq(scheduledJobs.tenantId, req.auth!.tenantId)
+            ))
+            .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
-        const executions = await prisma.jobExecution.findMany({
-            where: { jobId: job.id },
-            orderBy: { createdAt: 'desc' },
-            take: 20,
-        });
+        const executions = await db.select().from(jobExecutions)
+            .where(eq(jobExecutions.jobId, job.id))
+            .orderBy(desc(jobExecutions.createdAt))
+            .limit(20);
 
         res.json(executions);
     } catch (err) {
@@ -212,20 +232,24 @@ router.get('/notifications', requireAuth, async (req: Request, res: Response) =>
         const limit = parseInt(req.query.limit as string) || 30;
         const unreadOnly = req.query.unread === 'true';
 
-        const notifications = await prisma.notification.findMany({
-            where: {
-                tenantId: req.auth!.tenantId,
-                ...(unreadOnly && { isRead: false }),
-            },
-            orderBy: { createdAt: 'desc' },
-            take: limit,
-        });
+        const whereClause = unreadOnly
+            ? and(eq(notifications.tenantId, req.auth!.tenantId), eq(notifications.isRead, false))
+            : eq(notifications.tenantId, req.auth!.tenantId);
 
-        const unreadCount = await prisma.notification.count({
-            where: { tenantId: req.auth!.tenantId, isRead: false },
-        });
+        const notifs = await db.select().from(notifications)
+            .where(whereClause)
+            .orderBy(desc(notifications.createdAt))
+            .limit(limit);
 
-        res.json({ notifications, unreadCount });
+        const unreadCountResult = await db.select({ count: sql<number>`count(*)` })
+            .from(notifications)
+            .where(and(
+                eq(notifications.tenantId, req.auth!.tenantId),
+                eq(notifications.isRead, false)
+            ));
+        const unreadCount = Number(unreadCountResult[0]?.count ?? 0);
+
+        res.json({ notifications: notifs, unreadCount });
     } catch (err) {
         console.error('[Jobs] Notifications error:', err);
         res.status(500).json({ error: 'Error al obtener notificaciones' });
@@ -237,10 +261,12 @@ router.get('/notifications', requireAuth, async (req: Request, res: Response) =>
 // ---------------------------------------------------------------------------
 router.post('/notifications/read-all', requireAuth, async (req: Request, res: Response) => {
     try {
-        await prisma.notification.updateMany({
-            where: { tenantId: req.auth!.tenantId, isRead: false },
-            data: { isRead: true },
-        });
+        await db.update(notifications)
+            .set({ isRead: true })
+            .where(and(
+                eq(notifications.tenantId, req.auth!.tenantId),
+                eq(notifications.isRead, false)
+            ));
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Error' });

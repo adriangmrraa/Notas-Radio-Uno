@@ -55,7 +55,7 @@ export async function publishToFacebookPage(
   pageId: string,
   { message, imageUrl, imagePath }: FacebookPostParams,
 ): Promise<FacebookPublishResult> {
-  const pageToken = getCredential(`META_PAGE_TOKEN_${pageId}`);
+  const pageToken = await getCredential(`META_PAGE_TOKEN_${pageId}`);
   if (!pageToken) {
     throw new Error(`No hay token para la página ${pageId}`);
   }
@@ -123,7 +123,7 @@ export async function publishToInstagram(
     throw new Error("Instagram requiere una URL de imagen pública para publicar");
   }
 
-  const igToken = getCredential(`META_IG_TOKEN_${igAccountId}`);
+  const igToken = await getCredential(`META_IG_TOKEN_${igAccountId}`);
   if (!igToken) {
     throw new Error(`No hay token para la cuenta Instagram ${igAccountId}`);
   }
@@ -217,7 +217,7 @@ export async function publishToAllMeta({ title, content, imageUrl, imagePath }: 
   const caption = `${title}\n\n${content}`;
 
   // Publish to all active Facebook Pages
-  const pages = getAssetsByType("facebook_page");
+  const pages = await getAssetsByType("facebook_page");
   for (const page of pages) {
     try {
       const fbResult = await publishToFacebookPage(page.external_id, {
@@ -239,7 +239,7 @@ export async function publishToAllMeta({ title, content, imageUrl, imagePath }: 
   }
 
   // Publish to all active Instagram accounts
-  const igAccounts = getAssetsByType("instagram_account");
+  const igAccounts = await getAssetsByType("instagram_account");
   for (const ig of igAccounts) {
     try {
       // Instagram requires a public URL (no direct upload)

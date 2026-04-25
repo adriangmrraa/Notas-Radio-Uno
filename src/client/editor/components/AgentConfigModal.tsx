@@ -6,17 +6,17 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from '@/client/components/ui/dialog';
-import { Input } from '@/client/components/ui/input';
-import { Textarea } from '@/client/components/ui/textarea';
+} from '../../components/ui/dialog';
+import { Input } from '../../components/ui/input';
+import { Textarea } from '../../components/ui/textarea';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/client/components/ui/select';
-import { Button } from '@/client/components/ui/button';
+} from '../../components/ui/select';
+import { Button } from '../../components/ui/button';
 
 interface Props {
   agent: any | null;

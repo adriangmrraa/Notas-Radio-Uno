@@ -6,9 +6,9 @@ import { AGENT_TEMPLATES } from "../services/agentTemplates.js";
 
 export function registerAgentRoutes(app: Express): void {
   // List all agents
-  app.get("/api/agents", requireAuth, (_req: Request, res: Response) => {
+  app.get("/api/agents", requireAuth, async (_req: Request, res: Response) => {
     try {
-      const agents = getAllAgents();
+      const agents = await getAllAgents();
       res.json({ agents });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -21,8 +21,8 @@ export function registerAgentRoutes(app: Express): void {
   });
 
   // Get single agent
-  app.get("/api/agents/:id", requireAuth, (req: Request, res: Response) => {
-    const agent = getAgent(String(req.params.id));
+  app.get("/api/agents/:id", requireAuth, async (req: Request, res: Response) => {
+    const agent = await getAgent(String(req.params.id));
     if (!agent) {
       res.status(404).json({ error: "Agente no encontrado" });
       return;
@@ -31,7 +31,7 @@ export function registerAgentRoutes(app: Express): void {
   });
 
   // Create agent
-  app.post("/api/agents", requireAuth, (req: Request, res: Response) => {
+  app.post("/api/agents", requireAuth, async (req: Request, res: Response) => {
     const { name, description, system_prompt, after_step, position, ai_provider, temperature, max_tokens, tools, template_id } = req.body;
 
     if (!name || !system_prompt || !after_step) {
@@ -40,7 +40,7 @@ export function registerAgentRoutes(app: Express): void {
     }
 
     try {
-      const agent = createAgent({
+      const agent = await createAgent({
         id: uuidv4(),
         name, description, system_prompt, after_step,
         position: position || 0,
@@ -57,16 +57,16 @@ export function registerAgentRoutes(app: Express): void {
   });
 
   // Update agent
-  app.put("/api/agents/:id", requireAuth, (req: Request, res: Response) => {
+  app.put("/api/agents/:id", requireAuth, async (req: Request, res: Response) => {
     const id = String(req.params.id);
-    const existing = getAgent(id);
+    const existing = await getAgent(id);
     if (!existing) {
       res.status(404).json({ error: "Agente no encontrado" });
       return;
     }
 
     try {
-      const updated = updateAgent(id, req.body);
+      const updated = await updateAgent(id, req.body);
       res.json({ success: true, agent: updated });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -74,9 +74,9 @@ export function registerAgentRoutes(app: Express): void {
   });
 
   // Delete agent
-  app.delete("/api/agents/:id", requireAuth, (req: Request, res: Response) => {
+  app.delete("/api/agents/:id", requireAuth, async (req: Request, res: Response) => {
     const id = String(req.params.id);
-    const deleted = deleteAgent(id);
+    const deleted = await deleteAgent(id);
     if (!deleted) {
       res.status(404).json({ error: "Agente no encontrado" });
       return;

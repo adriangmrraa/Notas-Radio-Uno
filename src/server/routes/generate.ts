@@ -109,7 +109,7 @@ async function tryPublishMeta(
   params: MetaPublishParams,
 ): Promise<unknown | null> {
   try {
-    const metaStatus = getConnectionStatus();
+    const metaStatus = await getConnectionStatus();
     if (metaStatus.connected) {
       const metaResults = await publishToAllMeta({
         title: params.title,
@@ -253,7 +253,7 @@ export function registerGenerateRoutes(
         imageDriveUrl,
       };
 
-      const webhookViejoUrl = getWebhookViejoBoton();
+      const webhookViejoUrl = await getWebhookViejoBoton();
       if (webhookViejoUrl) {
         await sendToWebhook(webhookViejoUrl, note);
       }
@@ -267,7 +267,7 @@ export function registerGenerateRoutes(
       });
 
       // Persist publication
-      const publication = createPublication({
+      const publication = await createPublication({
         title,
         content: description || "",
         imagePath: finalImagePath,
@@ -324,7 +324,7 @@ export function registerGenerateRoutes(
         imageDriveUrl,
       };
 
-      const webhookNuevoUrl = getWebhookNuevoBoton();
+      const webhookNuevoUrl = await getWebhookNuevoBoton();
       if (webhookNuevoUrl) {
         await sendToWebhook(webhookNuevoUrl, webhookData);
       }
@@ -338,7 +338,7 @@ export function registerGenerateRoutes(
       });
 
       // Persist publication
-      const publication = createPublication({
+      const publication = await createPublication({
         title,
         content: content || "",
         imagePath: finalImagePath,

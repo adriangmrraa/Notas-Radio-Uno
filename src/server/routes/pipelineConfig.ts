@@ -5,9 +5,9 @@ import { BUILTIN_NODES, DEFAULT_NODE_ORDER } from "../../shared/types.js";
 
 export function registerPipelineConfigRoutes(app: Express): void {
   // Get active pipeline config
-  app.get("/api/pipeline-config", requireAuth, (_req: Request, res: Response) => {
+  app.get("/api/pipeline-config", requireAuth, async (_req: Request, res: Response) => {
     try {
-      const config = getActivePipelineConfig();
+      const config = await getActivePipelineConfig();
       res.json({
         config: config || { id: 'default', name: 'Default Pipeline', node_order: DEFAULT_NODE_ORDER, is_active: true },
       });
@@ -17,7 +17,7 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Save pipeline config
-  app.put("/api/pipeline-config", requireAuth, (req: Request, res: Response) => {
+  app.put("/api/pipeline-config", requireAuth, async (req: Request, res: Response) => {
     const { node_order, name } = req.body;
     if (!node_order || !Array.isArray(node_order)) {
       res.status(400).json({ error: "Se requiere node_order como array" });
@@ -25,7 +25,7 @@ export function registerPipelineConfigRoutes(app: Express): void {
     }
 
     try {
-      const config = savePipelineConfig({ node_order, name });
+      const config = await savePipelineConfig({ node_order, name });
       res.json({ success: true, config });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -33,9 +33,9 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Reset to default
-  app.post("/api/pipeline-config/reset", requireAuth, (_req: Request, res: Response) => {
+  app.post("/api/pipeline-config/reset", requireAuth, async (_req: Request, res: Response) => {
     try {
-      resetPipelineConfig();
+      await resetPipelineConfig();
       res.json({ success: true, config: { id: 'default', name: 'Default Pipeline', node_order: DEFAULT_NODE_ORDER, is_active: true } });
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
@@ -43,10 +43,10 @@ export function registerPipelineConfigRoutes(app: Express): void {
   });
 
   // Get all available nodes (built-in + custom agents)
-  app.get("/api/pipeline-config/nodes", requireAuth, (_req: Request, res: Response) => {
+  app.get("/api/pipeline-config/nodes", requireAuth, async (_req: Request, res: Response) => {
     try {
-      const agents = getAllAgents();
-      const agentNodes = agents.map((a: any) => ({
+      const agents = await getAllAgents();
+      const agentNodes = (agents as any[]).map((a: any) => ({
         id: `agent_${a.id}`,
         type: 'agent' as const,
         name: a.name,

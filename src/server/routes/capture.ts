@@ -26,12 +26,12 @@ interface CaptureConfig {
 // ---------------------------------------------------------------------------
 // save_transcription_to_json - persists to file + DB + emits socket events
 // ---------------------------------------------------------------------------
-function saveTranscriptionToJson(
+async function saveTranscriptionToJson(
   filePath: string,
   transcriptionText: string,
   transcriptionFile: string,
   io: Server,
-): void {
+): Promise<void> {
   const timestamp = new Date().toISOString();
   const audioFilename = path.basename(filePath);
 
@@ -68,7 +68,7 @@ function saveTranscriptionToJson(
   console.log("Transcripciones guardadas:", data);
 
   // Persist to database
-  const dbTranscription = createTranscription({
+  const dbTranscription = await createTranscription({
     text: transcriptionText,
     audioFile: audioFilename,
     source: "manual",
@@ -199,7 +199,9 @@ export function registerCaptureRoutes(
 
   // Expose saveTranscriptionToJson for pipeline or other modules
   app.set("saveTranscription", (filePath: string, text: string) => {
-    saveTranscriptionToJson(filePath, text, transcriptionFile, io);
+    saveTranscriptionToJson(filePath, text, transcriptionFile, io).catch((err) => {
+      console.error("[Capture] Error saving transcription:", err);
+    });
   });
 
   // Expose state for graceful shutdown
