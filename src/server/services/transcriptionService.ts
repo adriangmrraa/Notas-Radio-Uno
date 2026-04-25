@@ -106,30 +106,67 @@ function captureAudioSegment(url: string, durationSeconds: number = 120): Promis
     );
 
     if (sourceType === "youtube") {
-      // yt-dlp needs a JS runtime for YouTube extraction.
-      // Use Node.js (already installed) via --js-runtimes node
-      // Download audio directly to file (no pipe) for better compatibility
-      const ytdlpCommand = [
-        `"${YTDLP}"`,
-        `--js-runtimes`, `node`,
-        `-f`, `"ba/b"`,          // best audio, fallback to best overall
-        `--no-part`,
-        `--download-sections`, `"*0-${durationSeconds}"`,
-        `-x`,                    // extract audio
-        `--audio-format`, `mp3`,
-        `--audio-quality`, `4`,
-        `-o`, `"${outputFile}"`,
-        `"${url}"`,
-      ].join(" ");
+      // Strategy: try multiple yt-dlp approaches, then ffmpeg direct
+      const strategies = [
+        // Strategy 1: iOS client (less bot detection)
+        [
+          `"${YTDLP}"`, `--js-runtimes`, `node`,
+          `--extractor-args`, `"youtube:player_client=ios,mweb"`,
+          `-f`, `"ba/b"`, `--no-part`,
+          `--download-sections`, `"*0-${durationSeconds}"`,
+          `-x`, `--audio-format`, `mp3`, `--audio-quality`, `4`,
+          `-o`, `"${outputFile}"`, `"${url}"`,
+        ],
+        // Strategy 2: web_creator client + no check cert
+        [
+          `"${YTDLP}"`, `--js-runtimes`, `node`,
+          `--extractor-args`, `"youtube:player_client=web_creator"`,
+          `-f`, `"ba/b"`, `--no-part`, `--no-check-certificates`,
+          `--download-sections`, `"*0-${durationSeconds}"`,
+          `-x`, `--audio-format`, `mp3`, `--audio-quality`, `4`,
+          `-o`, `"${outputFile}"`, `"${url}"`,
+        ],
+        // Strategy 3: extract URL only, then ffmpeg captures
+        [
+          `"${YTDLP}"`, `--js-runtimes`, `node`,
+          `--extractor-args`, `"youtube:player_client=ios"`,
+          `-f`, `"ba/b"`, `--get-url`, `--no-warnings`, `"${url}"`,
+        ],
+      ];
 
-      exec(ytdlpCommand, { timeout: (durationSeconds + 60) * 1000 }, (error) => {
-        if (error && !fs.existsSync(outputFile)) {
-          reject(new Error(`Error capturando audio YouTube: ${error.message}`));
+      let attempt = 0;
+      const tryNext = (): void => {
+        if (attempt >= strategies.length) {
+          // All yt-dlp strategies failed, try ffmpeg direct as last resort
+          console.log(`[Transcription] Todas las estrategias yt-dlp fallaron, intentando ffmpeg directo...`);
+          captureWithFfmpeg(url, durationSeconds, outputFile, sourceType, resolve, reject);
           return;
         }
-        resolve({ filePath: outputFile, sourceType });
-      });
 
+        const cmd = strategies[attempt].join(" ");
+        const isGetUrl = cmd.includes("--get-url");
+        console.log(`[Transcription] YouTube estrategia #${attempt + 1}${isGetUrl ? " (get-url)" : ""}...`);
+
+        exec(cmd, { timeout: (durationSeconds + 60) * 1000 }, (error, stdout) => {
+          if (isGetUrl) {
+            const streamUrl = stdout?.trim();
+            if (!error && streamUrl && streamUrl.startsWith("http")) {
+              console.log(`[Transcription] URL directa obtenida, capturando con ffmpeg...`);
+              captureWithFfmpeg(streamUrl, durationSeconds, outputFile, sourceType, resolve, reject);
+              return;
+            }
+          } else if (!error || fs.existsSync(outputFile)) {
+            resolve({ filePath: outputFile, sourceType });
+            return;
+          }
+
+          console.log(`[Transcription] Estrategia #${attempt + 1} falló: ${error?.message?.slice(0, 100)}`);
+          attempt++;
+          tryNext();
+        });
+      };
+
+      tryNext();
       return;
     }
 
