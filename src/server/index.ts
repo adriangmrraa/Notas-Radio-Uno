@@ -78,6 +78,7 @@ console.log("Archivo JSON de transcripciones inicializado.");
 // Express + Socket.IO setup
 // ---------------------------------------------------------------------------
 const app = express();
+app.set("trust proxy", 1);
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: {

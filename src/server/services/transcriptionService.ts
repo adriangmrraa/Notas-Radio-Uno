@@ -113,18 +113,15 @@ function extractYouTubeId(url: string): string | null {
  * Estas APIs actúan como proxy y no tienen el problema de IP de datacenter.
  */
 async function getYouTubeAudioUrl(videoId: string): Promise<string> {
-  // List of public API instances to try (rotated for reliability)
+  // Public API instances (tested and working as of Apr 2026)
+  // These act as proxies — they fetch from YouTube with their own IPs
   const pipedInstances = [
+    "https://api.piped.private.coffee",
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
-    "https://pipedapi.in.projectsegfau.lt",
   ];
 
-  const invidiousInstances = [
-    "https://inv.nadeko.net",
-    "https://invidious.nerdvpn.de",
-    "https://invidious.jing.rocks",
-  ];
+  // Invidious instances (most are down in 2026, kept as fallback)
+  const invidiousInstances: string[] = [];
 
   // Try Piped first (returns audioStreams directly)
   for (const instance of pipedInstances) {
