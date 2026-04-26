@@ -323,6 +323,7 @@ async function transcribeWithAssemblyAI(filePath: string): Promise<DiarizedTrans
     audio_url: uploadUrl,
     speaker_labels: true,
     language_code: 'es',
+    speech_model: 'universal-3-pro',
   }, { headers });
   const transcriptId = transcriptRes.data.id;
 
@@ -374,7 +375,12 @@ async function transcribeAudio(filePath: string): Promise<DiarizedTranscription>
       console.log('[Transcription] Using AssemblyAI (diarization enabled)');
       return await transcribeWithAssemblyAI(filePath);
     } catch (err) {
-      console.warn('[Transcription] AssemblyAI failed, falling back to Whisper:', err instanceof Error ? err.message : err);
+      const axiosErr = err as any;
+      if (axiosErr?.response) {
+        console.warn('[Transcription] AssemblyAI failed:', axiosErr.response.status, JSON.stringify(axiosErr.response.data));
+      } else {
+        console.warn('[Transcription] AssemblyAI failed, falling back to Whisper:', err instanceof Error ? err.message : err);
+      }
     }
   }
 
