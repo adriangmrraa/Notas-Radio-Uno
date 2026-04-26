@@ -1,0 +1,23 @@
+{
+  "name": "periodistapp-remotion",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "npx remotion studio",
+    "render": "npx remotion render"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.241",
+    "@remotion/google-fonts": "^4.0.241",
+    "@remotion/player": "4.0.241",
+    "hyperframes": "^0.4.29",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.241",
+    "typescript": "^5.5.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0"
+  }
+}

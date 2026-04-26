@@ -1,24 +1,29 @@
 /**
- * clipService.ts — Auto-Clips Verticales con Subtítulos
+ * clipService.ts — Auto-Clips Verticales con Remotion
  *
  * Detecta momentos virales en transcripciones y genera clips verticales
  * (1080x1920, 9:16) listos para TikTok, Reels y Shorts.
  *
  * Flujo:
  *   1. detectHighlights() — Gemini analiza la transcripción y detecta 1-3 momentos
- *   2. generateClipVideo() — ffmpeg compone el video vertical con subtítulos quemados
+ *   2. generateClipVideo() — Remotion renderiza el video premium + ffmpeg mezcla audio
  *   3. createClip() — persiste el clip en la DB
  *   4. getClipsByTenant() — lista clips por tenant/status
+ *
+ * Render pipeline:
+ *   a. npx remotion render <CompositionId> <tempVideo> --props='...'
+ *   b. ffmpeg extrae segmento de audio del MP3 fuente
+ *   c. ffmpeg fusiona video Remotion + audio segmentado → MP4 final
  */
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
-import fs from 'fs';
+import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
 import axios from 'axios';
 import { db } from '../db/index.js';
 import { clips } from '../db/schema/clips.js';
@@ -31,14 +36,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const outputDir = path.join(PROJECT_ROOT, 'output');
+const REMOTION_DIR = path.join(PROJECT_ROOT, 'remotion');
 
 // Resolve ffmpeg binary (same logic as transcriptionService)
 const TOOLS_DIR = process.env.TOOLS_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '', 'tools');
 function findBinary(name: string): string {
   const projectPath = path.join(PROJECT_ROOT, name);
-  if (fs.existsSync(projectPath)) return projectPath;
+  if (existsSync(projectPath)) return projectPath;
   const toolsPath = path.join(TOOLS_DIR, process.platform === 'win32' ? `${name}.exe` : name);
-  if (fs.existsSync(toolsPath)) return toolsPath;
+  if (existsSync(toolsPath)) return toolsPath;
   return name;
 }
 const FFMPEG = findBinary('ffmpeg');
@@ -137,192 +143,112 @@ Respondé SOLO con JSON válido en este formato:
   return candidates.slice(0, 3);
 }
 
-// ─── Background Frame Generation ─────────────────────────────────────────────
+// ─── Utterance excerpt helper ─────────────────────────────────────────────────
 
 /**
- * Genera un frame PNG 1080x1920 con gradiente oscuro, logo y nombre de plataforma.
- * Devuelve la ruta al archivo PNG generado.
+ * Extrae un excerpt de texto de las utterances dentro del rango del clip.
+ * Retorna las primeras ~200 caracteres del texto combinado.
  */
-async function generateBackgroundFrame(branding: BrandingConfig): Promise<string> {
-  const canvas = createCanvas(1080, 1920);
-  const ctx = canvas.getContext('2d');
-
-  // Dark gradient background (vertical)
-  const gradient = ctx.createLinearGradient(0, 0, 0, 1920);
-  gradient.addColorStop(0, '#0a0a12');
-  gradient.addColorStop(0.4, '#0d0d1a');
-  gradient.addColorStop(0.7, '#0a0f1e');
-  gradient.addColorStop(1, '#060610');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 1080, 1920);
-
-  // Subtle diagonal accent lines
-  ctx.strokeStyle = 'rgba(99, 102, 241, 0.06)';
-  ctx.lineWidth = 1;
-  for (let i = -1920; i < 2160; i += 80) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(i + 1920, 1920);
-    ctx.stroke();
-  }
-
-  // Top gradient overlay (for logo area)
-  const topGrad = ctx.createLinearGradient(0, 0, 0, 300);
-  topGrad.addColorStop(0, 'rgba(99, 102, 241, 0.12)');
-  topGrad.addColorStop(1, 'rgba(99, 102, 241, 0)');
-  ctx.fillStyle = topGrad;
-  ctx.fillRect(0, 0, 1080, 300);
-
-  // Bottom gradient overlay (for subtitles area)
-  const bottomGrad = ctx.createLinearGradient(0, 1520, 0, 1920);
-  bottomGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  bottomGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)');
-  ctx.fillStyle = bottomGrad;
-  ctx.fillRect(0, 1520, 1080, 400);
-
-  // Logo
-  const logoPath = path.join(PROJECT_ROOT, 'public', 'logo.png');
-  if (branding.logoBuffer || fs.existsSync(logoPath)) {
-    try {
-      const logoImg = branding.logoBuffer
-        ? await loadImage(branding.logoBuffer)
-        : await loadImage(logoPath);
-      const logoW = 160;
-      const logoH = (logoImg.height / logoImg.width) * logoW;
-      const logoX = (1080 - logoW) / 2;
-      ctx.globalAlpha = 0.9;
-      ctx.drawImage(logoImg, logoX, 60, logoW, logoH);
-      ctx.globalAlpha = 1;
-    } catch (_) {
-      // Non-fatal: logo not found
-    }
-  }
-
-  // Platform name (top center, below logo)
-  const platformName = branding.platformName || 'PeriodistApp';
-  ctx.font = 'bold 36px sans-serif';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  ctx.fillText(platformName, 540, 240);
-
-  // Thin accent line below platform name
-  ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(340, 295);
-  ctx.lineTo(740, 295);
-  ctx.stroke();
-
-  const bgPath = path.join(outputDir, `clip_bg_${uuidv4()}.png`);
-  const buffer = canvas.toBuffer('image/png');
-  fs.writeFileSync(bgPath, buffer);
-  return bgPath;
-}
-
-// ─── SRT Subtitle Generation ──────────────────────────────────────────────────
-
-/**
- * Filtra utterances dentro del rango del clip y genera un archivo .srt.
- * Devuelve la ruta al archivo .srt generado.
- */
-function generateSrtFile(
+function getExcerptFromUtterances(
   utterances: Utterance[],
   startMs: number,
   endMs: number,
 ): string {
-  const clipped = utterances.filter(u => u.end > startMs && u.start < endMs);
-
-  const formatTime = (ms: number): string => {
-    const totalMs = Math.max(0, ms - startMs);
-    const h = Math.floor(totalMs / 3600000);
-    const m = Math.floor((totalMs % 3600000) / 60000);
-    const s = Math.floor((totalMs % 60000) / 1000);
-    const ms2 = totalMs % 1000;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms2).padStart(3, '0')}`;
-  };
-
-  let srt = '';
-  clipped.forEach((u, i) => {
-    const s = Math.max(startMs, u.start);
-    const e = Math.min(endMs, u.end);
-    srt += `${i + 1}\n`;
-    srt += `${formatTime(s)} --> ${formatTime(e)}\n`;
-    srt += `${u.text.trim()}\n\n`;
-  });
-
-  const srtPath = path.join(outputDir, `clip_subs_${uuidv4()}.srt`);
-  fs.writeFileSync(srtPath, srt, 'utf-8');
-  return srtPath;
+  const inRange = utterances
+    .filter(u => u.end > startMs && u.start < endMs)
+    .map(u => u.text.trim())
+    .join(' ');
+  return inRange.slice(0, 200);
 }
 
-// ─── Video Composition ────────────────────────────────────────────────────────
+// ─── Video Composition (Remotion) ────────────────────────────────────────────
 
 /**
- * Genera un clip vertical 1080x1920 usando ffmpeg.
+ * Genera un clip vertical 1080x1920 usando Remotion + ffmpeg.
  *
- * Pasos:
- *   1. Extraer segmento de audio del MP3 fuente
- *   2. Generar frame de fondo PNG con @napi-rs/canvas
- *   3. Generar subtítulos en formato SRT
- *   4. Componer video con ffmpeg (-loop 1 imagen + audio + subtítulos)
+ * Pipeline:
+ *   1. Remotion renderiza el video premium (QuoteClip o NewsClip) sin audio
+ *   2. ffmpeg extrae el segmento de audio del MP3 fuente
+ *   3. ffmpeg fusiona video Remotion + audio segmentado → MP4 final
  *
- * Retorna la ruta al MP4 generado.
+ * Retorna la ruta al MP4 final generado.
  */
 export async function generateClipVideo(
   candidate: ClipCandidate,
   audioPath: string,
   utterances: Utterance[],
   branding: BrandingConfig,
+  clipType: 'quote' | 'news' = 'news',
 ): Promise<string> {
   const uid = uuidv4().slice(0, 8);
-  const segmentPath = path.join(outputDir, `clip_audio_${uid}.mp3`);
-  const bgPath = await generateBackgroundFrame(branding);
-  const srtPath = generateSrtFile(utterances, candidate.startMs, candidate.endMs);
   const outputPath = path.join(outputDir, `clip_${uid}.mp4`);
+  const tempVideoPath = path.join(outputDir, `clip_temp_${uid}.mp4`);
+  const audioSegmentPath = path.join(outputDir, `clip_audio_${uid}.mp3`);
 
+  const durationMs = candidate.endMs - candidate.startMs;
+  const durationInSeconds = Math.min(Math.max(Math.ceil(durationMs / 1000), 8), 30);
   const startSec = candidate.startMs / 1000;
-  const durationSec = (candidate.endMs - candidate.startMs) / 1000;
+
+  // Build Remotion props based on clip type
+  const props =
+    clipType === 'quote'
+      ? {
+          quoteText: candidate.hookText,
+          speakerName: (candidate as any).speaker || 'Participante',
+          speakerRole: (candidate as any).role || '',
+          programName: branding.platformName,
+          platformName: branding.platformName,
+          durationInSeconds,
+        }
+      : {
+          title: candidate.hookText,
+          excerpt: getExcerptFromUtterances(utterances, candidate.startMs, candidate.endMs),
+          hookText: candidate.hookText.split(' ').slice(0, 5).join(' ').toUpperCase(),
+          programName: branding.platformName,
+          platformName: branding.platformName,
+          durationInSeconds,
+        };
+
+  const compositionId = clipType === 'quote' ? 'QuoteClip' : 'NewsClip';
+
+  // Escape props JSON for shell (Windows: use double-quote escaping)
+  const propsJson = JSON.stringify(props);
 
   try {
-    // Step 1: Extract audio segment
-    // Use -t (duration) instead of -to so it works regardless of audio format
-    const audioCmd = `"${FFMPEG}" -i "${audioPath}" -ss ${startSec} -t ${durationSec} -c copy -y "${segmentPath}"`;
-    await execAsync(audioCmd, { timeout: 60000 });
+    // Step 1: Render with Remotion (video only, no audio)
+    await execAsync(
+      `cd "${REMOTION_DIR}" && npx remotion render ${compositionId} "${tempVideoPath}" --props='${propsJson.replace(/'/g, "'\\''")}'`,
+      { timeout: 180000 },
+    );
 
-    // Step 2: Check the segment was actually created (some formats need re-encode)
-    if (!fs.existsSync(segmentPath) || fs.statSync(segmentPath).size < 100) {
-      const audioReencodeCmd = `"${FFMPEG}" -i "${audioPath}" -ss ${startSec} -t ${durationSec} -c:a libmp3lame -q:a 4 -y "${segmentPath}"`;
-      await execAsync(audioReencodeCmd, { timeout: 60000 });
+    // Step 2: Extract audio segment from source MP3
+    const audioCmd = `"${FFMPEG}" -i "${audioPath}" -ss ${startSec} -t ${durationInSeconds} -c copy -y "${audioSegmentPath}"`;
+    await execAsync(audioCmd, { timeout: 30000 });
+
+    // Re-encode if copy produced an empty/broken segment
+    const stats = await fs.stat(audioSegmentPath).catch(() => null);
+    if (!stats || stats.size < 100) {
+      const reencodeCmd = `"${FFMPEG}" -i "${audioPath}" -ss ${startSec} -t ${durationInSeconds} -c:a libmp3lame -q:a 4 -y "${audioSegmentPath}"`;
+      await execAsync(reencodeCmd, { timeout: 30000 });
     }
 
-    // Step 3: Compose video with burned-in subtitles
-    // Use subtitles filter with Windows-safe path (forward slashes, escaped colons)
-    const srtPathNorm = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-
-    // FontSize=28: readable on mobile; MarginV=300: bottom area well above bottom edge
-    const subtitleFilter = `subtitles='${srtPathNorm}':force_style='FontSize=28,FontName=Arial,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=3,Shadow=1,Alignment=2,MarginV=300,MarginL=80,MarginR=80'`;
-
-    const videoCmd = [
+    // Step 3: Merge Remotion video + audio segment
+    const mergeCmd = [
       `"${FFMPEG}"`,
-      `-loop 1 -i "${bgPath}"`,
-      `-i "${segmentPath}"`,
-      `-vf "${subtitleFilter}"`,
-      `-c:v libx264 -tune stillimage -preset fast -crf 23`,
+      `-i "${tempVideoPath}"`,
+      `-i "${audioSegmentPath}"`,
+      `-c:v copy`,
       `-c:a aac -b:a 192k`,
       `-shortest`,
-      `-pix_fmt yuv420p`,
-      `-t ${durationSec}`,
       `-y "${outputPath}"`,
     ].join(' ');
+    await execAsync(mergeCmd, { timeout: 60000 });
 
-    await execAsync(videoCmd, { timeout: 120000 });
     return outputPath;
   } finally {
     // Cleanup temp files
-    try { fs.unlinkSync(bgPath); } catch (_) { /* ignore */ }
-    try { fs.unlinkSync(srtPath); } catch (_) { /* ignore */ }
-    try { if (fs.existsSync(segmentPath)) fs.unlinkSync(segmentPath); } catch (_) { /* ignore */ }
+    try { await fs.unlink(tempVideoPath); } catch (_) { /* ignore */ }
+    try { await fs.unlink(audioSegmentPath); } catch (_) { /* ignore */ }
   }
 }
 
@@ -403,7 +329,7 @@ export async function deleteClip(id: string, tenantId: string): Promise<void> {
   // Get the clip first to clean up files
   const clip = await getClipById(id, tenantId);
   if (clip?.videoPath) {
-    try { fs.unlinkSync(clip.videoPath); } catch (_) { /* ignore */ }
+    try { await fs.unlink(clip.videoPath); } catch (_) { /* ignore */ }
   }
 
   await db.delete(clips).where(and(eq(clips.id, id), eq(clips.tenantId, tenantId)));
