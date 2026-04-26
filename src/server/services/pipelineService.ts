@@ -2,6 +2,7 @@ import { captureAudioSegment, transcribeAudio, detectSourceType } from "./transc
 import { extractInsights } from "./insightService.js";
 import { searchAndEnrich, searchReferenceImage } from "./searchService.js";
 import { generateNewsCopy, generateTitle } from "./newsService.js";
+import { generateContentVariants } from "./contentMultiplierService.js";
 import { processImage, processQuoteFlyer } from "./imageService.js";
 import { loadTenantBranding } from "./brandingService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
@@ -961,6 +962,24 @@ class AutoPipeline {
       this.currentStep = "pending_review";
       this.emit("step", { step: "pending_review", message: `Nota en cola de revisión: "${finalTitle}"` });
 
+      // --- CONTENT MULTIPLIER ---
+      this.emit("detail", {
+        step: "pending_review", sub: "multiplier",
+        message: "Generando variantes multiplataforma (Twitter, Instagram, LinkedIn, YouTube, Newsletter)...",
+        icon: "brain",
+      });
+      let contentVariants = null;
+      try {
+        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone);
+        this.emit("detail", {
+          step: "pending_review", sub: "multiplier_done",
+          message: `Variantes generadas: ${contentVariants.twitterThread.length} tweets, ${contentVariants.instagramCarousel.length} slides`,
+          icon: "check",
+        });
+      } catch (variantErr) {
+        console.warn("[Pipeline] Content multiplier falló (no bloquea):", (variantErr as Error).message);
+      }
+
       const dbPublication = await createPublication(
         {
           title: finalTitle,
@@ -973,6 +992,7 @@ class AutoPipeline {
           status: 'pending_review',
           editHistory: [{ action: 'created', timestamp: new Date().toISOString(), by: 'pipeline' }],
           quoteFlyerPaths,
+          contentVariants,
         },
         this.tenantId,
       );

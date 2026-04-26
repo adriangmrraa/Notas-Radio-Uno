@@ -146,6 +146,15 @@ export interface SearchResult {
   scrapedImage?: string;
 }
 
+// Content Multiplier — variantes multiplataforma
+export interface ContentVariants {
+  twitterThread: string[];      // array de tweets (cada uno ≤280 chars)
+  instagramCarousel: string[];  // array de textos por slide
+  linkedinPost: string;
+  youtubeDescription: string;
+  newsletterBlurb: string;
+}
+
 // Review / Editorial Copilot
 export type PublicationStatus = 'pending_review' | 'approved' | 'published' | 'rejected';
 
@@ -167,6 +176,7 @@ export interface ReviewPublication {
   editHistory: EditHistoryEntry[];
   quotes: any[] | null;
   quoteFlyerPaths: string[];
+  contentVariants?: ContentVariants | null;
   createdAt: string;
 }
 
@@ -344,6 +354,29 @@ export interface DiarizedTranscription {
   speakerCount: number;
   utterances: Utterance[];
   provider: 'assemblyai' | 'whisper';
+}
+
+// Guest Dossier
+export interface GuestDossier {
+  id: string;
+  guestId: string;
+  guestName: string;
+  scheduledDate: string;
+  status: 'generating' | 'ready' | 'error';
+  content: DossierContent | null;
+  generatedAt: string | null;
+  createdAt: string;
+}
+
+export interface DossierContent {
+  summary: string;
+  bio: string;
+  recentActivity: string[];
+  controversies: string[];
+  suggestedQuestions: string[];
+  keyFacts: string[];
+  relatedTopics: string[];
+  talkingPoints: string[];
 }
 
 // Guest

@@ -24,7 +24,8 @@ import { publishToChannels } from "../services/publishService.js";
 import { chatCompletion } from "../services/aiSdkService.js";
 import { processImage } from "../services/imageService.js";
 import { loadTenantBranding } from "../services/brandingService.js";
-import type { EditHistoryEntry, TemplateId, FontFamilyId } from "../../shared/types.js";
+import { generateContentVariants, regenerateVariant } from "../services/contentMultiplierService.js";
+import type { EditHistoryEntry, TemplateId, FontFamilyId, ContentVariants } from "../../shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -254,6 +255,117 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
     } catch (err) {
       const e = err as Error;
       res.status(500).json({ error: `Error al regenerar imagen: ${e.message}` });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // GET /api/review/:id/variants — Retorna las variantes de contenido guardadas
+  // ────────────────────────────────────────────────────────────────────────────
+  app.get("/api/review/:id/variants", requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const id = req.params.id;
+
+    const pub = await getReviewPublicationById(id, tenantId);
+    if (!pub) {
+      res.status(404).json({ error: "Publicación no encontrada" });
+      return;
+    }
+
+    if (!pub.contentVariants) {
+      res.status(404).json({ error: "Esta publicación no tiene variantes de contenido generadas" });
+      return;
+    }
+
+    res.json({ variants: pub.contentVariants });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/review/:id/regenerate-variant — Regenera una variante específica
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post("/api/review/:id/regenerate-variant", requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const id = req.params.id;
+    const { variant, prompt: customPrompt } = req.body as {
+      variant?: keyof ContentVariants;
+      prompt?: string;
+    };
+
+    const validVariants: Array<keyof ContentVariants> = [
+      'twitterThread', 'instagramCarousel', 'linkedinPost', 'youtubeDescription', 'newsletterBlurb',
+    ];
+
+    if (!variant || !validVariants.includes(variant)) {
+      res.status(400).json({
+        error: `El campo 'variant' es requerido. Valores válidos: ${validVariants.join(', ')}`,
+      });
+      return;
+    }
+
+    const pub = await getReviewPublicationById(id, tenantId);
+    if (!pub) {
+      res.status(404).json({ error: "Publicación no encontrada" });
+      return;
+    }
+
+    if (!pub.title || !pub.content) {
+      res.status(400).json({ error: "La publicación no tiene título o contenido" });
+      return;
+    }
+
+    try {
+      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt);
+
+      // Actualizar la variante en DB manteniendo las demás intactas
+      const currentVariants: ContentVariants = pub.contentVariants ?? {
+        twitterThread: [],
+        instagramCarousel: [],
+        linkedinPost: "",
+        youtubeDescription: "",
+        newsletterBlurb: "",
+      };
+      const updatedVariants: ContentVariants = { ...currentVariants, [variant]: regenerated };
+
+      await updatePublicationContent(id, tenantId, { contentVariants: updatedVariants });
+
+      await addEditHistoryEntry(id, tenantId, {
+        action: 'text_edit',
+        prompt: `Regenerar variante "${variant}"${customPrompt ? `: ${customPrompt}` : ""}`,
+        timestamp: now(),
+        by: req.auth!.userId,
+      });
+
+      res.json({ success: true, variant, content: regenerated });
+    } catch (err) {
+      const e = err as Error;
+      res.status(500).json({ error: `Error al regenerar la variante: ${e.message}` });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/review/:id/generate-variants — Genera variantes si no existen
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post("/api/review/:id/generate-variants", requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const id = req.params.id;
+
+    const pub = await getReviewPublicationById(id, tenantId);
+    if (!pub) {
+      res.status(404).json({ error: "Publicación no encontrada" });
+      return;
+    }
+
+    if (!pub.title || !pub.content) {
+      res.status(400).json({ error: "La publicación no tiene título o contenido" });
+      return;
+    }
+
+    try {
+      const variants = await generateContentVariants(pub.title, pub.content, "formal");
+      await updatePublicationContent(id, tenantId, { contentVariants: variants });
+      res.json({ success: true, variants });
+    } catch (err) {
+      const e = err as Error;
+      res.status(500).json({ error: `Error al generar variantes: ${e.message}` });
     }
   });
 

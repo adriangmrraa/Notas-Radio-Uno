@@ -15,6 +15,7 @@ export * from './customTypes.js';
 export * from './programs.js';
 export * from './conductors.js';
 export * from './guests.js';
+export * from './dossiers.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -29,6 +30,7 @@ import { settings, notifications, auditLog, dailyMetrics, teamInvitations, refre
 import { programs, programUrls } from './programs.js';
 import { conductors, conductorPhotos } from './conductors.js';
 import { guests, guestPhotos } from './guests.js';
+import { guestDossiers } from './dossiers.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -55,6 +57,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   programs: many(programs),
   conductors: many(conductors),
   guests: many(guests),
+  guestDossiers: many(guestDossiers),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -167,6 +170,7 @@ export const programsRelations = relations(programs, ({ one, many }) => ({
   urls: many(programUrls),
   conductors: many(conductors),
   guests: many(guests),
+  guestDossiers: many(guestDossiers),
 }));
 
 export const programUrlsRelations = relations(programUrls, ({ one }) => ({
@@ -189,8 +193,16 @@ export const guestsRelations = relations(guests, ({ one, many }) => ({
   tenant: one(tenants, { fields: [guests.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [guests.programId], references: [programs.id] }),
   photos: many(guestPhotos),
+  dossiers: many(guestDossiers),
 }));
 
 export const guestPhotosRelations = relations(guestPhotos, ({ one }) => ({
   guest: one(guests, { fields: [guestPhotos.guestId], references: [guests.id] }),
+}));
+
+// ── dossiers relations ──────────────────────────────────────────────────────
+export const guestDossiersRelations = relations(guestDossiers, ({ one }) => ({
+  guest: one(guests, { fields: [guestDossiers.guestId], references: [guests.id] }),
+  tenant: one(tenants, { fields: [guestDossiers.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [guestDossiers.programId], references: [programs.id] }),
 }));

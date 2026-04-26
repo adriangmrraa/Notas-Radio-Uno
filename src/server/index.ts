@@ -26,6 +26,7 @@ import { registerProgramRoutes } from "./routes/programs.js";
 import { registerConductorRoutes } from "./routes/conductors.js";
 import { registerGuestRoutes } from "./routes/guests.js";
 import { registerReviewRoutes } from "./routes/review.js";
+import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
@@ -175,6 +176,7 @@ app.use("/api/images", imageEditRouter);
 // Initialize background services
 initNotificationService(io);
 initJobScheduler(io);
+initDossierScheduler();
 
 // ---------------------------------------------------------------------------
 // Register route modules

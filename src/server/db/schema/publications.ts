@@ -19,6 +19,7 @@ export const publications = pgTable(
     status: varchar('status', { length: 30 }).notNull().default('pending_review'),
     editHistory: jsonb('edit_history').default('[]'),
     quoteFlyerPaths: jsonb('quote_flyer_paths').default('[]'),
+    contentVariants: jsonb('content_variants'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

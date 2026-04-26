@@ -6,7 +6,9 @@ import { eq, and, asc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { guests, guestPhotos } from "../db/schema/guests.js";
+import { guestDossiers } from "../db/schema/dossiers.js";
 import { programs } from "../db/schema/programs.js";
+import { generateGuestDossier, getLatestDossier, listDossiers } from "../services/dossierService.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -610,4 +612,81 @@ export function registerGuestRoutes(app: Express): void {
       }
     },
   );
+
+  // ==================================================================
+  // DOSSIER ROUTES
+  // ==================================================================
+
+  // ------------------------------------------------------------------
+  // GET /api/guests/:id/dossier — Get latest dossier for a guest
+  // ------------------------------------------------------------------
+  app.get(
+    "/api/guests/:id/dossier",
+    requireAuth,
+    async (req: Request, res: Response) => {
+      try {
+        const tenantId = req.auth!.tenantId;
+        const { id } = req.params;
+
+        const dossier = await getLatestDossier(id, tenantId);
+        if (!dossier) {
+          res.json({ dossier: null });
+          return;
+        }
+
+        res.json({ dossier });
+      } catch (error) {
+        console.error("[Dossier] Error al obtener dossier:", error);
+        res.status(500).json({ error: "Error al obtener el dossier" });
+      }
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // POST /api/guests/:id/dossier — Generate/regenerate dossier on demand
+  // ------------------------------------------------------------------
+  app.post(
+    "/api/guests/:id/dossier",
+    requireAuth,
+    async (req: Request, res: Response) => {
+      try {
+        const tenantId = req.auth!.tenantId;
+        const { id } = req.params;
+
+        // Verify guest belongs to tenant
+        const [guest] = await db
+          .select({ id: guests.id })
+          .from(guests)
+          .where(and(eq(guests.id, id), eq(guests.tenantId, tenantId)))
+          .limit(1);
+
+        if (!guest) {
+          res.status(404).json({ error: "Invitado no encontrado" });
+          return;
+        }
+
+        const result = await generateGuestDossier(id, tenantId);
+        res.status(201).json({ success: true, dossierId: result.id, status: result.status });
+      } catch (error) {
+        console.error("[Dossier] Error al generar dossier:", error);
+        res.status(500).json({ error: "Error al generar el dossier" });
+      }
+    },
+  );
+
+  // ------------------------------------------------------------------
+  // GET /api/dossiers — List dossiers by program/date
+  // ------------------------------------------------------------------
+  app.get("/api/dossiers", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = req.auth!.tenantId;
+      const { programId, date } = req.query as { programId?: string; date?: string };
+
+      const dossiers = await listDossiers(tenantId, { programId, date });
+      res.json({ dossiers });
+    } catch (error) {
+      console.error("[Dossier] Error al listar dossiers:", error);
+      res.status(500).json({ error: "Error al obtener los dossiers" });
+    }
+  });
 }

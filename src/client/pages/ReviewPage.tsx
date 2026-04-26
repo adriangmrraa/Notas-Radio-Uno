@@ -16,12 +16,31 @@ import {
   XCircle,
   FileImage,
   Pencil,
+  MessageSquare,
+  Camera,
+  Briefcase,
+  PlayCircle,
+  Mail,
+  Copy,
+  CheckCheck,
+  Sparkles,
+  Layers,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ReviewStatus = 'pending_review' | 'published' | 'rejected';
+
+type VariantKey = 'twitterThread' | 'instagramCarousel' | 'linkedinPost' | 'youtubeDescription' | 'newsletterBlurb';
+
+interface ContentVariants {
+  twitterThread: string[];
+  instagramCarousel: string[];
+  linkedinPost: string;
+  youtubeDescription: string;
+  newsletterBlurb: string;
+}
 
 interface EditHistoryEntry {
   id: string;
@@ -39,6 +58,7 @@ interface ReviewPublication {
   status: ReviewStatus;
   createdAt: string;
   editHistory?: EditHistoryEntry[];
+  contentVariants?: ContentVariants | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -91,6 +111,506 @@ const FONT_OPTIONS = [
   { value: 'montserrat', label: 'Montserrat' },
 ];
 
+// ─── Platform config ──────────────────────────────────────────────────────────
+
+interface PlatformTab {
+  key: VariantKey | 'article';
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  color: string;
+  bgColor: string;
+  borderColor: string;
+}
+
+const PLATFORM_TABS: PlatformTab[] = [
+  { key: 'article', label: 'Nota', icon: Pencil, color: 'text-cyan-400', bgColor: 'bg-cyan-400/10', borderColor: 'border-cyan-400/30' },
+  { key: 'twitterThread', label: 'Twitter/X', icon: MessageSquare, color: 'text-sky-400', bgColor: 'bg-sky-400/10', borderColor: 'border-sky-400/30' },
+  { key: 'instagramCarousel', label: 'Instagram', icon: Camera, color: 'text-pink-400', bgColor: 'bg-pink-400/10', borderColor: 'border-pink-400/30' },
+  { key: 'linkedinPost', label: 'LinkedIn', icon: Briefcase, color: 'text-blue-400', bgColor: 'bg-blue-400/10', borderColor: 'border-blue-400/30' },
+  { key: 'youtubeDescription', label: 'YouTube', icon: PlayCircle, color: 'text-red-400', bgColor: 'bg-red-400/10', borderColor: 'border-red-400/30' },
+  { key: 'newsletterBlurb', label: 'Newsletter', icon: Mail, color: 'text-amber-400', bgColor: 'bg-amber-400/10', borderColor: 'border-amber-400/30' },
+];
+
+// ─── Copy button ──────────────────────────────────────────────────────────────
+
+function CopyButton({ text, className = '' }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* ignore */ }
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
+        copied
+          ? 'bg-green-500/15 text-green-400 border border-green-500/25'
+          : 'bg-white/[0.04] text-white/40 border border-white/[0.08] hover:bg-white/[0.08] hover:text-white/70'
+      } ${className}`}
+    >
+      {copied ? (
+        <>
+          <CheckCheck className="w-3 h-3" />
+          Copiado
+        </>
+      ) : (
+        <>
+          <Copy className="w-3 h-3" />
+          Copiar
+        </>
+      )}
+    </button>
+  );
+}
+
+// ─── Twitter Thread Preview ───────────────────────────────────────────────────
+
+function TwitterThreadPreview({
+  tweets,
+  onRegenerate,
+  regenerating,
+}: {
+  tweets: string[];
+  onRegenerate: (prompt?: string) => void;
+  regenerating: boolean;
+}) {
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const [showPrompt, setShowPrompt] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-white/30">{tweets.length} tweets en el hilo</p>
+        <div className="flex items-center gap-2">
+          <CopyButton text={tweets.join('\n\n')} />
+          <button
+            onClick={() => setShowPrompt(!showPrompt)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-400/[0.08] text-sky-400 border border-sky-400/20 hover:bg-sky-400/[0.15] transition-colors"
+          >
+            <Wand2 className="w-3 h-3" />
+            Regenerar
+          </button>
+        </div>
+      </div>
+
+      {showPrompt && (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={regenPrompt}
+            onChange={(e) => setRegenPrompt(e.target.value)}
+            placeholder="Instrucción opcional (ej: más informal, con emojis...)"
+            className="input-premium !py-2 !text-xs flex-1"
+            disabled={regenerating}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onRegenerate(regenPrompt || undefined);
+                setShowPrompt(false);
+                setRegenPrompt('');
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              onRegenerate(regenPrompt || undefined);
+              setShowPrompt(false);
+              setRegenPrompt('');
+            }}
+            disabled={regenerating}
+            className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-1.5"
+          >
+            {regenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            {regenerating ? 'Generando...' : 'Ir'}
+          </button>
+          <button onClick={() => setShowPrompt(false)} className="btn-secondary !py-2 !px-3 !text-xs">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {tweets.map((tweet, i) => {
+          const charCount = tweet.length;
+          const isOver = charCount > 280;
+          return (
+            <div
+              key={i}
+              className="rounded-2xl bg-[#0f172a] border border-sky-400/[0.12] p-4 space-y-2"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-sky-400/20 flex items-center justify-center shrink-0">
+                  <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-white/70">Tu medio</p>
+                  <p className="text-[10px] text-white/25">@tumedio · ahora</p>
+                </div>
+                <div className="ml-auto">
+                  <span className={`text-[10px] font-mono ${isOver ? 'text-red-400' : charCount > 250 ? 'text-amber-400' : 'text-white/25'}`}>
+                    {charCount}/280
+                  </span>
+                </div>
+              </div>
+              <p className="text-sm text-white/80 leading-relaxed whitespace-pre-wrap">{tweet}</p>
+              <div className="flex items-center justify-between pt-1">
+                <p className="text-[10px] text-white/20">Tweet {i + 1} de {tweets.length}</p>
+                <CopyButton text={tweet} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Instagram Carousel Preview ───────────────────────────────────────────────
+
+function InstagramCarouselPreview({
+  slides,
+  onRegenerate,
+  regenerating,
+}: {
+  slides: string[];
+  onRegenerate: (prompt?: string) => void;
+  regenerating: boolean;
+}) {
+  const [activeSlide, setActiveSlide] = useState(0);
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const [showPrompt, setShowPrompt] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-white/30">{slides.length} slides en el carrusel</p>
+        <div className="flex items-center gap-2">
+          <CopyButton text={slides.join('\n\n---\n\n')} />
+          <button
+            onClick={() => setShowPrompt(!showPrompt)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-pink-400/[0.08] text-pink-400 border border-pink-400/20 hover:bg-pink-400/[0.15] transition-colors"
+          >
+            <Wand2 className="w-3 h-3" />
+            Regenerar
+          </button>
+        </div>
+      </div>
+
+      {showPrompt && (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={regenPrompt}
+            onChange={(e) => setRegenPrompt(e.target.value)}
+            placeholder="Instrucción opcional (ej: más visual, con preguntas...)"
+            className="input-premium !py-2 !text-xs flex-1"
+            disabled={regenerating}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onRegenerate(regenPrompt || undefined);
+                setShowPrompt(false);
+                setRegenPrompt('');
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              onRegenerate(regenPrompt || undefined);
+              setShowPrompt(false);
+              setRegenPrompt('');
+            }}
+            disabled={regenerating}
+            className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-1.5"
+          >
+            {regenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            {regenerating ? 'Generando...' : 'Ir'}
+          </button>
+          <button onClick={() => setShowPrompt(false)} className="btn-secondary !py-2 !px-3 !text-xs">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Slide navigator */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {slides.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => setActiveSlide(i)}
+            className={`w-7 h-7 rounded-lg text-xs font-bold transition-all duration-150 ${
+              activeSlide === i
+                ? 'bg-pink-400/20 text-pink-400 border border-pink-400/40'
+                : 'bg-white/[0.04] text-white/30 border border-white/[0.08] hover:bg-white/[0.08]'
+            }`}
+          >
+            {i + 1}
+          </button>
+        ))}
+      </div>
+
+      {/* Active slide */}
+      <div className="rounded-2xl overflow-hidden border border-pink-400/[0.15] bg-gradient-to-br from-pink-950/30 via-purple-950/20 to-[#0c1018]">
+        {/* Phone chrome */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06]">
+          <div className="w-6 h-6 rounded-full bg-pink-400/20 flex items-center justify-center">
+            <Camera className="w-3 h-3 text-pink-400" />
+          </div>
+          <span className="text-xs text-white/40 font-medium">tumedio</span>
+          <div className="ml-auto flex items-center gap-1">
+            {slides.map((_, i) => (
+              <div
+                key={i}
+                className={`h-0.5 rounded-full transition-all duration-200 ${
+                  i === activeSlide ? 'w-4 bg-pink-400' : 'w-2 bg-white/20'
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="p-6 min-h-[160px] flex flex-col justify-center">
+          <p className="text-base text-white/80 leading-relaxed text-center whitespace-pre-wrap">
+            {slides[activeSlide]}
+          </p>
+        </div>
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-white/[0.06]">
+          <p className="text-[10px] text-white/25">Slide {activeSlide + 1} / {slides.length}</p>
+          <CopyButton text={slides[activeSlide]} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Generic text variant preview ────────────────────────────────────────────
+
+interface TextVariantPreviewProps {
+  content: string;
+  platform: PlatformTab;
+  onRegenerate: (prompt?: string) => void;
+  regenerating: boolean;
+}
+
+function TextVariantPreview({ content, platform, onRegenerate, regenerating }: TextVariantPreviewProps) {
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const [showPrompt, setShowPrompt] = useState(false);
+  const Icon = platform.icon;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className={`w-6 h-6 rounded-lg ${platform.bgColor} flex items-center justify-center`}>
+            <Icon className={`w-3 h-3 ${platform.color}`} />
+          </div>
+          <span className="text-xs text-white/30">{platform.label}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <CopyButton text={content} />
+          <button
+            onClick={() => setShowPrompt(!showPrompt)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${platform.bgColor} ${platform.color} border ${platform.borderColor} hover:opacity-80 transition-opacity`}
+          >
+            <Wand2 className="w-3 h-3" />
+            Regenerar
+          </button>
+        </div>
+      </div>
+
+      {showPrompt && (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={regenPrompt}
+            onChange={(e) => setRegenPrompt(e.target.value)}
+            placeholder="Instrucción opcional para la regeneración..."
+            className="input-premium !py-2 !text-xs flex-1"
+            disabled={regenerating}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onRegenerate(regenPrompt || undefined);
+                setShowPrompt(false);
+                setRegenPrompt('');
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              onRegenerate(regenPrompt || undefined);
+              setShowPrompt(false);
+              setRegenPrompt('');
+            }}
+            disabled={regenerating}
+            className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-1.5"
+          >
+            {regenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            {regenerating ? 'Generando...' : 'Ir'}
+          </button>
+          <button onClick={() => setShowPrompt(false)} className="btn-secondary !py-2 !px-3 !text-xs">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      <div className={`rounded-2xl border ${platform.borderColor} bg-gradient-to-br from-white/[0.02] to-transparent p-5`}>
+        {regenerating ? (
+          <div className="flex items-center gap-3 py-8 justify-center">
+            <Loader2 className={`w-5 h-5 animate-spin ${platform.color}`} />
+            <span className="text-sm text-white/40">Generando variante...</span>
+          </div>
+        ) : (
+          <p className="text-sm text-white/70 leading-relaxed whitespace-pre-wrap">{content}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Content Variants Panel ───────────────────────────────────────────────────
+
+interface ContentVariantsPanelProps {
+  publicationId: string;
+  pub: ReviewPublication;
+  onVariantsUpdated: (variants: ContentVariants) => void;
+}
+
+function ContentVariantsPanel({ publicationId, pub, onVariantsUpdated }: ContentVariantsPanelProps) {
+  const { fetchApi } = useApi();
+  const [activePlatform, setActivePlatform] = useState<VariantKey | 'article'>('article');
+  const [regeneratingVariant, setRegeneratingVariant] = useState<VariantKey | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState('');
+
+  const variants = pub.contentVariants;
+
+  const handleGenerateVariants = async () => {
+    setGenerating(true);
+    setGenError('');
+    try {
+      const data = await fetchApi<{ success: boolean; variants: ContentVariants }>(
+        `/review/${publicationId}/generate-variants`,
+        { method: 'POST' }
+      );
+      onVariantsUpdated(data.variants);
+    } catch (err: any) {
+      setGenError(err.message || 'Error al generar variantes');
+    }
+    setGenerating(false);
+  };
+
+  const handleRegenerate = async (variantKey: VariantKey, customPrompt?: string) => {
+    setRegeneratingVariant(variantKey);
+    try {
+      const data = await fetchApi<{ success: boolean; variant: VariantKey; content: unknown }>(
+        `/review/${publicationId}/regenerate-variant`,
+        { method: 'POST', body: { variant: variantKey, prompt: customPrompt } }
+      );
+      if (variants) {
+        onVariantsUpdated({ ...variants, [data.variant]: data.content });
+      }
+    } catch { /* ignore */ }
+    setRegeneratingVariant(null);
+  };
+
+  const activePlatformInfo = PLATFORM_TABS.find((t) => t.key === activePlatform)!;
+
+  return (
+    <div className="space-y-4">
+      {/* Platform tab bar */}
+      <div className="flex items-center gap-1 flex-wrap border-b border-white/[0.06] pb-3">
+        {PLATFORM_TABS.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activePlatform === tab.key;
+          const hasVariant = tab.key === 'article' || !!(variants?.[tab.key as VariantKey]);
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActivePlatform(tab.key)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all duration-150 ${
+                isActive
+                  ? `${tab.bgColor} ${tab.color} border ${tab.borderColor}`
+                  : `text-white/35 hover:text-white/60 hover:bg-white/[0.04] ${!hasVariant ? 'opacity-50' : ''}`
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {tab.label}
+              {!hasVariant && tab.key !== 'article' && (
+                <span className="w-1.5 h-1.5 rounded-full bg-white/20" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Content area */}
+      {activePlatform === 'article' ? (
+        /* Nota original */
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-5 min-h-[200px]">
+            <h3 className="text-sm font-bold text-white/90 leading-snug mb-3">{pub.title}</h3>
+            <p className="text-sm text-white/55 leading-relaxed whitespace-pre-wrap">{pub.content}</p>
+          </div>
+        </div>
+      ) : !variants ? (
+        /* No hay variantes — botón para generar */
+        <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-8 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-cyan-400/10 flex items-center justify-center mx-auto">
+            <Layers className="w-5 h-5 text-cyan-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-white/70 mb-1">
+              Sin variantes de contenido
+            </p>
+            <p className="text-xs text-white/30">
+              Generá versiones optimizadas para Twitter, Instagram, LinkedIn, YouTube y Newsletter en un solo clic.
+            </p>
+          </div>
+          {genError && (
+            <p className="text-xs text-red-400">{genError}</p>
+          )}
+          <button
+            onClick={handleGenerateVariants}
+            disabled={generating}
+            className="btn-primary inline-flex items-center gap-2 !py-2.5 !px-5 !text-sm"
+          >
+            {generating ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Generando variantes...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                Generar variantes multiplataforma
+              </>
+            )}
+          </button>
+        </div>
+      ) : activePlatform === 'twitterThread' ? (
+        <TwitterThreadPreview
+          tweets={variants.twitterThread}
+          onRegenerate={(prompt) => handleRegenerate('twitterThread', prompt)}
+          regenerating={regeneratingVariant === 'twitterThread'}
+        />
+      ) : activePlatform === 'instagramCarousel' ? (
+        <InstagramCarouselPreview
+          slides={variants.instagramCarousel}
+          onRegenerate={(prompt) => handleRegenerate('instagramCarousel', prompt)}
+          regenerating={regeneratingVariant === 'instagramCarousel'}
+        />
+      ) : (
+        <TextVariantPreview
+          content={variants[activePlatform as keyof ContentVariants] as string}
+          platform={activePlatformInfo}
+          onRegenerate={(prompt) => handleRegenerate(activePlatform as VariantKey, prompt)}
+          regenerating={regeneratingVariant === activePlatform}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── Review Detail Modal ──────────────────────────────────────────────────────
 
 interface ReviewDetailModalProps {
@@ -113,6 +633,9 @@ function ReviewDetailModal({
   const [pub, setPub] = useState<ReviewPublication | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Modal content tab: 'content' | 'variants'
+  const [modalTab, setModalTab] = useState<'content' | 'variants'>('content');
 
   // Text edit state
   const [showTextEdit, setShowTextEdit] = useState(false);
@@ -139,10 +662,8 @@ function ReviewDetailModal({
     setLoading(true);
     setError('');
     try {
-      const data = await fetchApi<{ publication: ReviewPublication }>(
-        `/review/${publicationId}`
-      );
-      setPub(data.publication);
+      const data = await fetchApi<ReviewPublication>(`/review/${publicationId}`);
+      setPub(data);
     } catch (err: any) {
       setError(err.message || 'Error al cargar la publicación');
     }
@@ -223,12 +744,14 @@ function ReviewDetailModal({
     setImageLoading(false);
   };
 
+  const hasVariants = !!pub?.contentVariants;
+
   return (
     <div
       className="modal-overlay"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="modal-content w-full" style={{ maxWidth: '960px' }}>
+      <div className="modal-content w-full" style={{ maxWidth: '1040px' }}>
         {/* Header */}
         <div className="modal-header">
           <div className="flex items-center gap-3">
@@ -257,6 +780,36 @@ function ReviewDetailModal({
           </button>
         </div>
 
+        {/* Modal tab switcher */}
+        {pub && (
+          <div className="flex items-center gap-1 px-6 pt-4 border-b border-white/[0.06]">
+            <button
+              onClick={() => setModalTab('content')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                modalTab === 'content'
+                  ? 'border-cyan-400 text-cyan-400'
+                  : 'border-transparent text-white/40 hover:text-white/60'
+              }`}
+            >
+              Contenido
+            </button>
+            <button
+              onClick={() => setModalTab('variants')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                modalTab === 'variants'
+                  ? 'border-cyan-400 text-cyan-400'
+                  : 'border-transparent text-white/40 hover:text-white/60'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Variantes
+              {hasVariants && (
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+              )}
+            </button>
+          </div>
+        )}
+
         {/* Body */}
         <div className="modal-body">
           {loading ? (
@@ -278,284 +831,301 @@ function ReviewDetailModal({
                 </div>
               )}
 
-              {/* Split view */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {/* LEFT — Article text */}
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Pencil className="w-3.5 h-3.5 text-white/30" />
-                    <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
-                      Artículo
-                    </span>
-                  </div>
-                  <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-5 space-y-3 min-h-[280px]">
-                    <h3 className="text-sm font-bold text-white/90 leading-snug">
-                      {pub.title}
-                    </h3>
-                    <p className="text-sm text-white/55 leading-relaxed whitespace-pre-wrap">
-                      {pub.content}
-                    </p>
-                  </div>
-
-                  {/* Text edit */}
-                  {showTextEdit ? (
-                    <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-3">
-                      <label className="text-xs font-medium text-white/40 uppercase tracking-wider block">
-                        ¿Qué querés cambiar?
-                      </label>
-                      <textarea
-                        value={textPrompt}
-                        onChange={(e) => setTextPrompt(e.target.value)}
-                        className="input-premium resize-none text-sm"
-                        rows={3}
-                        placeholder="Ej: hacelo más corto, cambiá el tono a formal..."
-                        disabled={textLoading}
-                        autoFocus
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleTextEdit();
-                          }
-                        }}
-                      />
-                      {textError && (
-                        <p className="text-xs text-red-400">{textError}</p>
-                      )}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => {
-                            setShowTextEdit(false);
-                            setTextPrompt('');
-                            setTextError('');
-                          }}
-                          className="btn-secondary !py-2 !px-4 !text-xs"
-                          disabled={textLoading}
-                        >
-                          Cancelar
-                        </button>
-                        <button
-                          onClick={handleTextEdit}
-                          disabled={textLoading || !textPrompt.trim()}
-                          className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-2"
-                        >
-                          {textLoading ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              Procesando...
-                            </>
-                          ) : (
-                            <>
-                              <Wand2 className="w-3.5 h-3.5" />
-                              Aplicar
-                            </>
-                          )}
-                        </button>
+              {/* ── CONTENIDO TAB ── */}
+              {modalTab === 'content' && (
+                <>
+                  {/* Split view */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* LEFT — Article text */}
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Pencil className="w-3.5 h-3.5 text-white/30" />
+                        <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+                          Artículo
+                        </span>
                       </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setShowTextEdit(true);
-                        setShowImageEdit(false);
-                      }}
-                      className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
-                    >
-                      <Wand2 className="w-4 h-4" />
-                      Editar texto
-                    </button>
-                  )}
-                </div>
-
-                {/* RIGHT — Flyer preview */}
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <ImageIcon className="w-3.5 h-3.5 text-white/30" />
-                    <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
-                      Flyer
-                    </span>
-                  </div>
-                  <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden min-h-[280px] flex items-center justify-center relative">
-                    {pub.imageUrl ? (
-                      <img
-                        src={pub.imageUrl}
-                        alt={pub.title}
-                        className="w-full h-full object-contain max-h-[400px]"
-                        key={pub.imageUrl}
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center gap-3 py-16">
-                        <FileImage className="w-10 h-10 text-white/10" />
-                        <p className="text-xs text-white/20">Sin imagen</p>
+                      <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-5 space-y-3 min-h-[280px]">
+                        <h3 className="text-sm font-bold text-white/90 leading-snug">
+                          {pub.title}
+                        </h3>
+                        <p className="text-sm text-white/55 leading-relaxed whitespace-pre-wrap">
+                          {pub.content}
+                        </p>
                       </div>
-                    )}
-                    {imageLoading && (
-                      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center">
-                        <div className="flex flex-col items-center gap-3">
-                          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-                          <p className="text-xs text-white/50">Regenerando flyer...</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Image edit */}
-                  {showImageEdit ? (
-                    <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-4">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
-                            Template
+                      {/* Text edit */}
+                      {showTextEdit ? (
+                        <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-3">
+                          <label className="text-xs font-medium text-white/40 uppercase tracking-wider block">
+                            ¿Qué querés cambiar?
                           </label>
-                          <div className="relative">
-                            <select
-                              value={selectedTemplate}
-                              onChange={(e) => setSelectedTemplate(e.target.value)}
-                              className="input-premium appearance-none pr-8 !py-3 !text-sm cursor-pointer"
-                              disabled={imageLoading}
-                            >
-                              {TEMPLATE_OPTIONS.map((t) => (
-                                <option key={t.value} value={t.value} className="bg-[#0c1018]">
-                                  {t.label}
-                                </option>
-                              ))}
-                            </select>
-                            <ChevronDown className="w-3.5 h-3.5 text-white/30 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                          </div>
-                        </div>
-                        <div>
-                          <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
-                            Fuente
-                          </label>
-                          <div className="relative">
-                            <select
-                              value={selectedFont}
-                              onChange={(e) => setSelectedFont(e.target.value)}
-                              className="input-premium appearance-none pr-8 !py-3 !text-sm cursor-pointer"
-                              disabled={imageLoading}
-                            >
-                              {FONT_OPTIONS.map((f) => (
-                                <option key={f.value} value={f.value} className="bg-[#0c1018]">
-                                  {f.label}
-                                </option>
-                              ))}
-                            </select>
-                            <ChevronDown className="w-3.5 h-3.5 text-white/30 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                          </div>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
-                          Instrucción adicional (opcional)
-                        </label>
-                        <input
-                          type="text"
-                          value={imagePrompt}
-                          onChange={(e) => setImagePrompt(e.target.value)}
-                          className="input-premium !py-3 !text-sm"
-                          placeholder="Ej: usá colores azules, estilo urgente..."
-                          disabled={imageLoading}
-                        />
-                      </div>
-                      {imageError && (
-                        <p className="text-xs text-red-400">{imageError}</p>
-                      )}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => {
-                            setShowImageEdit(false);
-                            setImageError('');
-                          }}
-                          className="btn-secondary !py-2 !px-4 !text-xs"
-                          disabled={imageLoading}
-                        >
-                          Cancelar
-                        </button>
-                        <button
-                          onClick={handleImageEdit}
-                          disabled={imageLoading}
-                          className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-2"
-                        >
-                          {imageLoading ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              Regenerando...
-                            </>
-                          ) : (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5" />
-                              Regenerar
-                            </>
+                          <textarea
+                            value={textPrompt}
+                            onChange={(e) => setTextPrompt(e.target.value)}
+                            className="input-premium resize-none text-sm"
+                            rows={3}
+                            placeholder="Ej: hacelo más corto, cambiá el tono a formal..."
+                            disabled={textLoading}
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleTextEdit();
+                              }
+                            }}
+                          />
+                          {textError && (
+                            <p className="text-xs text-red-400">{textError}</p>
                           )}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setShowImageEdit(true);
-                        setShowTextEdit(false);
-                      }}
-                      className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
-                    >
-                      <ImageIcon className="w-4 h-4" />
-                      Editar imagen
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Edit history */}
-              {(pub.editHistory?.length ?? 0) > 0 && (
-                <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden">
-                  <button
-                    onClick={() => setHistoryOpen(!historyOpen)}
-                    className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-white/[0.02] transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-3.5 h-3.5 text-white/30" />
-                      <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
-                        Historial de ediciones ({pub.editHistory!.length})
-                      </span>
-                    </div>
-                    {historyOpen ? (
-                      <ChevronUp className="w-4 h-4 text-white/25" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-white/25" />
-                    )}
-                  </button>
-                  {historyOpen && (
-                    <div className="border-t border-white/[0.05] divide-y divide-white/[0.04]">
-                      {pub.editHistory!.map((entry) => (
-                        <div key={entry.id} className="flex items-start gap-3 px-5 py-3">
-                          <div
-                            className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
-                              entry.type === 'text'
-                                ? 'bg-cyan-400/10'
-                                : 'bg-purple-400/10'
-                            }`}
-                          >
-                            {entry.type === 'text' ? (
-                              <Wand2 className="w-3 h-3 text-cyan-400" />
-                            ) : (
-                              <ImageIcon className="w-3 h-3 text-purple-400" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs text-white/60">
-                              {entry.type === 'text' ? 'Texto editado' : 'Imagen regenerada'}
-                              {entry.prompt && (
-                                <span className="text-white/30"> — "{entry.prompt}"</span>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                setShowTextEdit(false);
+                                setTextPrompt('');
+                                setTextError('');
+                              }}
+                              className="btn-secondary !py-2 !px-4 !text-xs"
+                              disabled={textLoading}
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={handleTextEdit}
+                              disabled={textLoading || !textPrompt.trim()}
+                              className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-2"
+                            >
+                              {textLoading ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  Procesando...
+                                </>
+                              ) : (
+                                <>
+                                  <Wand2 className="w-3.5 h-3.5" />
+                                  Aplicar
+                                </>
                               )}
-                            </p>
-                            <p className="text-xs text-white/25 mt-0.5">
-                              {timeAgo(entry.createdAt)}
-                            </p>
+                            </button>
                           </div>
                         </div>
-                      ))}
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setShowTextEdit(true);
+                            setShowImageEdit(false);
+                          }}
+                          className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
+                        >
+                          <Wand2 className="w-4 h-4" />
+                          Editar texto
+                        </button>
+                      )}
+                    </div>
+
+                    {/* RIGHT — Flyer preview */}
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <ImageIcon className="w-3.5 h-3.5 text-white/30" />
+                        <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+                          Flyer
+                        </span>
+                      </div>
+                      <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden min-h-[280px] flex items-center justify-center relative">
+                        {pub.imageUrl ? (
+                          <img
+                            src={pub.imageUrl}
+                            alt={pub.title}
+                            className="w-full h-full object-contain max-h-[400px]"
+                            key={pub.imageUrl}
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center gap-3 py-16">
+                            <FileImage className="w-10 h-10 text-white/10" />
+                            <p className="text-xs text-white/20">Sin imagen</p>
+                          </div>
+                        )}
+                        {imageLoading && (
+                          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                            <div className="flex flex-col items-center gap-3">
+                              <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+                              <p className="text-xs text-white/50">Regenerando flyer...</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Image edit */}
+                      {showImageEdit ? (
+                        <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-4">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
+                                Template
+                              </label>
+                              <div className="relative">
+                                <select
+                                  value={selectedTemplate}
+                                  onChange={(e) => setSelectedTemplate(e.target.value)}
+                                  className="input-premium appearance-none pr-8 !py-3 !text-sm cursor-pointer"
+                                  disabled={imageLoading}
+                                >
+                                  {TEMPLATE_OPTIONS.map((t) => (
+                                    <option key={t.value} value={t.value} className="bg-[#0c1018]">
+                                      {t.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <ChevronDown className="w-3.5 h-3.5 text-white/30 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
+                                Fuente
+                              </label>
+                              <div className="relative">
+                                <select
+                                  value={selectedFont}
+                                  onChange={(e) => setSelectedFont(e.target.value)}
+                                  className="input-premium appearance-none pr-8 !py-3 !text-sm cursor-pointer"
+                                  disabled={imageLoading}
+                                >
+                                  {FONT_OPTIONS.map((f) => (
+                                    <option key={f.value} value={f.value} className="bg-[#0c1018]">
+                                      {f.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <ChevronDown className="w-3.5 h-3.5 text-white/30 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                              </div>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
+                              Instrucción adicional (opcional)
+                            </label>
+                            <input
+                              type="text"
+                              value={imagePrompt}
+                              onChange={(e) => setImagePrompt(e.target.value)}
+                              className="input-premium !py-3 !text-sm"
+                              placeholder="Ej: usá colores azules, estilo urgente..."
+                              disabled={imageLoading}
+                            />
+                          </div>
+                          {imageError && (
+                            <p className="text-xs text-red-400">{imageError}</p>
+                          )}
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                setShowImageEdit(false);
+                                setImageError('');
+                              }}
+                              className="btn-secondary !py-2 !px-4 !text-xs"
+                              disabled={imageLoading}
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={handleImageEdit}
+                              disabled={imageLoading}
+                              className="btn-primary !py-2 !px-4 !text-xs inline-flex items-center gap-2"
+                            >
+                              {imageLoading ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  Regenerando...
+                                </>
+                              ) : (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                  Regenerar
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setShowImageEdit(true);
+                            setShowTextEdit(false);
+                          }}
+                          className="btn-secondary inline-flex items-center gap-2 !py-2.5 !px-4 !text-sm"
+                        >
+                          <ImageIcon className="w-4 h-4" />
+                          Editar imagen
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Edit history */}
+                  {(pub.editHistory?.length ?? 0) > 0 && (
+                    <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] overflow-hidden">
+                      <button
+                        onClick={() => setHistoryOpen(!historyOpen)}
+                        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-white/[0.02] transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-3.5 h-3.5 text-white/30" />
+                          <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+                            Historial de ediciones ({pub.editHistory!.length})
+                          </span>
+                        </div>
+                        {historyOpen ? (
+                          <ChevronUp className="w-4 h-4 text-white/25" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 text-white/25" />
+                        )}
+                      </button>
+                      {historyOpen && (
+                        <div className="border-t border-white/[0.05] divide-y divide-white/[0.04]">
+                          {pub.editHistory!.map((entry) => (
+                            <div key={entry.id} className="flex items-start gap-3 px-5 py-3">
+                              <div
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                                  entry.type === 'text'
+                                    ? 'bg-cyan-400/10'
+                                    : 'bg-purple-400/10'
+                                }`}
+                              >
+                                {entry.type === 'text' ? (
+                                  <Wand2 className="w-3 h-3 text-cyan-400" />
+                                ) : (
+                                  <ImageIcon className="w-3 h-3 text-purple-400" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs text-white/60">
+                                  {entry.type === 'text' ? 'Texto editado' : 'Imagen regenerada'}
+                                  {entry.prompt && (
+                                    <span className="text-white/30"> — "{entry.prompt}"</span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-white/25 mt-0.5">
+                                  {timeAgo(entry.createdAt)}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
+                </>
+              )}
+
+              {/* ── VARIANTES TAB ── */}
+              {modalTab === 'variants' && (
+                <ContentVariantsPanel
+                  publicationId={pub.id}
+                  pub={pub}
+                  onVariantsUpdated={(variants) => {
+                    setPub((prev) => prev ? { ...prev, contentVariants: variants } : prev);
+                    onUpdated();
+                  }}
+                />
               )}
             </div>
           ) : null}
@@ -649,7 +1219,6 @@ export function ReviewPage() {
     [fetchApi]
   );
 
-  // Load counts for all tabs (lightweight — limit=1 each)
   const loadAllCounts = useCallback(async () => {
     const statuses: ReviewStatus[] = ['pending_review', 'published', 'rejected'];
     await Promise.allSettled(
@@ -912,13 +1481,21 @@ export function ReviewPage() {
                     <h3 className="text-sm font-semibold text-white/85 truncate flex-1 min-w-0">
                       {pub.title}
                     </h3>
-                    <span className={STATUS_BADGE[pub.status]}>
-                      {STATUS_LABELS[pub.status]}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {pub.contentVariants && (
+                        <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-400/10 text-cyan-400 border border-cyan-400/20 font-medium">
+                          <Layers className="w-2.5 h-2.5" />
+                          5 variantes
+                        </span>
+                      )}
+                      <span className={STATUS_BADGE[pub.status]}>
+                        {STATUS_LABELS[pub.status]}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-xs text-white/40 mt-1 line-clamp-2 leading-relaxed">
-                    {pub.content.slice(0, 100)}
-                    {pub.content.length > 100 ? '...' : ''}
+                    {pub.content?.slice(0, 100)}
+                    {(pub.content?.length ?? 0) > 100 ? '...' : ''}
                   </p>
                   <p className="text-xs text-white/25 mt-1.5">
                     {timeAgo(pub.createdAt)}

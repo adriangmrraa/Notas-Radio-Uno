@@ -20,7 +20,7 @@ import {
 } from "../db/schema/index.js";
 import { eq, and, desc, sql, like } from "drizzle-orm";
 import { encrypt, decrypt } from "./encryptionService.js";
-import type { Publication, Transcription, MetaAsset, EditHistoryEntry, ReviewPublication } from "../../shared/types.js";
+import type { Publication, Transcription, MetaAsset, EditHistoryEntry, ReviewPublication, ContentVariants } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Tenant helpers
@@ -89,6 +89,7 @@ function mapReviewPublication(row: typeof publications.$inferSelect): ReviewPubl
     editHistory: Array.isArray(row.editHistory) ? (row.editHistory as EditHistoryEntry[]) : [],
     quotes: Array.isArray(row.quotes) ? row.quotes : null,
     quoteFlyerPaths: Array.isArray(row.quoteFlyerPaths) ? (row.quoteFlyerPaths as string[]) : [],
+    contentVariants: (row.contentVariants as ContentVariants | null) ?? null,
     createdAt: row.createdAt?.toISOString() ?? new Date().toISOString(),
   };
 }
@@ -371,6 +372,7 @@ interface CreatePublicationInput {
   status?: string;
   editHistory?: EditHistoryEntry[];
   quoteFlyerPaths?: string[];
+  contentVariants?: ContentVariants | null;
 }
 
 /**
@@ -395,6 +397,7 @@ export async function createPublication(
       status: input.status ?? 'pending_review',
       editHistory: input.editHistory ?? [],
       quoteFlyerPaths: input.quoteFlyerPaths ?? [],
+      contentVariants: input.contentVariants ?? null,
     })
     .returning();
 
@@ -503,18 +506,19 @@ export async function updatePublicationStatus(
 }
 
 /**
- * Actualiza el contenido de una publicación (título, texto, imagen).
+ * Actualiza el contenido de una publicación (título, texto, imagen, variantes).
  */
 export async function updatePublicationContent(
   id: string,
   tenantId: string,
-  updates: { title?: string; content?: string; imagePath?: string; imageUrl?: string },
+  updates: { title?: string; content?: string; imagePath?: string; imageUrl?: string; contentVariants?: ContentVariants | null },
 ): Promise<ReviewPublication | null> {
   const updateData: Partial<typeof publications.$inferInsert> = {};
   if (updates.title !== undefined) updateData.title = updates.title;
   if (updates.content !== undefined) updateData.content = updates.content;
   if (updates.imagePath !== undefined) updateData.imagePath = updates.imagePath;
   if (updates.imageUrl !== undefined) updateData.imageUrl = updates.imageUrl;
+  if (updates.contentVariants !== undefined) updateData.contentVariants = updates.contentVariants;
 
   if (Object.keys(updateData).length === 0) return getReviewPublicationById(id, tenantId);
 

@@ -8,6 +8,13 @@
       "when": 1777109872813,
       "tag": "0000_overjoyed_morlocks",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1745600000000,
+      "tag": "0001_content_variants",
+      "breakpoints": true
     }
   ]
 }
