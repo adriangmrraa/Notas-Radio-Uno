@@ -146,6 +146,30 @@ export interface SearchResult {
   scrapedImage?: string;
 }
 
+// Review / Editorial Copilot
+export type PublicationStatus = 'pending_review' | 'approved' | 'published' | 'rejected';
+
+export interface EditHistoryEntry {
+  action: 'created' | 'text_edit' | 'image_edit' | 'approved' | 'rejected' | 'published';
+  prompt?: string;
+  timestamp: string;
+  by: string; // 'pipeline' | 'user' | userId
+}
+
+export interface ReviewPublication {
+  id: string;
+  tenantId: string;
+  title: string | null;
+  content: string | null;
+  imagePath: string | null;
+  imageUrl: string | null;
+  status: PublicationStatus;
+  editHistory: EditHistoryEntry[];
+  quotes: any[] | null;
+  quoteFlyerPaths: string[];
+  createdAt: string;
+}
+
 // Publications
 export interface Publication {
   id?: number;

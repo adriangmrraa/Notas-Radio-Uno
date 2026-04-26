@@ -92,7 +92,7 @@ class AutoPipeline {
       structure: "completa",
       imageModel: "gemini",
       segmentDuration: 120,
-      autoPublish: true,
+      autoPublish: false,
     };
 
     // Complete accumulated transcription (entire broadcast)
@@ -876,45 +876,49 @@ class AutoPipeline {
     pipelineContext = await this.runAgentsAfterStep("generate_flyer", pipelineContext);
 
     // --- QUOTE FLYERS ---
+    const quoteFlyerPaths: string[] = [];
     if (enrichedInsights.quotes?.length && this.config.programId) {
       const branding = await loadTenantBranding(this.tenantId);
       for (const quote of enrichedInsights.quotes.slice(0, 2)) {
         try {
           const photoData = await this.resolveSpeakerPhoto(quote.speaker);
           const quoteFlyerPath = await processQuoteFlyer(quote, photoData, branding);
+          quoteFlyerPaths.push(quoteFlyerPath);
           this.emit('quote_flyer', { speaker: quote.speaker, text: quote.text.substring(0, 50) });
 
-          // Publish quote flyer via the same channels as the regular flyer
-          const webhookUrl = await getWebhookPipelineUrl();
-          let quoteDriveUrl = "";
-          try {
-            const auth = await this.authorizeGoogleDrive();
-            quoteDriveUrl = await this.uploadToGoogleDrive(auth, quoteFlyerPath);
-          } catch (_) { /* Google Drive optional */ }
-
-          if (webhookUrl) {
+          // Solo publicar en canales externos si autoPublish está activo
+          if (this.config.autoPublish) {
+            const webhookUrl = await getWebhookPipelineUrl();
+            let quoteDriveUrl = "";
             try {
-              await axios.post(webhookUrl, {
-                title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
-                datePublished: new Date().toISOString(),
-                content: quote.text,
-                imageUrl: quoteDriveUrl,
-                linkUrl: quoteDriveUrl,
-                imageDriveUrl: quoteDriveUrl,
-                source: "pipeline-quote",
-              });
-            } catch (_) { /* non-fatal */ }
-          }
+              const auth = await this.authorizeGoogleDrive();
+              quoteDriveUrl = await this.uploadToGoogleDrive(auth, quoteFlyerPath);
+            } catch (_) { /* Google Drive optional */ }
 
-          if (await isMetaConnected()) {
-            try {
-              await publishToAllMeta({
-                title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
-                content: quote.text,
-                imageUrl: quoteDriveUrl,
-                imagePath: quoteFlyerPath,
-              });
-            } catch (_) { /* non-fatal */ }
+            if (webhookUrl) {
+              try {
+                await axios.post(webhookUrl, {
+                  title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
+                  datePublished: new Date().toISOString(),
+                  content: quote.text,
+                  imageUrl: quoteDriveUrl,
+                  linkUrl: quoteDriveUrl,
+                  imageDriveUrl: quoteDriveUrl,
+                  source: "pipeline-quote",
+                });
+              } catch (_) { /* non-fatal */ }
+            }
+
+            if (await isMetaConnected()) {
+              try {
+                await publishToAllMeta({
+                  title: `"${quote.text.substring(0, 80)}" — ${quote.speaker}`,
+                  content: quote.text,
+                  imageUrl: quoteDriveUrl,
+                  imagePath: quoteFlyerPath,
+                });
+              } catch (_) { /* non-fatal */ }
+            }
           }
         } catch (err) {
           console.error('[Pipeline] Quote flyer failed:', err);
@@ -922,7 +926,7 @@ class AutoPipeline {
       }
     }
 
-    // --- PUBLISH ---
+    // --- PUBLISH / COLA DE REVISIÓN ---
     if (this.config.autoPublish) {
       this.io.emit("pipeline-node-status", { nodeId: "publish", status: "running", timestamp: new Date().toISOString() });
       this.currentStep = "publishing";
@@ -949,6 +953,46 @@ class AutoPipeline {
         step: "published",
         title: finalTitle,
         topic: segment.topic,
+        totalPublished: this.publishedNotes.length,
+      });
+    } else {
+      // Modo revisión: guardar en DB como pending_review sin publicar en ningún canal
+      this.io.emit("pipeline-node-status", { nodeId: "publish", status: "running", timestamp: new Date().toISOString() });
+      this.currentStep = "pending_review";
+      this.emit("step", { step: "pending_review", message: `Nota en cola de revisión: "${finalTitle}"` });
+
+      const dbPublication = await createPublication(
+        {
+          title: finalTitle,
+          content: agentNewsText,
+          imagePath: flyerPath,
+          imageUrl: null,
+          source: "pipeline",
+          publishResults: {},
+          quotes: enrichedInsights.quotes?.length ? enrichedInsights.quotes : null,
+          status: 'pending_review',
+          editHistory: [{ action: 'created', timestamp: new Date().toISOString(), by: 'pipeline' }],
+          quoteFlyerPaths,
+        },
+        this.tenantId,
+      );
+
+      this.io.emit("history-new-publication", dbPublication);
+      this.io.emit("pipeline-node-status", { nodeId: "publish", status: "completed", timestamp: new Date().toISOString() });
+
+      this.publishedNotes.push({
+        title: finalTitle,
+        content: agentNewsText,
+        flyerPath,
+        topic: segment.topic,
+        timestamp: new Date().toISOString(),
+      });
+
+      this.emit("pending_review", {
+        step: "pending_review",
+        title: finalTitle,
+        topic: segment.topic,
+        message: `Nota enviada a revisión: "${finalTitle}"`,
         totalPublished: this.publishedNotes.length,
       });
     }
@@ -1555,6 +1599,8 @@ class AutoPipeline {
       source: "pipeline",
       publishResults: { errors },
       quotes: quotes?.length ? quotes : null,
+      status: 'published',
+      editHistory: [{ action: 'created', timestamp: new Date().toISOString(), by: 'pipeline' }],
     });
     this.io.emit("history-new-publication", dbPublication);
 

@@ -20,7 +20,7 @@ import {
 } from "../db/schema/index.js";
 import { eq, and, desc, sql, like } from "drizzle-orm";
 import { encrypt, decrypt } from "./encryptionService.js";
-import type { Publication, Transcription, MetaAsset } from "../../shared/types.js";
+import type { Publication, Transcription, MetaAsset, EditHistoryEntry, ReviewPublication } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Tenant helpers
@@ -71,6 +71,25 @@ function mapPublication(row: typeof publications.$inferSelect): Publication {
     source: row.source,
     publish_results: row.publishResults ?? null,
     created_at: row.createdAt?.toISOString(),
+  };
+}
+
+/**
+ * Maps a Drizzle publication row to the ReviewPublication shape (full detail for the review UI).
+ */
+function mapReviewPublication(row: typeof publications.$inferSelect): ReviewPublication {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    title: row.title ?? null,
+    content: row.content ?? null,
+    imagePath: row.imagePath ?? null,
+    imageUrl: row.imageUrl ?? null,
+    status: (row.status ?? 'pending_review') as ReviewPublication['status'],
+    editHistory: Array.isArray(row.editHistory) ? (row.editHistory as EditHistoryEntry[]) : [],
+    quotes: Array.isArray(row.quotes) ? row.quotes : null,
+    quoteFlyerPaths: Array.isArray(row.quoteFlyerPaths) ? (row.quoteFlyerPaths as string[]) : [],
+    createdAt: row.createdAt?.toISOString() ?? new Date().toISOString(),
   };
 }
 
@@ -349,6 +368,9 @@ interface CreatePublicationInput {
   source?: string;
   publishResults?: unknown;
   quotes?: unknown | null;
+  status?: string;
+  editHistory?: EditHistoryEntry[];
+  quoteFlyerPaths?: string[];
 }
 
 /**
@@ -370,6 +392,9 @@ export async function createPublication(
       source: normalizePublicationSource(input.source),
       publishResults: input.publishResults ?? {},
       quotes: input.quotes ?? null,
+      status: input.status ?? 'pending_review',
+      editHistory: input.editHistory ?? [],
+      quoteFlyerPaths: input.quoteFlyerPaths ?? [],
     })
     .returning();
 
@@ -419,25 +444,134 @@ export async function deletePublication(id: number | string): Promise<boolean> {
 }
 
 /**
- * Obtiene publicaciones pendientes de aprobación.
+ * Obtiene publicaciones por estado (para la cola de revisión).
+ */
+export async function getPublicationsByStatus(
+  tenantId: string,
+  status: string,
+  limit: number = 50,
+  offset: number = 0,
+): Promise<{ publications: ReviewPublication[]; total: number }> {
+  const [rows, countResult] = await Promise.all([
+    db
+      .select()
+      .from(publications)
+      .where(and(eq(publications.tenantId, tenantId), eq(publications.status, status)))
+      .orderBy(desc(publications.createdAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(publications)
+      .where(and(eq(publications.tenantId, tenantId), eq(publications.status, status))),
+  ]);
+  return {
+    publications: rows.map(mapReviewPublication),
+    total: countResult[0]?.count ?? 0,
+  };
+}
+
+/**
+ * Obtiene una publicación para revisión (con todos los campos del copiloto editorial).
+ */
+export async function getReviewPublicationById(
+  id: string,
+  tenantId: string,
+): Promise<ReviewPublication | null> {
+  const rows = await db
+    .select()
+    .from(publications)
+    .where(and(eq(publications.id, id), eq(publications.tenantId, tenantId)))
+    .limit(1);
+  return rows[0] ? mapReviewPublication(rows[0]) : null;
+}
+
+/**
+ * Actualiza el estado de una publicación.
+ */
+export async function updatePublicationStatus(
+  id: string,
+  tenantId: string,
+  status: string,
+): Promise<ReviewPublication | null> {
+  const rows = await db
+    .update(publications)
+    .set({ status })
+    .where(and(eq(publications.id, id), eq(publications.tenantId, tenantId)))
+    .returning();
+  return rows[0] ? mapReviewPublication(rows[0]) : null;
+}
+
+/**
+ * Actualiza el contenido de una publicación (título, texto, imagen).
+ */
+export async function updatePublicationContent(
+  id: string,
+  tenantId: string,
+  updates: { title?: string; content?: string; imagePath?: string; imageUrl?: string },
+): Promise<ReviewPublication | null> {
+  const updateData: Partial<typeof publications.$inferInsert> = {};
+  if (updates.title !== undefined) updateData.title = updates.title;
+  if (updates.content !== undefined) updateData.content = updates.content;
+  if (updates.imagePath !== undefined) updateData.imagePath = updates.imagePath;
+  if (updates.imageUrl !== undefined) updateData.imageUrl = updates.imageUrl;
+
+  if (Object.keys(updateData).length === 0) return getReviewPublicationById(id, tenantId);
+
+  const rows = await db
+    .update(publications)
+    .set(updateData)
+    .where(and(eq(publications.id, id), eq(publications.tenantId, tenantId)))
+    .returning();
+  return rows[0] ? mapReviewPublication(rows[0]) : null;
+}
+
+/**
+ * Agrega una entrada al historial de ediciones de una publicación.
+ * Usa SQL jsonb concatenation para hacer append sin sobreescribir.
+ */
+export async function addEditHistoryEntry(
+  id: string,
+  tenantId: string,
+  entry: EditHistoryEntry,
+): Promise<ReviewPublication | null> {
+  const rows = await db
+    .update(publications)
+    .set({
+      editHistory: sql`COALESCE(${publications.editHistory}, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb`,
+    })
+    .where(and(eq(publications.id, id), eq(publications.tenantId, tenantId)))
+    .returning();
+  return rows[0] ? mapReviewPublication(rows[0]) : null;
+}
+
+/**
+ * Obtiene publicaciones pendientes de aprobación (compat con history routes).
  */
 export async function getPendingPublications(
   limit: number = 50,
   tenantId?: string,
 ): Promise<Publication[]> {
-  // publications table has no status column in Drizzle schema; return empty for now
-  // Status tracking will be added in a future migration
-  void limit;
-  void tenantId;
-  return [];
+  const tid = tenantId ?? getSystemTenantId();
+  const rows = await db
+    .select()
+    .from(publications)
+    .where(and(eq(publications.tenantId, tid), eq(publications.status, 'pending_review')))
+    .orderBy(desc(publications.createdAt))
+    .limit(limit);
+  return rows.map(mapPublication);
 }
 
 /**
- * Aprueba una publicación.
+ * Aprueba una publicación (compat con history routes).
  */
 export async function approvePublication(id: number | string): Promise<Publication | null> {
-  // No status column yet in schema — just return the existing record
-  return getPublicationById(id);
+  const rows = await db
+    .update(publications)
+    .set({ status: 'approved' })
+    .where(eq(publications.id, String(id)))
+    .returning();
+  return rows[0] ? mapPublication(rows[0]) : null;
 }
 
 /**
@@ -458,7 +592,7 @@ export async function updatePublication(
   if (data.content !== undefined) updateData.content = data.content;
   if (data.imagePath !== undefined) updateData.imagePath = data.imagePath;
   if (data.imageUrl !== undefined) updateData.imageUrl = data.imageUrl;
-  // status not in schema yet — silently ignore
+  if (data.status !== undefined) updateData.status = data.status;
 
   if (Object.keys(updateData).length === 0) return getPublicationById(id);
 

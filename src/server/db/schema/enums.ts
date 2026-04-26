@@ -72,3 +72,15 @@ export const InvitationStatus = {
   revoked: 'revoked',
 } as const;
 export type InvitationStatus = (typeof InvitationStatus)[keyof typeof InvitationStatus];
+
+// ── PublicationStatus ─────────────────────────────────────────────────────────
+export const publicationStatusEnum = pgEnum('PublicationStatus', [
+  'pending_review', 'approved', 'published', 'rejected',
+]);
+export const PublicationStatus = {
+  pending_review: 'pending_review',
+  approved: 'approved',
+  published: 'published',
+  rejected: 'rejected',
+} as const;
+export type PublicationStatus = (typeof PublicationStatus)[keyof typeof PublicationStatus];

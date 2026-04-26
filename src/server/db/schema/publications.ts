@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index } from 'drizzle-orm/pg-core';
-import { publicationSourceEnum } from './enums.js';
+import { publicationSourceEnum, publicationStatusEnum } from './enums.js';
 import { tenants } from './tenants.js';
 
 export const publications = pgTable(
@@ -16,11 +16,15 @@ export const publications = pgTable(
     source: publicationSourceEnum('source').notNull().default('manual'),
     publishResults: jsonb('publish_results').notNull().default({}),
     quotes: jsonb('quotes'),
+    status: varchar('status', { length: 30 }).notNull().default('pending_review'),
+    editHistory: jsonb('edit_history').default('[]'),
+    quoteFlyerPaths: jsonb('quote_flyer_paths').default('[]'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('publications_tenant_id_idx').on(t.tenantId),
     index('publications_tenant_id_created_at_idx').on(t.tenantId, t.createdAt),
+    index('publications_tenant_id_status_idx').on(t.tenantId, t.status),
   ],
 );
 

@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   Workflow,
@@ -11,11 +12,13 @@ import {
   Newspaper,
   ChevronRight,
   Mic,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const NAV_MAIN = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
@@ -35,6 +38,14 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { user, logout } = useAuth();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  useEffect(() => {
+    fetch('/api/review?status=pending_review&limit=1', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((d) => setPendingCount(d.total || 0))
+      .catch(() => {});
+  }, []);
 
   return (
     <aside
@@ -85,6 +96,23 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   <Icon className="w-[18px] h-[18px]" />
                 </div>
                 <span className="sidebar-item-label">{label}</span>
+                {to === '/review' && pendingCount > 0 && !isActive && (
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      padding: '3px 6px',
+                      borderRadius: '9999px',
+                      background: 'rgba(245, 158, 11, 0.15)',
+                      color: '#fbbf24',
+                      border: '1px solid rgba(245, 158, 11, 0.2)',
+                      marginLeft: 'auto',
+                    }}
+                  >
+                    {pendingCount}
+                  </span>
+                )}
                 {isActive && <ChevronRight className="sidebar-item-chevron" />}
               </>
             )}

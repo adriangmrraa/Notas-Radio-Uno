@@ -25,6 +25,7 @@ import { registerBrandingRoutes } from "./routes/branding.js";
 import { registerProgramRoutes } from "./routes/programs.js";
 import { registerConductorRoutes } from "./routes/conductors.js";
 import { registerGuestRoutes } from "./routes/guests.js";
+import { registerReviewRoutes } from "./routes/review.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
@@ -193,6 +194,7 @@ registerBrandingRoutes(app);
 registerProgramRoutes(app);
 registerConductorRoutes(app);
 registerGuestRoutes(app);
+registerReviewRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
