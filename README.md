@@ -473,5 +473,5 @@ Para consultas sobre licencias comerciales: contacto@fusalabs.com
 ---
 
 <p align="center">
-  Desarrollado con ❤️ por <a href="https://github.com/adriangmrraa">Hector Adrian Arganaraz Gamarra</a> · <a href="https://github.com/adriangmrraa">Fusa Labs</a>
+  Built by <a href="https://github.com/adriangmrraa"><strong>Fusa Labs</strong></a> · Transforming how media creates content
 </p>
