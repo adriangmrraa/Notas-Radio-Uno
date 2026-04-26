@@ -8,8 +8,11 @@ import { loadTenantBranding } from "./brandingService.js";
 import { postTweetNuevoBoton } from "./twitterService.js";
 import { publishToAllMeta } from "./metaPublishService.js";
 import { isMetaConnected, createPublication, createTranscription, getSetting, getActivePipelineConfig, getAgent } from "./databaseService.js";
+import { detectAlerts } from "./alertService.js";
+import { notify } from "./notificationService.js";
 import { executeAgent } from "./agentExecutionService.js";
-import type { CustomAgent } from "../../shared/types.js";
+import { detectHighlights, generateClipVideo, createClip, updateClipVideoPath } from "./clipService.js";
+import type { CustomAgent, Utterance } from "../../shared/types.js";
 import { analyzeTopicSegments, extractSegmentText } from "./topicService.js";
 import { isDuplicateTopic, isTopicInSession } from "./deduplicationService.js";
 import { limiters } from "./rateLimiter.js";
@@ -48,6 +51,17 @@ async function getWebhookPipelineUrl(): Promise<string> {
   return (await getSetting("webhook_pipeline")) || process.env.WEBHOOK_URL_PIPELINE || "";
 }
 
+// Alert keywords: configurable per tenant via settings table
+async function getAlertKeywords(tenantId: string): Promise<string[]> {
+  try {
+    const raw = await getSetting("alert_keywords", tenantId);
+    if (!raw) return [];
+    return JSON.parse(raw) as string[];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Clase principal del pipeline autónomo.
  *
@@ -82,6 +96,9 @@ class AutoPipeline {
   private previousAnalysisContext: string;
   private lastAnalyzedChunkIndex: number;
   private consecutiveFailures: number;
+  // Clip generation: accumulated utterances and retained audio file for the last topic
+  private recentUtterances: Utterance[];
+  private lastAudioFilePath: string | null;
 
   constructor(io: Server, tenantId: string = 'default') {
     this.io = io;
@@ -121,6 +138,9 @@ class AutoPipeline {
     this.lastAnalyzedChunkIndex = 0;
     // Consecutive capture failures for exponential backoff
     this.consecutiveFailures = 0;
+    // Clip generation state
+    this.recentUtterances = [];
+    this.lastAudioFilePath = null;
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
@@ -147,6 +167,12 @@ class AutoPipeline {
     this.pendingConfirmation = [];
     this.chunksSinceLastAnalysis = 0;
     this.currentStep = "starting";
+    // Reset clip state for new session
+    this.recentUtterances = [];
+    if (this.lastAudioFilePath) {
+      try { fs.unlinkSync(this.lastAudioFilePath); } catch (_) { /* ignore */ }
+      this.lastAudioFilePath = null;
+    }
 
     const sourceType = detectSourceType(this.config.url);
     this.emit("started", {
@@ -244,7 +270,17 @@ class AutoPipeline {
         const currentFilePath = filePath;
         const currentChunkNumber = chunkNumber;
         pendingTranscription = transcribeAudio(currentFilePath).then((result): TranscriptionChunk => {
-          try { fs.unlinkSync(currentFilePath); } catch (_) { /* ignore */ }
+          // Store utterances for clip generation (accumulate, keep last 200)
+          if (result.utterances && result.utterances.length > 0) {
+            this.recentUtterances = [...this.recentUtterances, ...result.utterances].slice(-200);
+          }
+          // Keep audio file path for clip generation; old file will be cleaned after next chunk
+          const prevAudio = this.lastAudioFilePath;
+          this.lastAudioFilePath = currentFilePath;
+          // Delete the previous retained audio (only keep the most recent)
+          if (prevAudio && prevAudio !== currentFilePath) {
+            try { fs.unlinkSync(prevAudio); } catch (_) { /* ignore */ }
+          }
           return {
             text: result.text,
             diarizedText: result.diarizedText,
@@ -346,6 +382,12 @@ class AutoPipeline {
       timestamp: result.timestamp,
       bufferSize: this.chunks.length,
       totalMinutes: Math.round((this.chunks.length * this.config.segmentDuration) / 60),
+    });
+
+    // ── Detección de alertas en tiempo real ───────────────────────────────
+    // Se ejecuta en background sin bloquear la captura
+    this.detectAndEmitAlerts(result.text).catch((err: Error) => {
+      console.warn("[Pipeline] Alert detection error:", err.message);
     });
 
     // Periodic stats every 10 chunks
@@ -875,6 +917,66 @@ class AutoPipeline {
     // Run custom agents after flyer creation
     pipelineContext = { ...pipelineContext, flyerPath, imagePath: flyerPath };
     pipelineContext = await this.runAgentsAfterStep("generate_flyer", pipelineContext);
+
+    // --- AUTO-CLIPS VERTICALES ---
+    // Solo si AssemblyAI fue usado (utterances disponibles) y hay audio reciente
+    if (this.recentUtterances.length > 0 && this.lastAudioFilePath && fs.existsSync(this.lastAudioFilePath)) {
+      try {
+        const branding = await loadTenantBranding(this.tenantId);
+        const highlights = await detectHighlights(transcriptionForNote, this.recentUtterances);
+        this.emit("detail", {
+          step: "creating_flyer", sub: "clips_detected",
+          message: `${highlights.length} clip(s) detectado(s) en el segmento`,
+          icon: "film",
+        });
+
+        for (const highlight of highlights.slice(0, 2)) {
+          try {
+            this.emit("detail", {
+              step: "creating_flyer", sub: "clip_generating",
+              message: `Generando clip: "${highlight.hookText.slice(0, 60)}..."`,
+              icon: "film",
+            });
+
+            // Create placeholder DB entry first (status: generating)
+            const clip = await createClip({
+              tenantId: this.tenantId,
+              programId: this.config.programId ?? null,
+              title: highlight.hookText,
+              hookText: highlight.hookText,
+              duration: Math.round((highlight.endMs - highlight.startMs) / 1000),
+              status: 'generating',
+              metadata: {
+                reason: highlight.reason,
+                startMs: highlight.startMs,
+                endMs: highlight.endMs,
+                speakerCount: new Set(this.recentUtterances.map(u => u.speaker)).size,
+              },
+            });
+
+            const videoPath = await generateClipVideo(
+              highlight,
+              this.lastAudioFilePath!,
+              this.recentUtterances,
+              branding,
+            );
+
+            // Update clip with video path and set to pending_review
+            await updateClipVideoPath(clip.id, this.tenantId, videoPath);
+
+            this.emit('clip_generated', {
+              hookText: highlight.hookText,
+              duration: Math.round((highlight.endMs - highlight.startMs) / 1000),
+              clipId: clip.id,
+            });
+          } catch (clipErr) {
+            console.error('[Pipeline] Error generando clip individual:', (clipErr as Error).message);
+          }
+        }
+      } catch (clipsErr) {
+        console.error('[Pipeline] Clip generation failed (no bloquea):', (clipsErr as Error).message);
+      }
+    }
 
     // --- QUOTE FLYERS ---
     const quoteFlyerPaths: string[] = [];
@@ -1674,6 +1776,12 @@ class AutoPipeline {
     if (this.captureTimeout) {
       clearTimeout(this.captureTimeout);
     }
+    // Clean up retained audio file
+    if (this.lastAudioFilePath) {
+      try { fs.unlinkSync(this.lastAudioFilePath); } catch (_) { /* ignore */ }
+      this.lastAudioFilePath = null;
+    }
+    this.recentUtterances = [];
     const totalMinutes = Math.round((this.chunks.length * this.config.segmentDuration) / 60);
     this.emit("stopped", {
       totalPublished: this.publishedNotes.length,
@@ -1697,6 +1805,55 @@ class AutoPipeline {
       totalPublished: this.publishedNotes.length,
       publishedNotes: this.publishedNotes.slice(-10),
     };
+  }
+
+  /**
+   * Detecta alertas en tiempo real en el texto de un chunk transcripto.
+   * Se ejecuta en background (fire-and-forget) — nunca bloquea la captura.
+   */
+  private async detectAndEmitAlerts(text: string): Promise<void> {
+    const speakerContext = await this.loadSpeakerContext().catch(() => null);
+    const keywords = await getAlertKeywords(this.tenantId);
+    const alerts = await detectAlerts(text, keywords, speakerContext);
+
+    for (const alert of alerts) {
+      // Persistir en notifications table
+      await notify({
+        tenantId: this.tenantId,
+        type: `alert_${alert.type}`,
+        title: alert.title,
+        message: alert.excerpt,
+        icon: this.alertIcon(alert.type),
+        metadata: {
+          severity: alert.severity,
+          context: alert.context,
+          speaker: alert.speaker,
+          matchedKeyword: alert.matchedKeyword,
+          alertType: alert.type,
+        },
+      }).catch((err: Error) => {
+        console.warn("[Pipeline] Error saving alert notification:", err.message);
+      });
+
+      // Emitir por socket al tenant room
+      this.io.to(`tenant:${this.tenantId}`).emit("live_alert", alert);
+
+      // También como pipeline-update para que el feed de actividad lo reciba
+      this.emit("alert", {
+        ...alert,
+      });
+    }
+  }
+
+  private alertIcon(type: string): string {
+    const icons: Record<string, string> = {
+      breaking_news: "🔴",
+      strong_statement: "⚡",
+      key_data: "📊",
+      emotional_peak: "🔥",
+      keyword: "🏷️",
+    };
+    return icons[type] || "🔔";
   }
 
   private cleanupOldFiles(): void {

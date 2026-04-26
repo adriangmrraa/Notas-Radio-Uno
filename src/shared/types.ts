@@ -93,6 +93,9 @@ export interface TranscriptionChunk {
   text: string;
   timestamp: string;
   chunkNumber: number;
+  diarizedText?: string;
+  speakerCount?: number;
+  provider?: string;
 }
 
 // Topic Analysis
@@ -378,6 +381,41 @@ export interface DossierContent {
   relatedTopics: string[];
   talkingPoints: string[];
 }
+
+// Clips — Auto-Clips Verticales con Subtítulos
+export interface ClipCandidate {
+  startMs: number;
+  endMs: number;
+  hookText: string;
+  reason: string;
+}
+
+export interface Clip {
+  id: string;
+  tenantId: string;
+  publicationId: string | null;
+  programId: string | null;
+  title: string;
+  hookText: string;
+  videoPath: string | null;
+  duration: number;
+  status: 'generating' | 'ready' | 'pending_review' | 'published' | 'error';
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+// Live Alert — Detección de momentos relevantes en transmisiones en vivo
+export interface LiveAlert {
+  type: 'breaking_news' | 'strong_statement' | 'key_data' | 'emotional_peak' | 'keyword';
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  excerpt: string;
+  context: string;
+  speaker?: string;
+  matchedKeyword?: string;
+  timestamp: string;
+}
+
 
 // Guest
 export interface Guest {

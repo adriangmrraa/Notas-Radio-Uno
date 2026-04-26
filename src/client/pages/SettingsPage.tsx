@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff } from 'lucide-react';
+import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff, Bell } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
+import { AlertKeywordsSettings } from '../components/alerts/AlertKeywordsSettings';
 
 interface BrandingData {
     platformName: string;
@@ -41,7 +42,7 @@ const DEFAULT_TEMPLATES: TemplateOption[] = [
 export function SettingsPage() {
     const { fetchApi } = useApi();
     const { user } = useAuth();
-    const [activeTab, setActiveTab] = useState<'general' | 'webhooks' | 'apikeys' | 'team' | 'branding'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'webhooks' | 'apikeys' | 'team' | 'branding' | 'alertas'>('general');
     const [webhooks, setWebhooks] = useState({ webhook_pipeline: '', webhook_nuevo_boton: '', webhook_viejo_boton: '', webhook_tercer_boton: '' });
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -156,6 +157,7 @@ export function SettingsPage() {
         { key: 'general' as const, label: 'General', icon: Building2 },
         { key: 'branding' as const, label: 'Marca', icon: Palette },
         { key: 'webhooks' as const, label: 'Webhooks', icon: Webhook },
+        { key: 'alertas' as const, label: 'Alertas', icon: Bell },
         { key: 'apikeys' as const, label: 'API Keys', icon: Key },
         { key: 'team' as const, label: 'Equipo', icon: Users },
     ];
@@ -369,6 +371,51 @@ export function SettingsPage() {
                             {saved ? <CheckCircle className="w-4 h-4" /> : <Save className="w-4 h-4" />}
                             {saved ? 'Guardado!' : saving ? 'Guardando...' : 'Guardar Webhooks'}
                         </button>
+                    </div>
+                )}
+
+                {/* Alertas */}
+                {activeTab === 'alertas' && (
+                    <div className="space-y-6">
+                        <div className="glass-card-static p-6">
+                            <h3 className="text-sm font-semibold text-white/70 mb-1 flex items-center gap-2">
+                                <Bell className="w-4 h-4 text-amber-400" />
+                                Keywords para alertas en vivo
+                            </h3>
+                            <p className="text-xs text-white/30 mb-5">
+                                Cuando el pipeline detecte estas palabras en la transmisión, se dispara una alerta instantánea sin esperar el análisis de IA.
+                            </p>
+                            <AlertKeywordsSettings />
+                        </div>
+
+                        <div className="glass-card-static p-6">
+                            <h3 className="text-sm font-semibold text-white/70 mb-2 flex items-center gap-2">
+                                <Bell className="w-4 h-4 text-cyan-400" />
+                                Detección automática con IA
+                            </h3>
+                            <p className="text-xs text-white/30 leading-relaxed">
+                                Además de los keywords, el pipeline analiza cada fragmento con Gemini para detectar automáticamente:
+                            </p>
+                            <ul className="mt-3 space-y-2">
+                                {[
+                                    { icon: '🔴', label: 'Breaking news', desc: 'Noticias de último momento' },
+                                    { icon: '⚡', label: 'Declaraciones fuertes', desc: 'Afirmaciones controversiales o polémicas' },
+                                    { icon: '📊', label: 'Datos verificables', desc: 'Cifras, estadísticas, hechos concretos' },
+                                    { icon: '🔥', label: 'Picos emocionales', desc: 'Tensión, humor, controversia en la transmisión' },
+                                ].map(item => (
+                                    <li key={item.label} className="flex items-start gap-3">
+                                        <span className="text-base leading-none mt-0.5">{item.icon}</span>
+                                        <div>
+                                            <p className="text-xs font-semibold text-white/60">{item.label}</p>
+                                            <p className="text-xs text-white/25">{item.desc}</p>
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                            <p className="text-xs text-white/20 mt-4">
+                                Requiere <span className="font-mono text-cyan-400/50">GEMINI_API_KEY</span> configurado en el servidor.
+                            </p>
+                        </div>
                     </div>
                 )}
 

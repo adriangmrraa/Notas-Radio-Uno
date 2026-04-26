@@ -13,12 +13,14 @@ import {
   ChevronRight,
   Mic,
   ClipboardCheck,
+  Film,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const NAV_MAIN = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
+  { to: '/clips', icon: Film, label: 'Clips' },
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },

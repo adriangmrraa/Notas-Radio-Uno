@@ -16,6 +16,7 @@ export * from './programs.js';
 export * from './conductors.js';
 export * from './guests.js';
 export * from './dossiers.js';
+export * from './clips.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -31,6 +32,7 @@ import { programs, programUrls } from './programs.js';
 import { conductors, conductorPhotos } from './conductors.js';
 import { guests, guestPhotos } from './guests.js';
 import { guestDossiers } from './dossiers.js';
+import { clips } from './clips.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -58,6 +60,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   conductors: many(conductors),
   guests: many(guests),
   guestDossiers: many(guestDossiers),
+  clips: many(clips),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -205,4 +208,9 @@ export const guestDossiersRelations = relations(guestDossiers, ({ one }) => ({
   guest: one(guests, { fields: [guestDossiers.guestId], references: [guests.id] }),
   tenant: one(tenants, { fields: [guestDossiers.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [guestDossiers.programId], references: [programs.id] }),
+}));
+
+// ── clips relations ───────────────────────────────────────────────────────────
+export const clipsRelations = relations(clips, ({ one }) => ({
+  tenant: one(tenants, { fields: [clips.tenantId], references: [tenants.id] }),
 }));

@@ -26,6 +26,8 @@ import { registerProgramRoutes } from "./routes/programs.js";
 import { registerConductorRoutes } from "./routes/conductors.js";
 import { registerGuestRoutes } from "./routes/guests.js";
 import { registerReviewRoutes } from "./routes/review.js";
+import { registerAlertRoutes } from "./routes/alerts.js";
+import { registerClipRoutes } from "./routes/clips.js";
 import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
@@ -197,6 +199,8 @@ registerProgramRoutes(app);
 registerConductorRoutes(app);
 registerGuestRoutes(app);
 registerReviewRoutes(app);
+registerAlertRoutes(app);
+registerClipRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown

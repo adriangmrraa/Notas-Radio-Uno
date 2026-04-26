@@ -12,12 +12,17 @@ import {
   ArrowRight,
   Sparkles,
   Activity,
+  AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import App from '../App';
+import { useLiveAlerts } from '../hooks/useLiveAlerts';
+import { LiveAlertToast } from '../components/alerts/LiveAlertToast';
+import { LiveAlertFeed } from '../components/alerts/LiveAlertFeed';
 
 export function Dashboard() {
   const { user } = useAuth();
+  const { alerts, toasts, dismissToast } = useLiveAlerts();
 
   const greeting = () => {
     const h = new Date().getHours();
@@ -31,6 +36,8 @@ export function Dashboard() {
   const trialDays = user?.subscription?.trialDaysRemaining;
 
   return (
+    <>
+    <LiveAlertToast toasts={toasts} onDismiss={dismissToast} />
     <div className="p-4 md:p-8 lg:p-10 space-y-6 md:space-y-8 max-w-[1440px] mx-auto">
       {/* Welcome */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 animate-fade-up">
@@ -93,7 +100,29 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Alertas en Vivo */}
+      <div className="animate-fade-up" style={{ animationDelay: '350ms' }}>
+        <div className="flex items-center gap-5 mb-6">
+          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+          <div className="flex items-center gap-2.5 px-5 py-2 rounded-full bg-white/[0.02] border border-white/[0.05]">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Alertas en Vivo</span>
+            {alerts.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[10px] font-semibold border border-amber-500/30">
+                {alerts.length}
+              </span>
+            )}
+          </div>
+          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+        </div>
+
+        <div className="glass-card-static p-5 rounded-2xl">
+          <LiveAlertFeed alerts={alerts} />
+        </div>
+      </div>
     </div>
+    </>
   );
 }
 
