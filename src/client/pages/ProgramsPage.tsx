@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Pencil, Trash2, Mic, Users, Link2, Star, X, ChevronDown, Calendar, FileSearch, RefreshCw, Copy, Check, AlertTriangle, BookOpen, Lightbulb, MessageSquare, Tag, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Trash2, Mic, Users, Link2, Star, X, ChevronDown, Calendar, FileSearch, RefreshCw, Copy, Check, AlertTriangle, BookOpen, Lightbulb, MessageSquare, Tag, ChevronRight, ExternalLink, Globe } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -15,6 +15,8 @@ interface Program {
     name: string;
     description?: string;
     schedule?: string;
+    slug?: string;
+    isPublic?: boolean;
     urls?: ProgramUrl[];
     conductorCount?: number;
 }
@@ -119,6 +121,18 @@ interface ProgramDialogProps {
     onSaved: () => void;
 }
 
+function slugify(text: string): string {
+    return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s-]/g, '')
+        .trim()
+        .replace(/[\s]+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 100);
+}
+
 function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
     const { fetchApi } = useApi();
     const isEdit = !!program?.id;
@@ -126,11 +140,35 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
     const [name, setName] = useState(program?.name ?? '');
     const [description, setDescription] = useState(program?.description ?? '');
     const [schedule, setSchedule] = useState(program?.schedule ?? '');
+    const [slug, setSlug] = useState(program?.slug ?? '');
+    const [isPublic, setIsPublic] = useState(program?.isPublic ?? false);
+    const [slugManuallyEdited, setSlugManuallyEdited] = useState(!!program?.slug);
     const [urls, setUrls] = useState<ProgramUrl[]>(program?.urls ?? []);
     const [newUrlType, setNewUrlType] = useState('youtube');
     const [newUrlValue, setNewUrlValue] = useState('');
+    const [copied, setCopied] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+
+    const publicUrl = typeof window !== 'undefined' ? `${window.location.origin}/p/${slug}` : `/p/${slug}`;
+
+    const handleNameChange = (val: string) => {
+        setName(val);
+        if (!slugManuallyEdited) {
+            setSlug(slugify(val));
+        }
+    };
+
+    const handleSlugChange = (val: string) => {
+        setSlug(slugify(val));
+        setSlugManuallyEdited(true);
+    };
+
+    const copyPublicUrl = () => {
+        navigator.clipboard.writeText(publicUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+    };
 
     const addUrl = () => {
         if (!newUrlValue.trim()) return;
@@ -147,7 +185,7 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
         setSaving(true);
         setError('');
         try {
-            const body = { name: name.trim(), description, schedule, urls };
+            const body = { name: name.trim(), description, schedule, slug: slug || undefined, isPublic, urls };
             if (isEdit) {
                 await fetchApi(`/programs/${program!.id}`, { method: 'PUT', body });
             } else {
@@ -180,7 +218,7 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
                         <input
                             type="text"
                             value={name}
-                            onChange={(e) => setName(e.target.value)}
+                            onChange={(e) => handleNameChange(e.target.value)}
                             className="input-premium"
                             placeholder="Ej: Informativo de la Mañana"
                             autoFocus
@@ -207,6 +245,82 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
                             className="input-premium"
                             placeholder="Ej: Lunes a Viernes 9-12hs"
                         />
+                    </div>
+
+                    {/* ── Página pública ── */}
+                    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3">
+                            <div className="flex items-center gap-2.5">
+                                <Globe className="w-4 h-4 text-cyan-400/70" />
+                                <div>
+                                    <p className="text-sm font-medium text-white/80">Página pública</p>
+                                    <p className="text-xs text-white/35 mt-0.5">Habilita una landing accesible sin login</p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsPublic(!isPublic)}
+                                className={`relative inline-flex w-10 h-5.5 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                                    isPublic ? 'bg-cyan-400' : 'bg-white/15'
+                                }`}
+                                style={{ height: '22px', width: '40px' }}
+                            >
+                                <span
+                                    className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow transition-transform duration-200 ${
+                                        isPublic ? 'translate-x-[19px]' : 'translate-x-0.5'
+                                    }`}
+                                    style={{ height: '18px', width: '18px', top: '2px', left: '2px' }}
+                                />
+                            </button>
+                        </div>
+
+                        {isPublic && (
+                            <div className="border-t border-white/[0.06] px-4 py-3 space-y-3">
+                                <div>
+                                    <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-1.5 block">
+                                        Slug (URL)
+                                    </label>
+                                    <div className="flex items-center gap-2 rounded-xl bg-white/[0.03] border border-white/[0.08] px-3 py-2.5">
+                                        <span className="text-xs text-white/30 shrink-0">/p/</span>
+                                        <input
+                                            type="text"
+                                            value={slug}
+                                            onChange={(e) => handleSlugChange(e.target.value)}
+                                            className="flex-1 bg-transparent text-sm text-white/70 outline-none placeholder:text-white/20"
+                                            placeholder="nombre-del-programa"
+                                        />
+                                    </div>
+                                </div>
+
+                                {slug && (
+                                    <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-cyan-400/[0.05] border border-cyan-400/20">
+                                        <span className="text-xs text-cyan-300/60 flex-1 truncate">{publicUrl}</span>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            <button
+                                                type="button"
+                                                onClick={copyPublicUrl}
+                                                className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
+                                                title="Copiar URL"
+                                            >
+                                                {copied
+                                                    ? <Check className="w-3 h-3 text-green-400" />
+                                                    : <Copy className="w-3 h-3 text-white/40" />
+                                                }
+                                            </button>
+                                            <a
+                                                href={publicUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
+                                                title="Abrir página pública"
+                                            >
+                                                <ExternalLink className="w-3 h-3 text-white/40" />
+                                            </a>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     <div>
@@ -1365,7 +1479,13 @@ export function ProgramsPage() {
                                             {program.schedule && (
                                                 <p className="text-xs text-white/40 mt-0.5">{program.schedule}</p>
                                             )}
-                                            <div className="flex items-center gap-2 mt-2">
+                                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                                {program.isPublic && (
+                                                    <span className="badge badge-info" style={{ background: 'rgba(34,211,238,0.08)', borderColor: 'rgba(34,211,238,0.2)', color: 'rgba(34,211,238,0.8)' }}>
+                                                        <Globe className="w-2.5 h-2.5 mr-1" />
+                                                        Público
+                                                    </span>
+                                                )}
                                                 {(program.urls?.length ?? 0) > 0 && (
                                                     <span className="badge badge-info">
                                                         <Link2 className="w-2.5 h-2.5 mr-1" />
@@ -1381,6 +1501,17 @@ export function ProgramsPage() {
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                            {program.isPublic && program.slug && (
+                                                <a
+                                                    href={`/p/${program.slug}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="w-8 h-8 rounded-lg bg-cyan-400/[0.06] hover:bg-cyan-400/[0.12] flex items-center justify-center transition-colors text-cyan-400/60 hover:text-cyan-400"
+                                                    title="Ver página pública"
+                                                >
+                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                </a>
+                                            )}
                                             <button
                                                 onClick={() => setProgramDialog({ open: true, program })}
                                                 className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"

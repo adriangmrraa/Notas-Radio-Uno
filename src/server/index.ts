@@ -28,6 +28,8 @@ import { registerGuestRoutes } from "./routes/guests.js";
 import { registerReviewRoutes } from "./routes/review.js";
 import { registerAlertRoutes } from "./routes/alerts.js";
 import { registerClipRoutes } from "./routes/clips.js";
+import { registerPublicRoutes } from "./routes/public.js";
+import { registerPublicPageRoutes } from "./routes/publicPages.js";
 import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
@@ -145,6 +147,12 @@ app.use("/output", express.static(OUTPUT_DIR));
 
 // Serve /fonts for font files
 app.use("/fonts", express.static(path.join(PROJECT_ROOT, "fonts")));
+
+// ---------------------------------------------------------------------------
+// Public routes (NO auth) — must be registered BEFORE auth-protected routes
+// ---------------------------------------------------------------------------
+registerPublicRoutes(app);
+registerPublicPageRoutes(app);
 
 // ---------------------------------------------------------------------------
 // Health check endpoint

@@ -8,6 +8,43 @@ import { conductors } from "../db/schema/conductors.js";
 import type { PlatformType } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
+// Slug generation
+// ---------------------------------------------------------------------------
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/[\s]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 100);
+}
+
+async function ensureUniqueSlug(base: string, excludeId?: string): Promise<string> {
+  let candidate = base;
+  let attempt = 0;
+
+  while (true) {
+    const query = db
+      .select({ id: programs.id })
+      .from(programs)
+      .where(eq(programs.slug, candidate))
+      .limit(1);
+
+    const [existing] = await query;
+
+    if (!existing || (excludeId && existing.id === excludeId)) {
+      return candidate;
+    }
+
+    attempt++;
+    candidate = `${base}-${attempt}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 function isValidUrl(str: string): boolean {
@@ -95,10 +132,12 @@ export function registerProgramRoutes(app: Express): void {
   app.post("/api/programs", requireAuth, async (req: Request, res: Response) => {
     try {
       const tenantId = req.auth!.tenantId;
-      const { name, description, schedule, urls } = req.body as {
+      const { name, description, schedule, slug: rawSlug, isPublic, urls } = req.body as {
         name?: string;
         description?: string;
         schedule?: string;
+        slug?: string;
+        isPublic?: boolean;
         urls?: Array<{ type: string; url: string; label?: string }>;
       };
 
@@ -123,6 +162,10 @@ export function registerProgramRoutes(app: Express): void {
         }
       }
 
+      // Generate slug from name if not provided
+      const slugBase = rawSlug ? slugify(rawSlug) : slugify(name.trim());
+      const finalSlug = await ensureUniqueSlug(slugBase);
+
       // Transaction: insert program + urls atomically
       const result = await db.transaction(async (tx) => {
         const [newProgram] = await tx
@@ -132,6 +175,8 @@ export function registerProgramRoutes(app: Express): void {
             name: name.trim(),
             description: description ?? null,
             schedule: schedule ?? null,
+            slug: finalSlug,
+            isPublic: isPublic ?? false,
           })
           .returning();
 
@@ -188,10 +233,12 @@ export function registerProgramRoutes(app: Express): void {
     try {
       const tenantId = req.auth!.tenantId;
       const { id } = req.params;
-      const { name, description, schedule, isActive, urls } = req.body as {
+      const { name, description, schedule, slug: rawSlug, isPublic, isActive, urls } = req.body as {
         name?: string;
         description?: string;
         schedule?: string;
+        slug?: string;
+        isPublic?: boolean;
         isActive?: boolean;
         urls?: Array<{ type: string; url: string; label?: string }>;
       };
@@ -229,6 +276,11 @@ export function registerProgramRoutes(app: Express): void {
       if (description !== undefined) updateData.description = description;
       if (schedule !== undefined) updateData.schedule = schedule;
       if (isActive !== undefined) updateData.isActive = isActive;
+      if (isPublic !== undefined) updateData.isPublic = isPublic;
+      if (rawSlug !== undefined) {
+        const slugBase = slugify(rawSlug);
+        updateData.slug = await ensureUniqueSlug(slugBase, id);
+      }
 
       const result = await db.transaction(async (tx) => {
         const [updated] = await tx

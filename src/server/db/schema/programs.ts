@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, boolean, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, timestamp, index, unique } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants.js';
 
 export const programUrlTypeValues = ['youtube', 'facebook', 'kick', 'twitch', 'radio_stream', 'website', 'other'] as const;
@@ -13,12 +13,16 @@ export const programs = pgTable(
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
     schedule: varchar('schedule', { length: 255 }),
+    slug: varchar('slug', { length: 100 }),
+    isPublic: boolean('is_public').notNull().default(false),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),
   },
   (t) => [
     index('programs_tenant_id_idx').on(t.tenantId),
+    index('programs_slug_idx').on(t.slug),
+    unique('programs_slug_unique').on(t.slug),
   ],
 );
 
