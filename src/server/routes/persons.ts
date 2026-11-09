@@ -18,6 +18,8 @@ const VALID_ROLES: readonly string[] = personRoleEnum.enumValues;
 const MAX_PHOTOS_PER_PERSON = 5;
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
+const MAX_NAME_LENGTH = 255;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
 // Multer — memory storage, 5MB, PNG/JPEG only (field name: "file")
@@ -90,7 +92,10 @@ async function fetchPersonPrograms(personIds: string[], tenantId: string) {
       programName: programs.name,
     })
     .from(personProgram)
-    .innerJoin(programs, eq(personProgram.programId, programs.id))
+    .innerJoin(
+      programs,
+      and(eq(personProgram.programId, programs.id), eq(programs.tenantId, tenantId)),
+    )
     .where(
       and(
         eq(personProgram.tenantId, tenantId),
@@ -286,8 +291,14 @@ personsRouter.post("/", requireAuth, async (req: Request, res: Response) => {
       roleOnProgram?: Record<string, string>;
     };
 
-    if (!name || name.trim() === "") {
+    if (typeof name !== "string" || name.trim() === "") {
       res.status(400).json({ error: "El nombre de la persona es requerido" });
+      return;
+    }
+    if (name.trim().length > MAX_NAME_LENGTH) {
+      res.status(400).json({
+        error: `El nombre no puede superar los ${MAX_NAME_LENGTH} caracteres`,
+      });
       return;
     }
 
@@ -306,8 +317,12 @@ personsRouter.post("/", requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
-    if (programIds !== undefined && !Array.isArray(programIds)) {
-      res.status(400).json({ error: "programIds debe ser un array de ids" });
+    if (
+      programIds !== undefined &&
+      (!Array.isArray(programIds) ||
+        programIds.some((pid) => typeof pid !== "string" || !UUID_RE.test(pid)))
+    ) {
+      res.status(400).json({ error: "programIds debe ser un array de ids (UUID)" });
       return;
     }
 
@@ -399,8 +414,14 @@ personsRouter.patch("/:id", requireAuth, async (req: Request, res: Response) => 
       return;
     }
 
-    if (name !== undefined && name.trim() === "") {
+    if (name !== undefined && (typeof name !== "string" || name.trim() === "")) {
       res.status(400).json({ error: "El nombre no puede quedar vacío" });
+      return;
+    }
+    if (name !== undefined && name.trim().length > MAX_NAME_LENGTH) {
+      res.status(400).json({
+        error: `El nombre no puede superar los ${MAX_NAME_LENGTH} caracteres`,
+      });
       return;
     }
 
@@ -419,8 +440,12 @@ personsRouter.patch("/:id", requireAuth, async (req: Request, res: Response) => 
       return;
     }
 
-    if (programIds !== undefined && !Array.isArray(programIds)) {
-      res.status(400).json({ error: "programIds debe ser un array de ids" });
+    if (
+      programIds !== undefined &&
+      (!Array.isArray(programIds) ||
+        programIds.some((pid) => typeof pid !== "string" || !UUID_RE.test(pid)))
+    ) {
+      res.status(400).json({ error: "programIds debe ser un array de ids (UUID)" });
       return;
     }
 
@@ -632,7 +657,13 @@ personsRouter.post(
 
       // Se guarda el archivo original (máxima calidad para el pipeline de
       // rostros de PC-04); sharp sólo se usa para leer metadata.
-      const metadata = await sharp(req.file.buffer).metadata();
+      let metadata: sharp.Metadata;
+      try {
+        metadata = await sharp(req.file.buffer).metadata();
+      } catch {
+        res.status(400).json({ error: "El archivo no es una imagen válida" });
+        return;
+      }
 
       const [newPhoto] = await db
         .insert(personPhotos)
@@ -695,7 +726,7 @@ personsRouter.get(
       }
 
       res.setHeader("Content-Type", photo.mimeType);
-      res.setHeader("Cache-Control", "public, max-age=300");
+      res.setHeader("Cache-Control", "private, no-store");
       res.send(Buffer.from(photo.photoData));
     } catch (error) {
       console.error("[Persons] Error al servir foto:", error);
