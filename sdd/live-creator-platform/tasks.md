@@ -1,6 +1,6 @@
 # Tasks: live-creator-platform — PeriodistApp, plataforma de canales en vivo
 
-Breakdown de implementación derivado de `design.md` + `design/schema.md` + `design/flows.md` + 21 specs + `docs/PRODUCT-VISION.md`. Orden = dependencia real (NO por épica): bugs de prod primero → gates → migraciones en orden 0004→0009 → servicios fundacionales → T1 core → T2 SaaS → T3 publicación → cliente → ops.
+Breakdown de implementacion derivado de `design.md` + `design/schema.md` + `design/flows.md` + 23 specs + `docs/PRODUCT-VISION.md`. El orden de producto es PA, PB, PC, PD, PE, PF, PG, PH, PI; estas fases solo expresan dependencias tecnicas y adelantan habilitadores sin superficie de otra epica.
 
 ## Review Workload Forecast
 
@@ -53,27 +53,27 @@ Chain strategy: pending
 
 ## Fase 0 — Quick wins prod + gates (specs: `bug-fixes`, `scheduler-fix`)
 
-- [ ] **T-01 · Fix webhook Stripe: raw body antes de express.json()** — `bug-fixes` · S · deps: — · épicas: PB-04
+- [x] **T-01 · Fix webhook Stripe: raw body antes de express.json()** — `bug-fixes` · S · deps: — · épicas: PB-04
   Files: `src/server/routes/billing.ts`, `src/server/index.ts`
   Pasos: montar router webhook con `express.raw()` en `/api/billing/webhook/stripe` antes del `express.json()` global; `constructEvent(rawBody, sig)`; firma inválida → 400 sin mutar.
   ✔ `tsc` verde + `stripe listen`/`stripe trigger invoice.paid` procesa; firma alterada → 400.
 
-- [ ] **T-02 · Endurecer webhook MercadoPago** — `bug-fixes` · S · deps: — · épicas: PB-04
+- [x] **T-02 · Endurecer webhook MercadoPago** — `bug-fixes` · S · deps: — · épicas: PB-04
   Files: `src/server/routes/billing.ts`
   Pasos: verificar `x-signature`/`x-request-id` si `MP_WEBHOOK_SECRET` set; SIEMPRE re-fetch `preApproval.get`/`payment.get` antes de mutar suscripción.
   ✔ `tsc` verde + POST forjado sin re-fetch válido no muta estado.
 
-- [ ] **T-03 · tenantId obligatorio en setSetting/getSetting** — `bug-fixes` · M · deps: — · épicas: deuda §8 / PA-12
+- [x] **T-03 · tenantId obligatorio en setSetting/getSetting** — `bug-fixes` · M · deps: — · épicas: deuda §8 / PA-12
   Files: `src/server/services/databaseService.ts`, `src/server/routes/settings.ts`, `src/server/services/publishService.ts` (+demás llamadores)
   Pasos: `getSetting/setSetting/getSettingsByPrefix/deleteSetting` exigen `tenantId`; nuevo `getGlobalSetting` explícito para claves de plataforma; migrar todos los llamadores a `req.auth.tenantId`.
   ✔ `tsc` strict falla si falta tenantId; guardar `webhook_pipeline` en 2 tenants → filas separadas.
 
-- [ ] **T-04 · Eliminar restos de Prisma** — `bug-fixes` · S · deps: — · épicas: deuda §8
+- [x] **T-04 · Eliminar restos de Prisma** — `bug-fixes` · S · deps: — · épicas: deuda §8
   Files: `prisma.config.ts`, `prisma-temp-sqlite.prisma`, refs en docs de setup
   Pasos: borrar archivos; `rg -i prisma` en docs activos → actualizar a Drizzle.
   ✔ `tsc`/`vite build` verdes; `rg prisma` raíz sin hits en código/setup.
 
-- [ ] **T-05 · Scheduler: disparo en job.timezone** — `scheduler-fix` (parcial: cuota en T-33) · M · deps: — · épicas: PD-03
+- [x] **T-05 · Scheduler: disparo en job.timezone** — `scheduler-fix` (parcial: cuota en T-33) · M · deps: — · épicas: PD-03
   Files: `src/server/services/jobSchedulerService.ts`, `src/server/routes/jobs.ts`
   Pasos: comparar día/`startTime`/dedup vía `Intl.DateTimeFormat(job.timezone)` (dedup por jobLocalDate de `lastRunAt`); POST/PUT aceptan+validan `timezone` IANA y `programId`.
   ✔ `tsc` + job 10:00 `America/Argentina/Buenos_Aires` con server UTC dispara 13:00 UTC y no a las 10:00 UTC; sin doble dispatch.
@@ -383,15 +383,15 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
 
 | Épica | Items | Tareas |
 |-------|-------|--------|
-| PA fundación+admin | PA-01…PA-12 | T-03, T-10, T-13, T-16, T-17, T-37, T-38, T-42, T-53, T-57 (+PA-12 hardening parcial: T-01/T-02/T-03) |
-| PB billing | PB-01…PB-09 | T-01, T-02, T-05, T-10, T-15, T-33, T-39, T-40, T-41, T-43, T-44, T-53 |
-| PC contexto canal | PC-01…PC-10 | T-08, T-09, T-12, T-23, T-24, T-27, T-28, T-29, T-34, T-51, T-52, T-54, T-55, T-58 |
+| PA fundación+admin | PA-01…PA-12 | T-03, T-10, T-13, T-16, T-17, T-37, T-38, T-42, T-53, T-57, T-64 (+PA-12: T-01/T-02/T-03/T-64) |
+| PB billing | PB-01…PB-09 | T-01, T-02, T-05, T-10, T-15, T-33, T-39, T-40, T-41, T-43, T-44, T-53, T-65 |
+| PC contexto canal | PC-01…PC-10 | T-08, T-09, T-12, T-23, T-24, T-27, T-28, T-29, T-34, T-51, T-52, T-54, T-55, T-58, T-66 |
 | PD ingesta+sched | PD-01…PD-07 | T-05, T-20, T-21, T-22, T-33, T-34, T-35, T-36, T-55 |
-| PE motor análisis | PE-01…PE-07 | T-06, T-23, T-25, T-26, T-30 (PE-01 provider registry queda en T-50 + promptBuilder como capa) |
-| PF fábrica contenido | PF-01…PF-10 | T-11, T-12, T-31, T-32, T-45, T-50, T-52 |
+| PE motor análisis | PE-01…PE-07 | T-06, T-23, T-25, T-26, T-30, T-63 |
+| PF fábrica contenido | PF-01…PF-10 | T-11, T-12, T-31, T-32, T-45, T-50, T-52, T-67 |
 | PG bandeja+Zernio | PG-01…PG-07 | T-07, T-11, T-45, T-46, T-47, T-48, T-49, T-56, T-58 |
-| PH UX | PH-01…PH-07 | T-55, T-59, T-60 |
-| PI robustez | PI-01…PI-07 | T-10, T-14, T-18, T-19, T-20, T-36, T-42, T-61, T-62 |
+| PH UX | PH-01…PH-07 | T-55, T-59, T-60 (spec `platform-ux`) |
+| PI robustez | PI-01…PI-07 | T-10, T-14, T-18, T-19, T-20, T-36, T-42, T-61, T-62, T-68 |
 
 ## Verificación global del cambio (al cierre)
 
@@ -399,3 +399,35 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
 - [ ] Cero queries nuevas sin `tenant_id` (grep de handlers nuevos)
 - [ ] Criterios de aceptación del proposal verificados en staging/piloto
 - [ ] Flags `tenant_features` pueden apagar cada superficie nueva (rollback)
+
+## Tareas agregadas por auditoria (cobertura de tickets sin implementacion explicita)
+
+- [ ] **T-63 - analysisProviderRegistry y contratos de analisis** - `analysis-provider-registry` - M - deps: T-18, T-21 - epicas: PE-01
+  Files: `src/server/services/analysisProviderRegistry.ts`, adaptadores de transcripcion/analisis/imagen, configuracion validada.
+  Pasos: definir interfaz tipada por capacidad (`transcription`, `video_analysis`, `image_generation`), seleccion por tenant/proceso con allowlist y fallback explicito; instrumentar costo/latencia/error por proveedor; migrar el pipeline para consumir el registry antes de integrar el modelo multimodal.
+  Verification: test unitario de seleccion/fallback + `tsc`; un proveedor caido produce fallback o error clasificado, nunca cambia proveedor silenciosamente.
+
+- [ ] **T-64 - Hardening HTTP y secretos de tenant** - `security-hardening` - M - deps: T-03, T-16, T-37 - epicas: PA-12
+  Files: middleware HTTP, bootstrap Express, rutas auth/API y almacenamiento de configuraciones sensibles.
+  Pasos: rate limit diferenciado auth/API, headers de seguridad, CORS por allowlist de entorno, cifrado en reposo/rotacion para credenciales de integraciones; probar que logs/audit redaccion secretos.
+  Verification: tests de integracion: exceso auth devuelve 429, origin no permitido bloqueado, secreto persistido no queda en claro ni en audit/log.
+
+- [ ] **T-65 - Facturacion: pagina y contrato de emails** - `billing-experience` - M - deps: T-40, T-41, T-44, T-53 - epicas: PB-08, PB-09
+  Files: `src/client/pages/BillingPage.tsx`, templates/notificaciones de billing y rutas de uso/historial.
+  Pasos: mostrar plan, uso/renovacion en TZ tenant, historial de eventos/pagos y compra de add-ons; centralizar emails trial/pago/dunning con idempotency key y branding.
+  Verification: `vite build` + prueba de UI muestra 25/30, renovacion e historial; reintento de evento no envia email duplicado.
+
+- [ ] **T-66 - EditorialProfilePage** - `editorial-profiles` - M - deps: T-28, T-29, T-53 - epicas: PC-05
+  Files: `src/client/pages/EditorialProfilePage.tsx` y componentes de configuracion.
+  Pasos: editar tono, reglas, ejemplos, rubro, formatos y politica de aprobacion; soportar override parcial por programa y mostrar version aplicada.
+  Verification: `vite build` + override de programa persiste y el preview de prompt identifica la version efectiva.
+
+- [ ] **T-67 - Fabrica de notas, flyers y variantes** - `content-factory` - L - deps: T-29, T-45, T-50, T-63 - epicas: PF-06, PF-07, PF-09
+  Files: servicios de generacion de nota/flyer/copy, handlers de jobs y enlaces a `assets`.
+  Pasos: generar notas por rubro con citas atribuidas, flyer/quote-card con foto de persona cuando exista y variantes por red con hashtags/menciones; cada salida crea asset idempotente con version editorial y costo medido.
+  Verification: prueba de job con segmento atribuido crea nota, flyer y variantes; no atribuye una foto/cita si la confianza no supera el umbral.
+
+- [ ] **T-68 - Observabilidad de request y transmision** - `go-live-ops` - M - deps: T-14, T-20, T-21 - epicas: PI-02
+  Files: bootstrap HTTP, logger estructurado y servicios de pipeline/recorder/jobs.
+  Pasos: propagar `requestId`, `tenantId`, `transmissionId` y `jobId` en logs JSON; establecer niveles/redaccion de secretos, metricas de error/latencia y consultas de correlacion para la consola admin.
+  Verification: prueba de request crea un `requestId` trazable hasta su job/transmision; logs no exponen token, body ni secreto.
