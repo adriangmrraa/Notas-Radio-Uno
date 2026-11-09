@@ -220,27 +220,44 @@ export async function getLatestDossier(guestId: string, tenantId: string) {
 
 /**
  * Lista dossiers del tenant con filtros opcionales (programId, date,
- * scheduledTransmissionId). El origen trae las filas del tenant ordenadas
- * desc por creacion y el predicado `dossierMatchesListFilters` aplica los
- * filtros + re-verifica el tenant (misma regla, testeable sin DB).
+ * scheduledTransmissionId). Los filtros van en el WHERE de la query (los
+ * indices guest_dossiers_program_date_idx y el de la FK los cubren) y el
+ * predicado `dossierMatchesListFilters` re-verifica tenant + filtros en
+ * memoria como defensa extra (misma regla, testeable sin DB).
  */
 export type DossierRowsSource = (
   tenantId: string,
+  filters: DossierListFilters,
 ) => Promise<(typeof guestDossiers.$inferSelect)[]>;
 
-const drizzleDossierRows: DossierRowsSource = (tenantId) =>
-  db
+const drizzleDossierRows: DossierRowsSource = (tenantId, filters) => {
+  const conditions = [eq(guestDossiers.tenantId, tenantId)];
+
+  if (filters.programId) {
+    conditions.push(eq(guestDossiers.programId, filters.programId));
+  }
+  if (filters.date) {
+    conditions.push(eq(guestDossiers.scheduledDate, filters.date));
+  }
+  if (filters.scheduledTransmissionId) {
+    conditions.push(
+      eq(guestDossiers.scheduledTransmissionId, filters.scheduledTransmissionId),
+    );
+  }
+
+  return db
     .select()
     .from(guestDossiers)
-    .where(eq(guestDossiers.tenantId, tenantId))
+    .where(and(...conditions))
     .orderBy(sql`${guestDossiers.createdAt} DESC`);
+};
 
 export async function listDossiers(
   tenantId: string,
   filters: DossierListFilters = {},
   source: DossierRowsSource = drizzleDossierRows,
 ) {
-  const rows = await source(tenantId);
+  const rows = await source(tenantId, filters);
   return rows.filter((row) => dossierMatchesListFilters(row, tenantId, filters));
 }
 

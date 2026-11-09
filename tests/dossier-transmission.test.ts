@@ -17,6 +17,7 @@ import { AppError } from '../src/server/lib/errors';
 import {
     assertDossierTransmissionLink,
     dossierMatchesListFilters,
+    type DossierListFilters,
     type DossierListRow,
     type DossierTransmissionCandidate,
 } from '../src/server/lib/dossierLink';
@@ -170,10 +171,50 @@ describe('listDossiers — filtro scheduledTransmissionId + aislamiento tenant',
     const linkedA = row({ id: 'd-a-linked', tenantId: TENANT_A, scheduledTransmissionId: TRANSMISSION_1 });
     const looseA = row({ id: 'd-a-loose', tenantId: TENANT_A });
     const linkedB = row({ id: 'd-b-linked', tenantId: TENANT_B, programId: PROGRAM_B, scheduledTransmissionId: TRANSMISSION_1 });
+    const otherProgramA = row({ id: 'd-a-other-program', tenantId: TENANT_A, programId: PROGRAM_B, scheduledTransmissionId: TRANSMISSION_1 });
 
-    // Orden inyectado defectuoso a propósito: devuelve filas de AMBOS tenants.
-    // El predicado del servicio tiene que re-verificar el tenant igual.
+    // Orden inyectado defectuoso a propósito: devuelve filas de AMBOS tenants
+    // e ignora los filtros recibidos. El predicado del servicio tiene que
+    // re-verificar el tenant igual.
     const leakySource: DossierRowsSource = async () => [linkedA, looseA, linkedB];
+
+    // Réplica del WHERE de producción: el origen aplica tenant + filtros como
+    // lo haría la query SQL (esto es lo que hace `drizzleDossierRows`).
+    const sqlReplica =
+        (rows: DossierRow[]): DossierRowsSource =>
+        async (tenantId, filters) =>
+            rows.filter(
+                (r) =>
+                    r.tenantId === tenantId &&
+                    (!filters.programId || r.programId === filters.programId) &&
+                    (!filters.date || r.scheduledDate === filters.date) &&
+                    (!filters.scheduledTransmissionId ||
+                        r.scheduledTransmissionId === filters.scheduledTransmissionId),
+            );
+
+    it('pasa tenant + filtros al origen (el WHERE se aplica en la query)', async () => {
+        const calls: { tenantId: string; filters: DossierListFilters }[] = [];
+        const recordingSource: DossierRowsSource = async (t, f) => {
+            calls.push({ tenantId: t, filters: { ...f } });
+            return [];
+        };
+        const filters = {
+            programId: PROGRAM_A,
+            date: '2026-11-10',
+            scheduledTransmissionId: TRANSMISSION_1,
+        };
+        await listDossiers(TENANT_A, filters, recordingSource);
+        expect(calls).toEqual([{ tenantId: TENANT_A, filters }]);
+    });
+
+    it('con un origen que replica el WHERE, programId filtra en la query', async () => {
+        const out = await listDossiers(
+            TENANT_A,
+            { programId: PROGRAM_A, scheduledTransmissionId: TRANSMISSION_1 },
+            sqlReplica([linkedA, looseA, linkedB, otherProgramA]),
+        );
+        expect(out.map((d) => d.id)).toEqual(['d-a-linked']);
+    });
 
     it('filtra por scheduledTransmissionId sin mezclar tenants', async () => {
         const out = await listDossiers(
