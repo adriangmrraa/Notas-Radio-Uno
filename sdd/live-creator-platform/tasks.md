@@ -78,7 +78,7 @@ Chain strategy: pending
   Pasos: comparar día/`startTime`/dedup vía `Intl.DateTimeFormat(job.timezone)` (dedup por jobLocalDate de `lastRunAt`); POST/PUT aceptan+validan `timezone` IANA y `programId`.
   ✔ `tsc` + job 10:00 `America/Argentina/Buenos_Aires` con server UTC dispara 13:00 UTC y no a las 10:00 UTC; sin doble dispatch.
 
-- [ ] **T-06 · GATE-1 — Spike pgvector en Neon** — `face-attribution` (riesgo) · S · deps: — · épicas: PE-03
+- [x] **T-06 · GATE-1 — Spike pgvector en Neon** — `face-attribution` (riesgo) · S · deps: — · épicas: PE-03
   Pasos: `CREATE EXTENSION vector` en Neon real; insert `vector(512)` + query `ORDER BY embedding <=> $1 LIMIT 1`; documentar resultado y decisión (pgvector | fallback numeric[]/jsonb).
   ✔ Resultado escrito en `sdd/live-creator-platform/design/` nota o Engram; GATE-1 = pass/fail con evidencia.
 
@@ -90,64 +90,64 @@ Chain strategy: pending
 
 Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en `temp-migrations/`.
 
-- [ ] **T-08 · Migración 0004 — extensión vector** — `face-attribution` · S · deps: T-06 (GATE-1 pass) · épicas: PC-01
+- [x] **T-08 · Migración 0004 — extensión vector** — `face-attribution` · S · deps: T-06 (GATE-1 pass) · épicas: PC-01
   Files: `drizzle/0004_*.sql`
   Pasos: `CREATE EXTENSION IF NOT EXISTS vector`; verificar en Neon staging.
   ✔ Migración corre limpia; `SELECT '[1,2]'::vector` funciona.
 
-- [ ] **T-09 · Schema + migración 0005 — T1 core** — `people-directory`, `stream-recording`, `editorial-profiles` · L · deps: T-08 · épicas: PC-01, PC-07
+- [x] **T-09 · Schema + migración 0005 — T1 core** — `people-directory`, `stream-recording`, `editorial-profiles` · L · deps: T-08 · épicas: PC-01, PC-07
   Files: `src/server/db/schema/*`, `drizzle/0005_*.sql`
   Pasos: `persons`, `person_photos`, `face_embeddings` (+hnsw cosine vía SQL), `person_program`, `person_transmission`, `transmissions`, `stream_recordings`, `recording_segments`, `transmission_segments`, `person_appearances`, `editorial_profiles`, `editorial_profile_versions`; alter `scheduled_jobs.program_id`, `job_executions.transmission_id`, enum +`skipped_quota`, `programs.editorial_overrides`.
   ✔ `drizzle-kit generate` sin diff pendiente; migración aplica en staging; `tsc` verde.
 
-- [ ] **T-10 · Schema + migración 0006 — T2 SaaS** — `usage-quota`, `subscription-lifecycle`, `feature-flags`, `multi-tenant-auth`, `super-admin` · L · deps: T-09 · épicas: PA-01, PB-01, PI-01
+- [x] **T-10 · Schema + migración 0006 — T2 SaaS** — `usage-quota`, `subscription-lifecycle`, `feature-flags`, `multi-tenant-auth`, `super-admin` · L · deps: T-09 · épicas: PA-01, PB-01, PI-01
   Files: `src/server/db/schema/*`, `drizzle/0006_*.sql`
   Pasos: `user_tenants`, `tenant_quotas`, `quota_operations`, `billing_events`, `tenant_features`, `jobs_queue`, `ai_cost_records`, `admin_impersonations`; alter `users.is_platform_admin`, `tenants` (onboarding/suspensión), `plans` (límites), `subscriptions` (grace/dunning/frozen/cancel_reason/provider_ref).
   ✔ Igual T-09.
 
-- [ ] **T-11 · Schema + migración 0007 — T3 publicación** — `assets-unified`, `zernio-publishing`, `image-model-registry` · M · deps: T-10 · épicas: PF-10, PG-04
+- [x] **T-11 · Schema + migración 0007 — T3 publicación** — `assets-unified`, `zernio-publishing`, `image-model-registry` · M · deps: T-10 · épicas: PF-10, PG-04
   Files: `src/server/db/schema/*`, `drizzle/0007_*.sql`
   Pasos: `assets`, `asset_persons`, `social_connections`, `publish_jobs`, `image_models`; alter `guest_dossiers.person_id`.
   ✔ Igual T-09; unique `(tenant_id,provider,platform,external_account_id)` presente.
 
-- [ ] **T-12 · Backfills 0008** — `people-directory`, `assets-unified`, `multi-tenant-auth` · L · deps: T-11 · épicas: PC-02, PF-10
+- [x] **T-12 · Backfills 0008** — `people-directory`, `assets-unified`, `multi-tenant-auth` · L · deps: T-11 · épicas: PC-02, PF-10
   Files: `temp-migrations/*`, `drizzle/0008_*.sql`
   Pasos: `user_tenants`←users; `persons`/`person_photos`/`person_program`/`person_transmission`←conductors+guests; `guest_dossiers.person_id`; `assets`←clips+publications (`legacy_ref`); `tenant_quotas`←usage_records; `social_connections`←business_assets(+twitter_legacy).
   ✔ Conteos: users=user_tenants, conductors+guests=persons, clips+publications=assets; queries por tenant devuelven datos en staging.
 
-- [ ] **T-13 · Migración 0009 — users.tenant_id nullable** — `multi-tenant-auth` · S · deps: T-12 · épicas: PA-01
+- [x] **T-13 · Migración 0009 — users.tenant_id nullable** — `multi-tenant-auth` · S · deps: T-12 · épicas: PA-01
   Files: `src/server/db/schema/*`, `drizzle/0009_*.sql`
   Pasos: `ALTER TABLE users ALTER COLUMN tenant_id DROP NOT NULL`; marcar columna deprecada en schema/comentarios.
   ✔ Migración aplica; user nuevo sin tenant_id inserta OK.
 
 ## Fase 2 — Servicios fundacionales (post T-10; batch B-D paralelo)
 
-- [ ] **T-14 · jobsQueueService + worker loop** — `feature-flags`(no) → `go-live-ops`/`audit-log` contexto · spec: ninguna directa (D7) · L · deps: T-10 · épicas: PI-01
+- [x] **T-14 · jobsQueueService + worker loop** — `feature-flags`(no) → `go-live-ops`/`audit-log` contexto · spec: ninguna directa (D7) · L · deps: T-10 · épicas: PI-01
   Files: `src/server/services/jobsQueueService.ts`
   Pasos: enqueue (con `dedup_key`), claim `FOR UPDATE SKIP LOCKED`, ack, retry backoff 2^n, dead-letter; registry de handlers tipado por `JobType`.
   ✔ `tsc` + job dummy encolado→claimed→done en DB (verificación SQL manual).
 
-- [ ] **T-15 · quotaService** — `usage-quota` · M · deps: T-10 · épicas: PB-02
+- [x] **T-15 · quotaService** — `usage-quota` · M · deps: T-10 · épicas: PB-02
   Files: `src/server/services/quotaService.ts`
   Pasos: `consume` (INSERT quota_operations ON CONFLICT + UPDATE condicional con RETURNING), `release`, `grant`; período YYYY-MM en `tenant.timezone` vía Intl; límites plan+`extra_transmissions`.
   ✔ `tsc` + consume concurrente (2 calls mismo operation_id) descuenta 1 vez; sin cuota → `allowed:false`.
 
-- [ ] **T-16 · auditService + middleware forbidden_attempt** — `audit-log` · S · deps: — · épicas: PA-05
+- [x] **T-16 · auditService + middleware forbidden_attempt** — `audit-log` · S · deps: — · épicas: PA-05
   Files: `src/server/services/auditService.ts`
   Pasos: helper `audit({actor,tenantId,action,ip,ua,metadata})` best-effort (nunca tira request, nunca guarda secretos); middleware emite `forbidden_attempt` en 403 de rol.
   ✔ `tsc` + acción sensible genera fila en `audit_log` sin secretos.
 
-- [ ] **T-17 · featureFlagService + requireFeature** — `feature-flags` · S · deps: T-10 · épicas: PA-11
+- [x] **T-17 · featureFlagService + requireFeature** — `feature-flags` · S · deps: T-10 · épicas: PA-11
   Files: `src/server/services/featureFlagService.ts`
   Pasos: `resolveFeature(tenantId,key)`: override vigente (`expires_at`)→plan `features`→default; caché con invalidación; middleware `requireFeature(key)` → 402/403.
   ✔ `tsc` + override tenant gana sobre plan; expirado cae a plan.
 
-- [ ] **T-18 · aiCostMeter** — `audit-log`(contexto PI-03) · S · deps: T-10 · épicas: PI-03
+- [x] **T-18 · aiCostMeter** — `audit-log`(contexto PI-03) · S · deps: T-10 · épicas: PI-03
   Files: `src/server/services/aiCostMeter.ts`
   Pasos: `recordAiCost(tenantId,transmissionId,provider,kind,units,unit,cost)` → `ai_cost_records`.
   ✔ `tsc` + registro visible en query por tenant/transmission.
 
-- [ ] **T-19 · mediaSigner + /internal/media** — `assets-unified`, `go-live-ops` (D13) · M · deps: — · épicas: PI-05
+- [x] **T-19 · mediaSigner + /internal/media** — `assets-unified`, `go-live-ops` (D13) · M · deps: — · épicas: PI-05
   Files: `src/server/services/mediaSigner.ts`, rutas `/internal/media/*` (engine), proxy `GET /api/assets/:id/media` (api)
   Pasos: tokens firmados corta vida; engine sirve archivo si token válido; api proxied/redirect con auth.
   ✔ `tsc` + GET con token sirve media, sin token/expirado → 401/403.

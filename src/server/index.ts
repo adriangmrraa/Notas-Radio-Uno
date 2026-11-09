@@ -36,6 +36,8 @@ import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
+import { assetsRouter } from "./routes/assets.js";
+import { internalMediaRouter } from "./routes/internalMedia.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
@@ -191,6 +193,10 @@ app.use("/api/billing", billingRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/images", imageEditRouter);
+app.use("/api/assets", assetsRouter);
+
+// Internal media (engine, D13) — auth propia via token firmado (?t=), sin JWT.
+app.use("/internal/media", internalMediaRouter);
 
 // Initialize background services
 initNotificationService(io);

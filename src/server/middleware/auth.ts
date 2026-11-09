@@ -5,6 +5,7 @@ import { AppError } from '../lib/errors.js';
 import type { UserRole } from '../db/schema/enums.js';
 import { subscriptions } from '../db/schema/index.js';
 import { eq } from 'drizzle-orm';
+import { auditForbiddenAttempt } from '../services/auditService.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
@@ -56,6 +57,7 @@ export function requireRole(...roles: UserRole[]) {
         }
 
         if (!roles.includes(req.auth.role)) {
+            auditForbiddenAttempt(req, roles);
             res.status(403).json({ error: 'No tienes permisos para esta accion' });
             return;
         }
