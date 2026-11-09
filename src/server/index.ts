@@ -47,6 +47,7 @@ import { onboardingRouter } from "./routes/onboarding.js";
 import { editorialRouter } from "./routes/editorial.js";
 import { transmissionsRouter } from "./routes/transmissions.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
+import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
@@ -287,6 +288,9 @@ app.use("/api/transmissions", transmissionsRouter);
 // Initialize background services
 initNotificationService(io);
 initJobScheduler(io);
+// TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
+// este scheduler no debe arrancar en el proceso que sólo sirve API.
+initTransmissionScheduler(io);
 initDossierScheduler();
 
 // ---------------------------------------------------------------------------
