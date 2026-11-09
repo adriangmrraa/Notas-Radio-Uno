@@ -10,12 +10,14 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
     fullName: varchar('full_name', { length: 255 }).notNull(),
     avatarUrl: text('avatar_url'),
+    // DEPRECADO (D11): membresías viven en user_tenants; columna conservada
+    // para rollback/lectura legacy — no escribir en código nuevo.
     tenantId: uuid('tenant_id')
-      .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     role: userRoleEnum('role').notNull().default('owner'),
     status: userStatusEnum('status').notNull().default('pending'),
     isVerified: boolean('is_verified').notNull().default(false),
+    isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
     verificationToken: uuid('verification_token'),
     verificationTokenExpiresAt: timestamp('verification_token_expires_at', { withTimezone: true }),
     resetPasswordToken: uuid('reset_password_token'),

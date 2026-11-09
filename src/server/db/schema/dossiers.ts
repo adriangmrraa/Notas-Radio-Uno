@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, text, timestamp, date, index, jsonb } from 'dri
 import { tenants } from './tenants.js';
 import { programs } from './programs.js';
 import { guests } from './guests.js';
+import { persons } from './people.js';
 
 export const guestDossiers = pgTable(
   'guest_dossiers',
@@ -10,6 +11,7 @@ export const guestDossiers = pgTable(
     guestId: uuid('guest_id')
       .notNull()
       .references(() => guests.id, { onDelete: 'cascade' }),
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),

@@ -52,6 +52,7 @@ export const jobExecutionStatusEnum = pgEnum('JobExecutionStatus', [
   'failed',
   'canceled',
   'timeout',
+  'skipped_quota',
 ]);
 export const JobExecutionStatus = {
   pending: 'pending',
@@ -60,6 +61,7 @@ export const JobExecutionStatus = {
   failed: 'failed',
   canceled: 'canceled',
   timeout: 'timeout',
+  skipped_quota: 'skipped_quota',
 } as const;
 export type JobExecutionStatus = (typeof JobExecutionStatus)[keyof typeof JobExecutionStatus];
 

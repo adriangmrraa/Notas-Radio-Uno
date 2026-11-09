@@ -232,7 +232,7 @@ export async function getMe(userId: string) {
     const subRows = await db.select({ sub: subscriptions, plan: plans })
         .from(subscriptions)
         .leftJoin(plans, eq(subscriptions.planId, plans.id))
-        .where(eq(subscriptions.tenantId, user.tenantId))
+        .where(eq(subscriptions.tenantId, tenant.id))
         .limit(1);
 
     const subRow = subRows[0];
