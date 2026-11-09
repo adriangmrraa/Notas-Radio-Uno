@@ -45,19 +45,56 @@ interface ParsedProfileBody {
     error?: string;
 }
 
-function isNullableString(v: unknown, max: number): v is string | null {
-    return v === null || (typeof v === "string" && v.length <= max);
+/**
+ * Escalar nullable del body: `undefined` ⇒ ausente; `null` ⇒ null explícito
+ * (limpia el campo ⇒ hereda en el merge); string ⇒ trim, y si queda vacío se
+ * interpreta como ausente (un "" no pisa al valor heredado con basura).
+ */
+function normalizeNullableString(
+    value: unknown,
+    max: number,
+    label: string,
+): { present: boolean; value?: string | null; error?: string } {
+    if (value === undefined) return { present: false };
+    if (value === null) return { present: true, value: null };
+    if (typeof value !== "string") {
+        return { present: false, error: `${label} debe ser un string de hasta ${max} caracteres o null` };
+    }
+    const trimmed = value.trim();
+    if (trimmed === "") return { present: false };
+    if (trimmed.length > max) {
+        return { present: false, error: `${label} debe ser un string de hasta ${max} caracteres o null` };
+    }
+    return { present: true, value: trimmed };
 }
 
-function isStringArray(v: unknown, maxItems: number, maxItemLength: number): v is string[] {
-    return (
-        Array.isArray(v) &&
-        v.length <= maxItems &&
-        v.every((item) => typeof item === "string" && item.length <= maxItemLength)
-    );
+/**
+ * Array de strings del body: cada item se trimea y los vacíos post-trim se
+ * descartan; si el array queda vacío se guarda vacío (⇒ hereda en el merge).
+ */
+function normalizeStringArray(
+    value: unknown,
+    maxItems: number,
+    maxItemLength: number,
+    label: string,
+): { value?: string[]; error?: string } {
+    if (value === undefined) return {};
+    if (!Array.isArray(value) || value.length > maxItems) {
+        return { error: `${label} debe ser un array de hasta ${maxItems} strings` };
+    }
+    if (!value.every((item) => typeof item === "string")) {
+        return { error: `${label} debe ser un array de strings` };
+    }
+    const normalized = (value as string[])
+        .map((item) => item.trim())
+        .filter((item) => item !== "");
+    if (normalized.some((item) => item.length > maxItemLength)) {
+        return { error: `${label}: cada item admite hasta ${maxItemLength} caracteres` };
+    }
+    return { value: normalized };
 }
 
-function parseProfileBody(body: unknown): ParsedProfileBody {
+export function parseProfileBody(body: unknown): ParsedProfileBody {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
         return { error: "Body inválido" };
     }
@@ -70,38 +107,21 @@ function parseProfileBody(body: unknown): ParsedProfileBody {
     }
     fields.tone = b.tone;
 
-    if (b.name !== undefined) {
-        if (!isNullableString(b.name, MAX_NAME_LENGTH)) {
-            return { error: `name debe ser un string de hasta ${MAX_NAME_LENGTH} caracteres o null` };
+    const scalars = [
+        ["name", MAX_NAME_LENGTH],
+        ["toneDescription", MAX_TONE_DESCRIPTION_LENGTH],
+        ["styleGuide", MAX_STYLE_GUIDE_LENGTH],
+        ["industry", MAX_INDUSTRY_LENGTH],
+        ["signature", MAX_SIGNATURE_LENGTH],
+    ] as const;
+    for (const [key, max] of scalars) {
+        const parsed = normalizeNullableString(b[key], max, key);
+        if (parsed.error) return { error: parsed.error };
+        if (parsed.present) {
+            (fields as Record<string, unknown>)[key] = parsed.value;
         }
-        fields.name = b.name;
     }
-    if (b.toneDescription !== undefined) {
-        if (!isNullableString(b.toneDescription, MAX_TONE_DESCRIPTION_LENGTH)) {
-            return {
-                error: `toneDescription debe ser un string de hasta ${MAX_TONE_DESCRIPTION_LENGTH} caracteres o null`,
-            };
-        }
-        fields.toneDescription = b.toneDescription;
-    }
-    if (b.styleGuide !== undefined) {
-        if (!isNullableString(b.styleGuide, MAX_STYLE_GUIDE_LENGTH)) {
-            return { error: `styleGuide debe ser un string de hasta ${MAX_STYLE_GUIDE_LENGTH} caracteres o null` };
-        }
-        fields.styleGuide = b.styleGuide;
-    }
-    if (b.industry !== undefined) {
-        if (!isNullableString(b.industry, MAX_INDUSTRY_LENGTH)) {
-            return { error: `industry debe ser un string de hasta ${MAX_INDUSTRY_LENGTH} caracteres o null` };
-        }
-        fields.industry = b.industry;
-    }
-    if (b.signature !== undefined) {
-        if (!isNullableString(b.signature, MAX_SIGNATURE_LENGTH)) {
-            return { error: `signature debe ser un string de hasta ${MAX_SIGNATURE_LENGTH} caracteres o null` };
-        }
-        fields.signature = b.signature;
-    }
+
     if (b.isActive !== undefined) {
         if (typeof b.isActive !== "boolean") {
             return { error: "isActive debe ser boolean" };
@@ -109,49 +129,54 @@ function parseProfileBody(body: unknown): ParsedProfileBody {
         fields.isActive = b.isActive;
     }
 
-    if (b.rules !== undefined) {
-        if (!isStringArray(b.rules, MAX_LIST_ITEMS, MAX_LIST_ITEM_LENGTH)) {
-            return { error: "rules debe ser un array de strings" };
-        }
-        fields.rules = b.rules;
+    for (const key of ["rules", "forbiddenTopics"] as const) {
+        const parsed = normalizeStringArray(b[key], MAX_LIST_ITEMS, MAX_LIST_ITEM_LENGTH, key);
+        if (parsed.error) return { error: parsed.error };
+        if (parsed.value !== undefined) fields[key] = parsed.value;
     }
-    if (b.forbiddenTopics !== undefined) {
-        if (!isStringArray(b.forbiddenTopics, MAX_LIST_ITEMS, MAX_LIST_ITEM_LENGTH)) {
-            return { error: "forbiddenTopics debe ser un array de strings" };
-        }
-        fields.forbiddenTopics = b.forbiddenTopics;
-    }
+
     if (b.activeFormats !== undefined) {
-        if (!isStringArray(b.activeFormats, MAX_FORMAT_ITEMS, MAX_FORMAT_ITEM_LENGTH)) {
-            return { error: "activeFormats debe ser un array de strings" };
-        }
-        const invalid = (b.activeFormats as string[]).filter((f) => !VALID_FORMATS.includes(f));
+        const parsed = normalizeStringArray(b.activeFormats, MAX_FORMAT_ITEMS, MAX_FORMAT_ITEM_LENGTH, "activeFormats");
+        if (parsed.error) return { error: parsed.error };
+        const invalid = (parsed.value as string[]).filter((f) => !VALID_FORMATS.includes(f));
         if (invalid.length > 0) {
             return {
                 error: `activeFormats contiene valores inválidos: ${invalid.join(", ")}. Permitidos: ${VALID_FORMATS.join(", ")}`,
             };
         }
-        fields.activeFormats = b.activeFormats;
+        fields.activeFormats = parsed.value;
     }
+
     if (b.examples !== undefined) {
         if (!Array.isArray(b.examples) || b.examples.length > MAX_EXAMPLES) {
             return { error: `examples debe ser un array de hasta ${MAX_EXAMPLES} ejemplos` };
         }
+        const examples: EditorialProfileShape["examples"] = [];
         for (const ex of b.examples) {
             if (
                 !ex ||
                 typeof ex !== "object" ||
-                typeof (ex as { title?: unknown }).title !== "string" ||
-                typeof (ex as { excerpt?: unknown }).excerpt !== "string" ||
-                (ex as { title: string }).title.length > MAX_EXAMPLE_TITLE_LENGTH ||
-                (ex as { excerpt: string }).excerpt.length > MAX_EXAMPLE_EXCERPT_LENGTH
+                typeof (ex as { title?: unknown }).title !== "string"
             ) {
+                return { error: "examples debe ser un array de {title, excerpt}" };
+            }
+            const title = (ex as { title: string }).title.trim();
+            // Title vacío ⇒ se ignora el ejemplo (no pisa con basura).
+            if (title === "") continue;
+            const rawExcerpt = (ex as { excerpt?: unknown }).excerpt;
+            if (rawExcerpt !== undefined && typeof rawExcerpt !== "string") {
+                return { error: "examples debe ser un array de {title, excerpt}" };
+            }
+            // excerpt opcional ⇒ se guarda como "".
+            const excerpt = typeof rawExcerpt === "string" ? rawExcerpt.trim() : "";
+            if (title.length > MAX_EXAMPLE_TITLE_LENGTH || excerpt.length > MAX_EXAMPLE_EXCERPT_LENGTH) {
                 return {
-                    error: `examples debe ser un array de {title, excerpt} (title ≤ ${MAX_EXAMPLE_TITLE_LENGTH}, excerpt ≤ ${MAX_EXAMPLE_EXCERPT_LENGTH} caracteres)`,
+                    error: `examples: title ≤ ${MAX_EXAMPLE_TITLE_LENGTH} y excerpt ≤ ${MAX_EXAMPLE_EXCERPT_LENGTH} caracteres`,
                 };
             }
+            examples.push({ title, excerpt });
         }
-        fields.examples = b.examples as EditorialProfileShape["examples"];
+        fields.examples = examples;
     }
 
     return { fields };

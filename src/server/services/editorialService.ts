@@ -17,6 +17,9 @@
  *     `signature`, `isActive`): el override gana si el valor NO es null/
  *     undefined. Excepción documentada: `tone` e `isActive` son NOT NULL en la
  *     tabla, así que una fila de override existente SIEMPRE los define.
+ *   - Interruptor maestro: si el perfil default del tenant existe y tiene
+ *     `is_active = false`, el perfil efectivo queda inactivo sin importar el
+ *     override — éste sólo puede DESactivar, nunca reactivar el canal.
  *   - Arrays jsonb (`rules`, `examples`, `activeFormats`, `forbiddenTopics`):
  *     el override gana sólo si el array tiene al menos 1 elemento; un array
  *     vacío en el override significa "heredar del tenant".
@@ -223,6 +226,38 @@ export interface EditorialStore {
 // ---------------------------------------------------------------------------
 // Implementación drizzle (Postgres)
 // ---------------------------------------------------------------------------
+type InsertExecutor = Pick<Database, 'insert'>;
+
+/**
+ * INSERT ... ON CONFLICT DO UPDATE atómico sobre la constraint real:
+ *   - default del tenant (programId = null): el índice parcial
+ *     `editorial_profiles_tenant_default_unique` se infiere con
+ *     ON CONFLICT (tenant_id) WHERE program_id IS NULL (targetWhere).
+ *   - override de programa: el índice `editorial_profiles_tenant_program_unique`
+ *     se infiere con ON CONFLICT (tenant_id, program_id).
+ * Una sola sentencia — sin la ventana find-then-insert que permitía un 500
+ * por unique violation en escrituras concurrentes del mismo
+ * (tenant_id, program_id). Exportado para testear el SQL generado sin DB.
+ */
+export function buildProfileUpsert(
+    executor: InsertExecutor,
+    tenantId: string,
+    programId: string | null,
+    set: Partial<typeof editorialProfiles.$inferInsert>,
+) {
+    const insert = executor.insert(editorialProfiles).values({ tenantId, programId, ...set });
+    return programId === null
+        ? insert.onConflictDoUpdate({
+              target: editorialProfiles.tenantId,
+              targetWhere: isNull(editorialProfiles.programId),
+              set,
+          })
+        : insert.onConflictDoUpdate({
+              target: [editorialProfiles.tenantId, editorialProfiles.programId],
+              set,
+          });
+}
+
 export function createDrizzleEditorialStore(executor: Database): EditorialStore {
     const db = executor;
 
@@ -288,12 +323,7 @@ export function createDrizzleEditorialStore(executor: Database): EditorialStore 
         },
 
         async upsertProfile(tenantId, programId, fields) {
-            const existing =
-                programId === null
-                    ? await findTenantProfile(tenantId)
-                    : await findProgramProfile(tenantId, programId);
-
-            const set: Partial<typeof editorialProfiles.$inferInsert> = {};
+            const set: Partial<typeof editorialProfiles.$inferInsert> = { updatedAt: new Date() };
             if (fields.name !== undefined) set.name = fields.name;
             if (fields.tone !== undefined) set.tone = fields.tone;
             if (fields.toneDescription !== undefined) set.toneDescription = fields.toneDescription;
@@ -306,19 +336,7 @@ export function createDrizzleEditorialStore(executor: Database): EditorialStore 
             if (fields.signature !== undefined) set.signature = fields.signature;
             if (fields.isActive !== undefined) set.isActive = fields.isActive;
 
-            if (existing) {
-                const [saved] = await db
-                    .update(editorialProfiles)
-                    .set(set)
-                    .where(eq(editorialProfiles.id, existing.id))
-                    .returning();
-                return saved;
-            }
-
-            const [saved] = await db
-                .insert(editorialProfiles)
-                .values({ tenantId, programId, ...set })
-                .returning();
+            const [saved] = await buildProfileUpsert(db, tenantId, programId, set).returning();
             return saved;
         },
 
@@ -387,6 +405,12 @@ export async function getEffectiveProfile(
     if (!overrideRow) return { ...base, sources };
 
     const { profile, overriddenFields } = mergeEditorialProfile(base, toEditorialShape(overrideRow));
+    // `is_active` del canal es interruptor maestro: si el default del tenant
+    // está desactivado, el efectivo queda inactivo aunque el override defina
+    // is_active=true (el override sólo puede DESactivar, nunca reactivar).
+    // overriddenFields sigue listando 'isActive' porque la fila lo define;
+    // el clamp aplica al valor efectivo, no a la declaración del campo.
+    if (tenantRow && !tenantRow.isActive) profile.isActive = false;
     return { ...profile, sources: { ...sources, overriddenFields } };
 }
 

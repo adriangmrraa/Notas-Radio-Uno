@@ -12,16 +12,21 @@
  *   - aislamiento: un programId de otro tenant no se resuelve ni se lee.
  */
 import { describe, expect, it } from 'vitest';
+import { drizzle } from 'drizzle-orm/neon-serverless';
 
 import {
     DEFAULT_EDITORIAL_PROFILE,
+    buildProfileUpsert,
     definedOverrideFields,
     getEffectiveProfile,
     getProgramProfile,
     mergeEditorialProfile,
     toEditorialShape,
+    upsertProgramProfile,
+    upsertTenantProfile,
     type EditorialProfileShape,
 } from '../src/server/services/editorialService';
+import { parseProfileBody } from '../src/server/routes/editorial';
 import {
     createMemoryEditorialStore,
     makeProfileRow,
@@ -368,5 +373,178 @@ describe('toEditorialShape', () => {
         expect(shape.rules).toEqual(['ok', 'bien']);
         expect(shape.examples).toEqual([{ title: 'T', excerpt: 'E' }]);
         expect(shape.activeFormats).toEqual([]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// is_active del tenant — interruptor maestro (W3)
+// ---------------------------------------------------------------------------
+describe('is_active del tenant — interruptor maestro', () => {
+    it('canal inactivo + override isActive=true ⇒ efectivo inactivo', async () => {
+        const { store } = createMemoryEditorialStore({
+            programs: PROGRAMS,
+            profiles: [
+                makeProfileRow({
+                    id: 'ep-tenant-a',
+                    tenantId: TENANT_A,
+                    programId: null,
+                    ...TENANT_SHAPE,
+                    isActive: false,
+                }),
+                makeProfileRow({
+                    id: 'ep-ov-a1',
+                    tenantId: TENANT_A,
+                    programId: PROGRAM_A1,
+                    tone: 'urgente',
+                    isActive: true,
+                }),
+            ],
+        });
+
+        const eff = await getEffectiveProfile(store, TENANT_A, PROGRAM_A1);
+
+        expect(eff.isActive).toBe(false);
+        // Decisión documentada: la fila de override DEFINE isActive ⇒ queda
+        // listado; el clamp del canal aplica al valor efectivo.
+        expect(eff.sources.overriddenFields).toContain('isActive');
+    });
+
+    it('canal activo + override isActive=false ⇒ efectivo inactivo (el override sí puede desactivar)', async () => {
+        const { store } = createMemoryEditorialStore({
+            programs: PROGRAMS,
+            profiles: [
+                makeProfileRow({ id: 'ep-tenant-a', tenantId: TENANT_A, programId: null, ...TENANT_SHAPE }),
+                makeProfileRow({
+                    id: 'ep-ov-a1',
+                    tenantId: TENANT_A,
+                    programId: PROGRAM_A1,
+                    tone: 'urgente',
+                    isActive: false,
+                }),
+            ],
+        });
+
+        const eff = await getEffectiveProfile(store, TENANT_A, PROGRAM_A1);
+        expect(eff.isActive).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// upsertProfile — una fila por clave; la segunda escritura actualiza (W1)
+// ---------------------------------------------------------------------------
+describe('upsertProfile — idempotente por clave', () => {
+    it('dos upserts del default del tenant ⇒ una sola fila y la segunda actualiza', async () => {
+        const { store, profiles } = createMemoryEditorialStore({ programs: PROGRAMS, profiles: [] });
+
+        await upsertTenantProfile(store, TENANT_A, { tone: 'formal', name: 'Canal A' });
+        const again = await upsertTenantProfile(store, TENANT_A, { tone: 'informal', industry: 'deportes' });
+
+        const rows = [...profiles.values()].filter(
+            (p) => p.tenantId === TENANT_A && p.programId === null,
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].id).toBe(again.id);
+        expect(again.tone).toBe('informal');
+        expect(again.industry).toBe('deportes');
+        // Los campos ausentes en el segundo upsert no se tocan.
+        expect(again.name).toBe('Canal A');
+    });
+
+    it('dos upserts del mismo override ⇒ una fila; programa ajeno ⇒ null y no escribe', async () => {
+        const { store, profiles } = createMemoryEditorialStore({ programs: PROGRAMS, profiles: [] });
+
+        await upsertProgramProfile(store, TENANT_A, PROGRAM_A1, { tone: 'urgente' });
+        const again = await upsertProgramProfile(store, TENANT_A, PROGRAM_A1, {
+            tone: 'analitico',
+            rules: ['r1'],
+        });
+
+        const rows = [...profiles.values()].filter(
+            (p) => p.tenantId === TENANT_A && p.programId === PROGRAM_A1,
+        );
+        expect(rows).toHaveLength(1);
+        expect(again?.tone).toBe('analitico');
+        expect(again?.rules).toEqual(['r1']);
+
+        const foreign = await upsertProgramProfile(store, TENANT_A, PROGRAM_B1, { tone: 'custom' });
+        expect(foreign).toBeNull();
+        expect(profiles.size).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// buildProfileUpsert — el SQL es una sola sentencia ON CONFLICT (W1)
+// ---------------------------------------------------------------------------
+describe('buildProfileUpsert — SQL atómico', () => {
+    const sqlDb = drizzle('postgres://unused.invalid/db');
+
+    it('default del tenant ⇒ ON CONFLICT (tenant_id) WHERE program_id IS NULL (índice parcial)', () => {
+        const q = buildProfileUpsert(sqlDb, TENANT_A, null, { tone: 'formal' }).toSQL();
+        expect(q.sql).toContain('insert into "editorial_profiles"');
+        expect(q.sql).toContain(
+            'on conflict ("tenant_id") where "editorial_profiles"."program_id" is null do update set',
+        );
+    });
+
+    it('override de programa ⇒ ON CONFLICT (tenant_id, program_id); sin SELECT previo', () => {
+        const q = buildProfileUpsert(sqlDb, TENANT_A, PROGRAM_A1, { tone: 'urgente' }).toSQL();
+        expect(q.sql).toContain('on conflict ("tenant_id","program_id") do update set');
+        expect(q.sql.toLowerCase()).not.toContain('select');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// parseProfileBody — normalización de strings vacíos (W4)
+// ---------------------------------------------------------------------------
+describe('parseProfileBody — strings vacíos', () => {
+    it('escalares: vacío/whitespace ⇒ ausente (no pisa); null limpia; valor se trimea', () => {
+        const { fields, error } = parseProfileBody({ tone: 'formal', name: '   ', signature: '' });
+        expect(error).toBeUndefined();
+        expect(fields?.tone).toBe('formal');
+        expect(fields && 'name' in fields).toBe(false);
+        expect(fields && 'signature' in fields).toBe(false);
+
+        const cleared = parseProfileBody({ tone: 'formal', name: null });
+        expect(cleared.fields && 'name' in cleared.fields).toBe(true);
+        expect(cleared.fields?.name).toBeNull();
+
+        expect(parseProfileBody({ tone: 'formal', name: '  Canal A  ' }).fields?.name).toBe('Canal A');
+    });
+
+    it('arrays: items vacíos se descartan; puros vacíos ⇒ [] (hereda)', () => {
+        const { fields } = parseProfileBody({ tone: 'formal', rules: ['  ok  ', '   ', 'bien'] });
+        expect(fields?.rules).toEqual(['ok', 'bien']);
+
+        const emptied = parseProfileBody({ tone: 'formal', rules: ['', '   '] });
+        expect(emptied.fields?.rules).toEqual([]);
+    });
+
+    it('activeFormats: normaliza antes del enum check y rechaza inválidos', () => {
+        const ok = parseProfileBody({ tone: 'formal', activeFormats: [' flash ', ''] });
+        expect(ok.fields?.activeFormats).toEqual(['flash']);
+
+        const bad = parseProfileBody({ tone: 'formal', activeFormats: ['flash', 'bogus'] });
+        expect(bad.error).toBeDefined();
+        expect(bad.fields).toBeUndefined();
+    });
+
+    it('examples: title vacío se ignora, excerpt ausente ⇒ "", malformados ⇒ error', () => {
+        const { fields, error } = parseProfileBody({
+            tone: 'formal',
+            examples: [
+                { title: '  ', excerpt: 'ignorado' },
+                { title: '  Titulo  ', excerpt: '  Extracto  ' },
+                { title: 'Sin excerpt' },
+            ],
+        });
+        expect(error).toBeUndefined();
+        expect(fields?.examples).toEqual([
+            { title: 'Titulo', excerpt: 'Extracto' },
+            { title: 'Sin excerpt', excerpt: '' },
+        ]);
+
+        expect(parseProfileBody({ tone: 'formal', examples: ['no-es-objeto'] }).error).toBeDefined();
+        expect(parseProfileBody({ tone: 'formal', examples: [{ title: 'T', excerpt: 42 }] }).error).toBeDefined();
+        expect(parseProfileBody({ tone: 'formal', examples: [{ title: 1 }] }).error).toBeDefined();
     });
 });
