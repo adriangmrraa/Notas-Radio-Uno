@@ -18,7 +18,7 @@ import {
 import { listAddons, createAddonCheckout, applyAddonPurchase } from '../services/addonService.js';
 import { handlePaymentSucceeded, handlePaymentFailed } from '../services/subscriptionLifecycleService.js';
 import { AppError } from '../lib/errors.js';
-import { plans, subscriptions, usageRecords, invoices, addonPurchases } from '../db/schema/index.js';
+import { plans, subscriptions, usageRecords, invoices, addonPurchases, tenants } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc, or } from 'drizzle-orm';
 
@@ -84,6 +84,11 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
             }
         }
 
+        const [tenant] = await db.select({ config: tenants.config }).from(tenants)
+            .where(eq(tenants.id, subscription.tenantId)).limit(1);
+        const config = (tenant?.config && typeof tenant.config === 'object' ? tenant.config : {}) as Record<string, unknown>;
+        const pendingPlan = (config.pendingPlan ?? null) as { planName: string; billingPeriod: string } | null;
+
         res.json({
             subscription: {
                 id: subscription.id,
@@ -92,8 +97,16 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
                 planDisplayName: plan.displayName,
                 trialEndsAt: subscription.trialEndsAt,
                 trialDaysRemaining,
+                currentPeriodStart: subscription.currentPeriodStart,
                 currentPeriodEnd: subscription.currentPeriodEnd,
                 cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+                billingPeriod: subscription.billingPeriod,
+                paymentProvider: subscription.paymentProvider,
+                graceEndsAt: subscription.graceEndsAt,
+                dunningAttempts: subscription.dunningAttempts,
+                suspendedAt: subscription.suspendedAt,
+                pendingPlan,
+                transmissionsPerCycle: plan.transmissionsPerCycle,
                 limits: {
                     maxPipelineHoursPerMonth: plan.maxPipelineHoursPerMonth,
                     maxPublicationsPerMonth: plan.maxPublicationsPerMonth,
