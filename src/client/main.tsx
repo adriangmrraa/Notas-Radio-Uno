@@ -15,6 +15,7 @@ import { BillingPage } from './pages/BillingPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
+import { AgendaPage } from './pages/AgendaPage';
 import { ProgramsPage } from './pages/ProgramsPage';
 import { PersonsPage } from './pages/PersonsPage';
 import { EditorialPage } from './pages/EditorialPage';
@@ -57,6 +58,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/editorial" element={<EditorialPage />} />
               <Route path="/connections/*" element={<ConnectionsPage />} />
               <Route path="/scheduled" element={<ScheduledJobsPage />} />
+              <Route path="/agenda" element={<AgendaPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/billing" element={<BillingPage />} />

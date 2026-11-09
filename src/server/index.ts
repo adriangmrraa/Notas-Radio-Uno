@@ -44,6 +44,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
 import { personsRouter } from "./routes/persons.js";
 import { editorialRouter } from "./routes/editorial.js";
+import { transmissionsRouter } from "./routes/transmissions.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
@@ -279,6 +280,7 @@ app.use("/api/jobs", jobsRouter);
 app.use("/api/images", imageEditRouter);
 app.use("/api/persons", personsRouter);
 app.use("/api/editorial", editorialRouter);
+app.use("/api/transmissions", transmissionsRouter);
 
 // Initialize background services
 initNotificationService(io);

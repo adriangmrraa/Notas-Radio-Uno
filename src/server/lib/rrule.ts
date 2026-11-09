@@ -232,7 +232,7 @@ function tzOffsetMs(timeZone: string, utcMs: number): number {
  * Doble lectura del offset: si el instante cae cerca de un cambio de DST, el
  * offset corregido puede diferir del inicial; una segunda pasada lo resuelve.
  */
-function wallToUtcMs(
+export function wallToUtcMs(
   year: number, month: number, day: number,
   hour: number, minute: number, second: number,
   timeZone: string,
