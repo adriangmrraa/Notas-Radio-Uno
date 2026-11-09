@@ -31,8 +31,8 @@ import { getStripe, getMercadoPago } from './billingProviders.js';
 // ── Catálogo ──────────────────────────────────────────────────────────────────
 
 const ADDON_SEEDS = [
-  { name: 'transmissions_5', transmissions: 5, priceUsd: '5.00', priceArs: '6000.00', sortOrder: 1 },
-  { name: 'transmissions_15', transmissions: 15, priceUsd: '12.00', priceArs: '15000.00', sortOrder: 2 },
+  { name: '+5', transmissions: 5, priceUsd: '19.00', priceArs: '19000.00', sortOrder: 1 },
+  { name: '+15', transmissions: 15, priceUsd: '45.00', priceArs: '45000.00', sortOrder: 2 },
 ] as const;
 
 /** Idempotente: inserta los add-ons faltantes. Nunca pisa precios ajustados. */
@@ -75,6 +75,8 @@ export async function createAddonCheckout(input: {
     const stripe = getStripe();
     if (!stripe) throw new AppError('Stripe no está configurado', 503, 'STRIPE_NOT_CONFIGURED');
 
+    const cycle = await getOrCreateUsageCycle(input.tenantId);
+
     const [purchase] = await db.insert(addonPurchases).values({
       tenantId: input.tenantId,
       addonId: addon.id,
@@ -102,7 +104,13 @@ export async function createAddonCheckout(input: {
       line_items: [lineItem],
       success_url: `${frontendUrl}/billing?status=addon_success&provider=stripe`,
       cancel_url: `${frontendUrl}/billing?status=cancel`,
-      metadata: { kind: 'addon_purchase', purchaseId: purchase.id },
+      metadata: {
+        kind: 'addon',
+        tenantId: input.tenantId,
+        addonName: addon.name,
+        usageCycleId: cycle.id,
+        purchaseId: purchase.id,
+      },
     });
 
     return { checkoutUrl: session.url, purchaseId: purchase.id, provider: 'stripe' };
