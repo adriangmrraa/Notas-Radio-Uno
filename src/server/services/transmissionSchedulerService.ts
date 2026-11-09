@@ -11,7 +11,7 @@
  *
  * Modelo de ejecución — ticks, no timers por corrida:
  *   `setInterval(60s)` llama `checkAndRunScheduledTransmissions` (exportado
- *   para tests). Cada tick hace DOS fases:
+ *   para tests). Cada tick hace TRES fases:
  *     A) Descubrimiento: agendas vencidas (`is_active` + `auto_start` +
  *        `next_run_at <= now`) → crea la `transmission` (status `scheduled`,
  *        `source='live_capture'`), aplica los gates (suscripción activa +
@@ -21,6 +21,10 @@
  *        agotada? → `error`; ¿intento no vencido o concurrencia llena? →
  *        sigue `waiting`; si no → `detectLiveStream`: al aire → `live` +
  *        `startRecording` en background; no → `waiting`.
+ *     C) Purga de retención del crudo (PD-06): una vez cada
+ *        `RETENTION_PURGE_INTERVAL_MINUTES` (default 1440) corre
+ *        `purgeExpiredRecordings` global — contador de ticks + marca de
+ *        última ejecución, todo try/catch (nunca tumba el loop).
  *
  * Decisiones documentadas:
  *   - `started_at`: se fija al disparar la ocurrencia (auditoría del dispatch)
@@ -93,6 +97,10 @@ import {
   transitionTransmission,
   type TransitionRunner,
 } from './transmissionService.js';
+import {
+  purgeExpiredRecordings,
+  type PurgeOutcome,
+} from './rawRetentionService.js';
 
 // ─── API pública ────────────────────────────────────────────────────────────
 
@@ -119,6 +127,23 @@ const ACTIVE_RUN_STATUSES = ['live', 'processing'] as const;
 const STALE_RUN_STATUSES = ['live', 'processing'] as const;
 
 const TICK_MS = 60_000;
+
+// ─── Job de purga de retención (PD-06) ──────────────────────────────────────
+// El tick es de 60 s ⇒ `intervalMinutes` minutos equivalen a esa cantidad de
+// ticks. Configurable por env para poder apagarlo/afinarlo sin deploy.
+const DEFAULT_PURGE_INTERVAL_MINUTES = 1440; // 24 h
+
+/** `RETENTION_PURGE_ENABLED` — default true ('false'/'0' lo apagan). */
+function retentionPurgeEnabled(): boolean {
+  const raw = process.env.RETENTION_PURGE_ENABLED?.trim().toLowerCase();
+  return raw !== 'false' && raw !== '0';
+}
+
+/** `RETENTION_PURGE_INTERVAL_MINUTES` — default 1440; mínimo 1. */
+function retentionPurgeIntervalMinutes(): number {
+  const raw = Number(process.env.RETENTION_PURGE_INTERVAL_MINUTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.max(1, raw) : DEFAULT_PURGE_INTERVAL_MINUTES;
+}
 
 // ─── Filas mínimas que el scheduler lee (contrato del store) ───────────────
 
@@ -246,6 +271,12 @@ export interface TransmissionSchedulerDeps {
    * rooms tras el commit — es la única vía de cambio de estado (PD-04).
    */
   transitionRun?: TransitionRunner;
+  /**
+   * Job de purga del crudo por retención de plan (PD-06). Default:
+   * `purgeExpiredRecordings` global — borra archivos vencidos y marca los
+   * segmentos `purged`. Inyectable para tests (spy, sin storage real).
+   */
+  purgeRetention?: (now: Date) => Promise<PurgeOutcome>;
 }
 
 interface ResolvedDeps {
@@ -259,6 +290,7 @@ interface ResolvedDeps {
   consumeQuota: NonNullable<TransmissionSchedulerDeps['consumeQuota']>;
   releaseQuota: NonNullable<TransmissionSchedulerDeps['releaseQuota']>;
   transitionRun: TransitionRunner;
+  purgeRetention: (now: Date) => Promise<PurgeOutcome>;
 }
 
 // ─── Implementación drizzle del store ───────────────────────────────────────
@@ -438,6 +470,15 @@ let storedOpts: TransmissionSchedulerOptions = {};
 /** Último intento de detección por corrida (ms epoch, reloj inyectado). */
 const lastAttemptAt = new Map<string, number>();
 
+// ─── Estado del job de purga de retención (PD-06) ───────────────────────────
+// Mismo patrón que `MAINTENANCE_EVERY_N_TICKS` del scheduler legacy: contador
+// de ticks + marca de última ejecución en memoria. La purga NO corre en cada
+// tick (es I/O pesada): corre cuando vence el intervalo, y el primer tick del
+// proceso también (catch-up post-boot — es idempotente: re-correr no borra
+// dos veces porque la candidata exige segmentos aún no `purged`).
+let retentionPurgeTicks = 0;
+let lastRetentionPurgeAt: number | null = null;
+
 function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
   const d = opts.deps ?? {};
   return {
@@ -454,6 +495,7 @@ function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
     transitionRun:
       d.transitionRun ??
       ((o) => transitionTransmission(o, { now: opts.now })),
+    purgeRetention: d.purgeRetention ?? ((now) => purgeExpiredRecordings(now)),
   };
 }
 
@@ -879,6 +921,39 @@ export async function checkAndRunScheduledTransmissions(
         );
       }
     }
+
+    // Fase C — purga de retención del crudo (PD-06). Una vez por día (env
+    // `RETENTION_PURGE_INTERVAL_MINUTES`, default 1440) y al primer tick del
+    // proceso. Doble guardia — contador de ticks Y marca de última ejecución:
+    // ninguna sola condición basta, así un `now` inyectado raro o un restart
+    // no disparan purgas extra. Todo en try/catch: jamás tumba el scheduler.
+    retentionPurgeTicks += 1;
+    const purgeIntervalMinutes = retentionPurgeIntervalMinutes();
+    const purgeDueByTicks =
+      lastRetentionPurgeAt === null ||
+      retentionPurgeTicks >= Math.max(1, Math.round(purgeIntervalMinutes));
+    const purgeDueByClock =
+      lastRetentionPurgeAt === null ||
+      now.getTime() - lastRetentionPurgeAt >= purgeIntervalMinutes * 60_000;
+    if (retentionPurgeEnabled() && purgeDueByTicks && purgeDueByClock) {
+      retentionPurgeTicks = 0;
+      lastRetentionPurgeAt = now.getTime();
+      try {
+        const outcome = await deps.purgeRetention(now);
+        if (outcome.purged > 0 || outcome.errors.length > 0) {
+          console.log(
+            `[TransmissionScheduler] purga de retención: ${outcome.purged}/${outcome.scanned} grabaciones, ` +
+              `${outcome.bytesFreed} bytes liberados, ${outcome.skipped} salteadas, ` +
+              `${outcome.errors.length} errores`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          '[TransmissionScheduler] purga de retención falló:',
+          errorMessage(err),
+        );
+      }
+    }
   } finally {
     loopRunning = false;
   }
@@ -925,4 +1000,8 @@ export function stopTransmissionScheduler(): void {
     schedulerInterval = null;
   }
   lastAttemptAt.clear();
+  // La fase C vuelve al estado "recién booteado": próximo init, primer
+  // tick = catch-up de purga otra vez.
+  retentionPurgeTicks = 0;
+  lastRetentionPurgeAt = null;
 }

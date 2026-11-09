@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { requireAuth, requireActiveSubscription } from "../middleware/auth.js";
+import { requireAuth, requireActiveSubscription, requireRole } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { scheduledTransmissions, transmissions } from "../db/schema/transmissions.js";
 import { programs } from "../db/schema/programs.js";
@@ -35,6 +35,11 @@ import {
     type StartLiveDeps,
 } from "../services/startLiveService.js";
 import { serializeTransmission } from "../services/transmissionService.js";
+import {
+    describeRetention,
+    getRetentionPolicy,
+    purgeExpiredRecordings,
+} from "../services/rawRetentionService.js";
 
 // ---------------------------------------------------------------------------
 // Router — mounted at /api/transmissions (PC-08)
@@ -553,6 +558,64 @@ transmissionsRouter.get("/sources", requireAuth, (_req: Request, res: Response) 
         ],
     });
 });
+
+// ------------------------------------------------------------------
+// GET /api/transmissions/retention — política de retención del crudo (PD-06).
+//
+// Devuelve la política efectiva del tenant (`retentionDays` del plan, null =
+// sin límite) + un resumen dryRun: cuántas grabaciones ya vencieron la
+// retención y cuántas se purgarían ahora (las `skipped` tienen un render de
+// clip en vuelo). Todo acotado por req.auth.tenantId — sin datos ajenos.
+// ------------------------------------------------------------------
+transmissionsRouter.get("/retention", requireAuth, async (req: Request, res: Response) => {
+    try {
+        const tenantId = req.auth!.tenantId;
+        const policy = await getRetentionPolicy(tenantId);
+        // dryRun tenant-scoped: calcula el preview sin borrar ni tocar filas.
+        const preview = await purgeExpiredRecordings(new Date(), { tenantId, dryRun: true });
+        res.json({
+            retentionDays: policy.retentionDays,
+            label: describeRetention(policy),
+            summary: {
+                candidates: preview.scanned,
+                wouldPurge: preview.purged,
+                skipped: preview.skipped,
+                bytesEstimate: preview.bytesFreed,
+            },
+        });
+    } catch (error) {
+        console.error("[Transmissions] Error al obtener la retención:", error);
+        res.status(500).json({ error: "Error al obtener la política de retención" });
+    }
+});
+
+// ------------------------------------------------------------------
+// POST /api/transmissions/retention/purge — purga manual del crudo (PD-06).
+//
+// Corre `purgeExpiredRecordings` real (dryRun=false) ACOTADO al tenant del
+// token: un tenant sólo purga su propio material. Guard: suscripción activa
+// + rol owner/editor (la purga borra archivos — escritura destructiva, la
+// lectura queda atrás de requireAuth sola).
+// ------------------------------------------------------------------
+transmissionsRouter.post(
+    "/retention/purge",
+    requireAuth,
+    requireActiveSubscription,
+    requireRole("owner", "editor"),
+    async (req: Request, res: Response) => {
+        try {
+            const tenantId = req.auth!.tenantId;
+            const outcome = await purgeExpiredRecordings(new Date(), {
+                tenantId,
+                dryRun: false,
+            });
+            res.json({ outcome });
+        } catch (error) {
+            console.error("[Transmissions] Error en la purga de retención:", error);
+            res.status(500).json({ error: "Error al ejecutar la purga del crudo" });
+        }
+    },
+);
 
 // ------------------------------------------------------------------
 // POST /api/transmissions/vod-upload — fallback VOD (PD-07 B).
