@@ -7,7 +7,7 @@ import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } from 
 import slugify from 'slugify';
 import { UserRole, UserStatus } from '../db/schema/enums.js';
 import { users, tenants, subscriptions, plans, refreshTokens, tenantFeatures } from '../db/schema/index.js';
-import { auditLog } from '../db/schema/index.js';
+import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { buildFeatureRowsForPlan } from './tenantFeaturesService.js';
 import { eq, and, isNull } from 'drizzle-orm';
 
@@ -89,11 +89,14 @@ export async function register(input: {
 
     sendVerificationEmail(normalizedEmail, fullName, result.verificationToken).catch(console.error);
 
-    await db.insert(auditLog).values({
+    await recordAuditEvent({
+        action: AUDIT_ACTIONS.REGISTER,
         tenantId: result.tenantId,
         userId: result.userId,
-        action: 'register',
-        metadata: { email: normalizedEmail },
+        actorEmail: normalizedEmail,
+        actorRole: UserRole.owner,
+        entityType: 'tenant',
+        entityId: result.tenantId,
     });
 
     return { message: 'Cuenta creada. Revisa tu email para verificar tu cuenta.' };
@@ -124,10 +127,13 @@ export async function verifyEmail(token: string) {
 
     sendWelcomeEmail(user.email, user.fullName).catch(console.error);
 
-    await db.insert(auditLog).values({
+    await recordAuditEvent({
+        action: AUDIT_ACTIONS.EMAIL_VERIFIED,
         tenantId: user.tenantId,
         userId: user.id,
-        action: 'email_verified',
+        actorEmail: user.email,
+        entityType: 'user',
+        entityId: user.id,
     });
 
     return { message: 'Email verificado exitosamente. Ya puedes iniciar sesion.' };
@@ -160,17 +166,30 @@ export async function login(
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) {
-        await db.insert(auditLog).values({
+        await recordAuditEvent({
+            action: AUDIT_ACTIONS.LOGIN_FAILED,
             tenantId: user.tenantId,
             userId: user.id,
-            action: 'login_failed',
+            actorEmail: user.email,
+            outcome: 'denied',
             ipAddress,
+            userAgent,
             metadata: { reason: 'invalid_password' },
         });
         throw new AppError('Credenciales invalidas', 401);
     }
 
     if (user.status === UserStatus.suspended) {
+        await recordAuditEvent({
+            action: AUDIT_ACTIONS.LOGIN_BLOCKED,
+            tenantId: user.tenantId,
+            userId: user.id,
+            actorEmail: user.email,
+            outcome: 'denied',
+            ipAddress,
+            userAgent,
+            metadata: { reason: 'account_suspended' },
+        });
         throw new AppError('Tu cuenta esta suspendida. Contacta soporte.', 403);
     }
 
@@ -186,6 +205,7 @@ export async function login(
         tenantId: user.tenantId,
         email: user.email,
         role: user.role,
+        isPlatformAdmin: user.isPlatformAdmin,
     };
 
     const accessToken = jwt.sign(payload, JWT_SECRET, {
@@ -196,10 +216,13 @@ export async function login(
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id));
 
-    await db.insert(auditLog).values({
+    await recordAuditEvent({
+        action: AUDIT_ACTIONS.LOGIN_SUCCESS,
         tenantId: user.tenantId,
         userId: user.id,
-        action: 'login_success',
+        actorEmail: user.email,
+        actorRole: user.role,
+        entityType: 'session',
         ipAddress,
         userAgent,
     });
@@ -208,6 +231,7 @@ export async function login(
         user: {
             id: user.id, email: user.email, fullName: user.fullName,
             role: user.role, status: user.status, isVerified: user.isVerified,
+            isPlatformAdmin: user.isPlatformAdmin,
         },
         tenant: tenant ? {
             id: tenant.id, name: tenant.name, slug: tenant.slug,
@@ -259,7 +283,8 @@ export async function getMe(userId: string) {
         user: {
             id: user.id, email: user.email, fullName: user.fullName,
             avatarUrl: user.avatarUrl, role: user.role, status: user.status,
-            isVerified: user.isVerified, lastLoginAt: user.lastLoginAt,
+            isVerified: user.isVerified, isPlatformAdmin: user.isPlatformAdmin,
+            lastLoginAt: user.lastLoginAt,
             createdAt: user.createdAt,
         },
         tenant: {
@@ -340,10 +365,14 @@ export async function resetPassword(token: string, newPassword: string) {
         })
         .where(eq(users.id, user.id));
 
-    await db.insert(auditLog).values({
+    await recordAuditEvent({
+        action: AUDIT_ACTIONS.PASSWORD_RESET,
         tenantId: user.tenantId,
         userId: user.id,
-        action: 'password_reset',
+        actorEmail: user.email,
+        actorRole: user.role,
+        entityType: 'user',
+        entityId: user.id,
     });
 
     return { message: 'Contrasena actualizada exitosamente.' };

@@ -13,6 +13,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 
 import { requireAuth } from "../middleware/auth.js";
+import { auditFromRequest, AUDIT_ACTIONS } from "../services/auditService.js";
 import {
   getPublicationsByStatus,
   getReviewPublicationById,
@@ -100,6 +101,12 @@ export function registerReviewRoutes(app: Express): void {
       });
     } catch (err) {
       const e = err as Error;
+      void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH_FAILED, {
+        outcome: 'error',
+        entityType: 'publication',
+        entityId: id,
+        metadata: { error: e.message },
+      });
       res.status(500).json({ error: `Error al publicar: ${e.message}` });
       return;
     }
@@ -111,6 +118,16 @@ export function registerReviewRoutes(app: Express): void {
       by: req.auth!.userId,
     };
     await addEditHistoryEntry(id, tenantId, entry);
+
+    void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH, {
+      entityType: 'publication',
+      entityId: id,
+      metadata: { results: publishResults },
+    });
+    void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
+      entityType: 'publication',
+      entityId: id,
+    });
 
     res.json({ success: true, publishResults });
   });
@@ -136,6 +153,11 @@ export function registerReviewRoutes(app: Express): void {
       by: req.auth!.userId,
     };
     await addEditHistoryEntry(id, tenantId, entry);
+
+    void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_REJECTED, {
+      entityType: 'publication',
+      entityId: id,
+    });
 
     res.json({ success: true });
   });

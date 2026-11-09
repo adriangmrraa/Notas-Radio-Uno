@@ -3,6 +3,8 @@ import Stripe from 'stripe';
 import { MercadoPagoConfig, PreApproval, Payment } from 'mercadopago';
 import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
+import { requireOwner } from '../middleware/authz.js';
+import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
 import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc } from 'drizzle-orm';
@@ -157,7 +159,7 @@ router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /api/billing/checkout — Auth required
 // ---------------------------------------------------------------------------
-router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
+router.post('/checkout', requireAuth, requireOwner, async (req: Request, res: Response) => {
     try {
         const { planName, billingPeriod = 'monthly', provider = 'stripe' } = req.body;
 
@@ -190,6 +192,12 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
                 res.status(400).json({ error: 'Plan no tiene precio configurado en Stripe' });
                 return;
             }
+
+            void auditFromRequest(req, AUDIT_ACTIONS.BILLING_CHECKOUT, {
+                entityType: 'plan',
+                entityId: plan.id,
+                metadata: { planName: plan.name, billingPeriod, provider },
+            });
 
             const session = await stripe.checkout.sessions.create({
                 mode: 'subscription',
@@ -252,7 +260,7 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /api/billing/cancel — Auth required
 // ---------------------------------------------------------------------------
-router.post('/cancel', requireAuth, async (req: Request, res: Response) => {
+router.post('/cancel', requireAuth, requireOwner, async (req: Request, res: Response) => {
     try {
         const [subscription] = await db.select().from(subscriptions)
             .where(eq(subscriptions.tenantId, req.auth!.tenantId))
@@ -279,6 +287,12 @@ router.post('/cancel', requireAuth, async (req: Request, res: Response) => {
                 });
             }
         }
+
+        void auditFromRequest(req, AUDIT_ACTIONS.BILLING_PLAN_CHANGED, {
+            entityType: 'subscription',
+            entityId: subscription.id,
+            metadata: { action: 'cancel_at_period_end' },
+        });
 
         res.json({ message: 'Suscripcion cancelada al final del periodo' });
     } catch (err) {
