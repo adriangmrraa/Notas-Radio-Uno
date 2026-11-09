@@ -34,7 +34,7 @@ export const persons = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    name: varchar('name', { length: 200 }).notNull(),
+    name: varchar('name', { length: 255 }).notNull(),
     roleLabel: varchar('role_label', { length: 120 }),
     role: personRoleEnum('role').notNull().default('conductor'),
     bio: text('bio'),

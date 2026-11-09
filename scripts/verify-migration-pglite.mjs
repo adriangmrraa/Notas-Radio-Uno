@@ -29,6 +29,7 @@ if (files.length === 0) {
 }
 
 const db = new PGlite();
+const pc02Migration = files.find((file) => file.startsWith('0007_'));
 
 // Statements que PGlite no puede ejecutar por falta de pgvector; devuelve
 // null para saltearlos o el SQL transformado cuando aplica.
@@ -54,9 +55,89 @@ const apply = async (file) => {
 };
 
 // 1) Todas las migraciones en orden.
-for (const file of files) {
+for (const file of files.filter((file) => file !== pc02Migration)) {
   await apply(file);
   console.log(`applied ${file}`);
+}
+
+if (pc02Migration) {
+  await db.exec(`
+    INSERT INTO tenants (id, name, slug) VALUES
+      ('00000000-0000-4000-8000-000000000001', 'Tenant one', 'tenant-one'),
+      ('00000000-0000-4000-8000-000000000002', 'Tenant two', 'tenant-two');
+    INSERT INTO programs (id, tenant_id, name) VALUES
+      ('00000000-0000-4000-8000-000000000011', '00000000-0000-4000-8000-000000000001', 'Morning show'),
+      ('00000000-0000-4000-8000-000000000012', '00000000-0000-4000-8000-000000000002', 'Evening show');
+    INSERT INTO conductors (id, tenant_id, program_id, name, role, bio, is_active) VALUES
+      ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'Ana Columnista', 'columnista', 'Legacy conductor bio', true),
+      ('00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000002', NULL, 'Bruno Otro', 'other', NULL, false),
+      ('00000000-0000-4000-8000-000000000103', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000012', 'Cross tenant conductor', 'conductor', NULL, true);
+    INSERT INTO guests (id, tenant_id, program_id, name, role, bio, scheduled_date, is_active) VALUES
+      ('00000000-0000-4000-8000-000000000201', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'Carla Invitada', 'Investigadora', 'Legacy guest bio', '2026-11-09', true);
+  `);
+  await apply(pc02Migration);
+  console.log(`applied ${pc02Migration}`);
+
+  const ids = `(
+    '00000000-0000-4000-8000-000000000101',
+    '00000000-0000-4000-8000-000000000102',
+    '00000000-0000-4000-8000-000000000103',
+    '00000000-0000-4000-8000-000000000201'
+  )`;
+  const { rows: firstPassPersons } = await db.query(`SELECT id FROM persons WHERE id IN ${ids}`);
+  await apply(pc02Migration);
+  console.log(`re-applied ${pc02Migration} (idempotent)`);
+  const { rows: secondPassPersons } = await db.query(`SELECT id FROM persons WHERE id IN ${ids}`);
+  if (firstPassPersons.length !== 4 || secondPassPersons.length !== 4) {
+    throw new Error('PC-02 duplicated or omitted migrated persons on re-application');
+  }
+
+  const { rows: mappings } = await db.query(`
+    SELECT id, person_id, tenant_id FROM conductors
+    WHERE id IN ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000103')
+    UNION ALL
+    SELECT id, person_id, tenant_id FROM guests
+    WHERE id = '00000000-0000-4000-8000-000000000201'
+  `);
+  if (mappings.length !== 4 || mappings.some((row) => row.id !== row.person_id)) {
+    throw new Error('PC-02 did not link every legacy row to its deterministic person');
+  }
+
+  const { rows: tenantCounts } = await db.query(`
+    SELECT tenant_id, COUNT(*)::int AS count FROM persons
+    WHERE tenant_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')
+    GROUP BY tenant_id ORDER BY tenant_id
+  `);
+  if (tenantCounts.length !== 2 || Number(tenantCounts[0].count) !== 3 || Number(tenantCounts[1].count) !== 1) {
+    throw new Error('PC-02 failed tenant isolation for migrated persons');
+  }
+
+  const { rows: roles } = await db.query(`SELECT id, role FROM persons WHERE id IN ${ids}`);
+  const rolesById = new Map(roles.map((row) => [row.id, row.role]));
+  if (rolesById.get('00000000-0000-4000-8000-000000000101') !== 'columnista'
+    || rolesById.get('00000000-0000-4000-8000-000000000102') !== 'otro'
+    || rolesById.get('00000000-0000-4000-8000-000000000103') !== 'conductor'
+    || rolesById.get('00000000-0000-4000-8000-000000000201') !== 'invitado') {
+    throw new Error('PC-02 assigned an incorrect person role');
+  }
+
+  const { rows: programLinks } = await db.query(`
+    SELECT person_id FROM person_program
+    WHERE person_id IN ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000201')
+  `);
+  if (programLinks.length !== 2) {
+    throw new Error('PC-02 did not preserve legacy program relationships');
+  }
+
+  const { rows: crossTenantLinks } = await db.query(`
+    SELECT pp.person_id
+    FROM person_program pp
+    WHERE pp.person_id = '00000000-0000-4000-8000-000000000103'
+      AND pp.program_id = '00000000-0000-4000-8000-000000000012'
+  `);
+  if (crossTenantLinks.length !== 0) {
+    throw new Error('PC-02 created a cross-tenant person-program relationship');
+  }
 }
 
 // 2) Idempotencia: la 0005 (Épica B) y la 0006 (Épica C) se aplican dos veces.
