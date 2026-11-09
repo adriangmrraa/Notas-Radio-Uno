@@ -12,6 +12,8 @@ import { detectAlerts } from "./alertService.js";
 import { notify } from "./notificationService.js";
 import { executeAgent } from "./agentExecutionService.js";
 import { detectHighlights, generateClipVideo, createClip, updateClipVideoPath } from "./clipService.js";
+import { resolveEditorialPromptContext } from "./editorialPromptService.js";
+import type { EditorialGenerationContext } from "./editorialPromptService.js";
 import type { CustomAgent, Utterance } from "../../shared/types.js";
 import { analyzeTopicSegments, extractSegmentText } from "./topicService.js";
 import { isDuplicateTopic, isTopicInSession } from "./deduplicationService.js";
@@ -99,6 +101,12 @@ class AutoPipeline {
   // Clip generation: accumulated utterances and retained audio file for the last topic
   private recentUtterances: Utterance[];
   private lastAudioFilePath: string | null;
+  // Línea editorial (PC-06): se resuelve una sola vez por corrida,
+  // cacheada por clave tenantId:programId
+  private editorialContextPromise: {
+    key: string;
+    promise: Promise<EditorialGenerationContext>;
+  } | null;
 
   constructor(io: Server, tenantId: string = 'default') {
     this.io = io;
@@ -141,6 +149,7 @@ class AutoPipeline {
     // Clip generation state
     this.recentUtterances = [];
     this.lastAudioFilePath = null;
+    this.editorialContextPromise = null;
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
@@ -169,6 +178,7 @@ class AutoPipeline {
     this.currentStep = "starting";
     // Reset clip state for new session
     this.recentUtterances = [];
+    this.editorialContextPromise = null;
     if (this.lastAudioFilePath) {
       try { fs.unlinkSync(this.lastAudioFilePath); } catch (_) { /* ignore */ }
       this.lastAudioFilePath = null;
@@ -695,6 +705,24 @@ class AutoPipeline {
     }
   }
 
+  /**
+   * Línea editorial efectiva del canal (default del tenant + override del
+   * programa de la corrida). Se resuelve UNA vez por corrida y se cachea
+   * por clave `tenantId:programId` — no se consulta la DB por chunk ni por
+   * llamada de generación. Si no hay perfil, está desactivado o la
+   * resolución falla, devuelve contexto vacío (generación igual a antes).
+   */
+  private getEditorialContext(): Promise<EditorialGenerationContext> {
+    const key = `${this.tenantId}:${this.config.programId ?? ""}`;
+    if (!this.editorialContextPromise || this.editorialContextPromise.key !== key) {
+      this.editorialContextPromise = {
+        key,
+        promise: resolveEditorialPromptContext(this.tenantId, this.config.programId ?? null),
+      };
+    }
+    return this.editorialContextPromise.promise;
+  }
+
   private async resolveSpeakerPhoto(speakerName: string): Promise<Buffer | null> {
     if (!this.config.programId) return null;
     try {
@@ -781,11 +809,14 @@ class AutoPipeline {
     });
 
     const speakerContext = await this.loadSpeakerContext();
+    // Línea editorial de la corrida (una sola resolución, cacheada):
+    // gobierna insights, nota, título, clips y variantes de este segmento.
+    const editorial = await this.getEditorialContext();
     // Prefer diarized text when both speaker context and diarization are available
     const textForInsights = (diarizedSegmentText && speakerContext)
       ? diarizedSegmentText
       : transcriptionForNote;
-    const insights: Insights = await extractInsights(textForInsights, speakerContext);
+    const insights: Insights = await extractInsights(textForInsights, speakerContext, editorial.block);
     this.io.emit("pipeline-node-status", { nodeId: "insights", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after insights
@@ -856,6 +887,7 @@ class AutoPipeline {
       structure: this.config.structure,
       webContext,
       insights: `Resumen: ${enrichedInsights.summary}\nDatos clave: ${enrichedInsights.keyFacts.join(", ")}`,
+      editorialBlock: editorial.block,
     });
     this.io.emit("pipeline-node-status", { nodeId: "generate_news", status: "completed", timestamp: new Date().toISOString() });
 
@@ -872,7 +904,7 @@ class AutoPipeline {
       icon: "brain",
     });
 
-    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary);
+    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary, editorial.block);
     this.io.emit("pipeline-node-status", { nodeId: "generate_title", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after title generation
@@ -923,7 +955,7 @@ class AutoPipeline {
     if (this.recentUtterances.length > 0 && this.lastAudioFilePath && fs.existsSync(this.lastAudioFilePath)) {
       try {
         const branding = await loadTenantBranding(this.tenantId);
-        const highlights = await detectHighlights(transcriptionForNote, this.recentUtterances);
+        const highlights = await detectHighlights(transcriptionForNote, this.recentUtterances, editorial.block);
         this.emit("detail", {
           step: "creating_flyer", sub: "clips_detected",
           message: `${highlights.length} clip(s) detectado(s) en el segmento`,
@@ -1072,7 +1104,7 @@ class AutoPipeline {
       });
       let contentVariants = null;
       try {
-        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone);
+        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone, editorial);
         this.emit("detail", {
           step: "pending_review", sub: "multiplier_done",
           message: `Variantes generadas: ${contentVariants.twitterThread.length} tweets, ${contentVariants.instagramCarousel.length} slides`,
@@ -1814,7 +1846,8 @@ class AutoPipeline {
   private async detectAndEmitAlerts(text: string): Promise<void> {
     const speakerContext = await this.loadSpeakerContext().catch(() => null);
     const keywords = await getAlertKeywords(this.tenantId);
-    const alerts = await detectAlerts(text, keywords, speakerContext);
+    const { block: editorialBlock } = await this.getEditorialContext();
+    const alerts = await detectAlerts(text, keywords, speakerContext, editorialBlock);
 
     for (const alert of alerts) {
       // Persistir en notifications table

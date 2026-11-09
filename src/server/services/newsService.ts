@@ -71,6 +71,7 @@ async function generateNewsCopy(
       structure: "completa",
       webContext: "",
       insights: "",
+      editorialBlock: "",
     };
   } else {
     const defaults: Required<NewsGenerationOptions> = {
@@ -80,6 +81,7 @@ async function generateNewsCopy(
       insights: "",
       context: "",
       transcription: "",
+      editorialBlock: "",
     };
     options = { ...defaults, ...contextOrOptions };
   }
@@ -89,7 +91,16 @@ async function generateNewsCopy(
 
   let userPrompt = `${toneInstruction}
 
-${structureInstruction}
+${structureInstruction}`;
+
+  // La línea editorial va DESPUÉS de tono/estructura y ANTES de la
+  // transcripción: es la directriz principal del canal y prevalece sobre el
+  // TONE_PROMPTS histórico (PC-06 — precedencia de tono documentada).
+  if (options.editorialBlock?.trim()) {
+    userPrompt += `\n\n${options.editorialBlock.trim()}`;
+  }
+
+  userPrompt += `
 
 TRANSCRIPCION DE LA TRANSMISION EN VIVO:
 """
@@ -147,14 +158,21 @@ Redacta la nota periodistica ahora.`;
 
 /**
  * Genera un titulo periodistico.
+ * `editorialBlock` (opcional): la línea editorial también gobierna el
+ * titular (tono del canal, reglas, firma, formatos).
  */
-async function generateTitle(transcription: string, insights?: string): Promise<string> {
+async function generateTitle(
+  transcription: string,
+  insights?: string,
+  editorialBlock?: string,
+): Promise<string> {
+  const editorialSection = editorialBlock?.trim() ? `\n${editorialBlock.trim()}\n` : "";
   try {
     const { text } = await chatCompletion({
       systemPrompt: SYSTEM_PROMPT_TITLE,
       userPrompt: `Transcripcion: ${transcription.slice(0, 600)}
 Insights: ${insights || ""}
-
+${editorialSection}
 Genera UN SOLO titulo:`,
       temperature: 0.6,
       maxTokens: 60,

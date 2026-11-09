@@ -13,6 +13,10 @@ import { processImage } from "../services/imageService.js";
 import { loadTenantBranding } from "../services/brandingService.js";
 import { scrapeElComercialArticle as scrapeArticle } from "../services/scraperService.js";
 import { generateNewsCopy } from "../services/newsService.js";
+import {
+  programBelongsToTenant,
+  resolveEditorialPromptContext,
+} from "../services/editorialPromptService.js";
 import { createPublication } from "../services/databaseService.js";
 import { getConnectionStatus } from "../services/metaAuthService.js";
 import { publishToAllMeta } from "../services/metaPublishService.js";
@@ -402,9 +406,10 @@ export function registerGenerateRoutes(
   // POST /api/generateNewsCopy
   // ------------------------------------------------------------------
   app.post("/api/generateNewsCopy", requireAuth, async (req: Request, res: Response) => {
-    const { context, transcription } = req.body as {
+    const { context, transcription, programId } = req.body as {
       context?: string;
       transcription?: string;
+      programId?: string;
     };
 
     if (!context && !transcription) {
@@ -412,11 +417,26 @@ export function registerGenerateRoutes(
       return;
     }
 
+    if (programId !== undefined && typeof programId !== "string") {
+      res.status(400).json({ error: "programId debe ser un string." });
+      return;
+    }
+
     try {
-      const generatedCopy = await generateNewsCopy(
-        context || "",
-        transcription || "",
-      );
+      const tenantId = req.auth!.tenantId;
+      // programId opcional (PC-06): si viene, debe ser un programa del
+      // tenant — un programId ajeno no se usa ni se ignora en silencio.
+      if (programId && !(await programBelongsToTenant(tenantId, programId.trim()))) {
+        res.status(404).json({ error: "Programa no encontrado" });
+        return;
+      }
+
+      const editorial = await resolveEditorialPromptContext(tenantId, programId?.trim() || null);
+      const generatedCopy = await generateNewsCopy({
+        context: context || "",
+        transcription: transcription || "",
+        editorialBlock: editorial.block,
+      });
       res.setHeader("Content-Type", "application/json");
       res.json({ generatedCopy });
     } catch (error) {

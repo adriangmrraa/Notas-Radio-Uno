@@ -78,10 +78,14 @@ function filterQuotes(
 
 /**
  * Extrae insights clave de un bloque de transcripcion.
+ * `editorialBlock` (opcional, PC-06): los insights alimentan la nota — la
+ * línea editorial orienta qué temas/datos se extraen y los temas
+ * prohibidos/reglas se descartan desde acá.
  */
 async function extractInsights(
   transcriptionText: string,
-  speakerContext?: string | null
+  speakerContext?: string | null,
+  editorialBlock?: string
 ): Promise<Insights> {
   const basePrompt = `TRANSCRIPCION:
 """
@@ -111,7 +115,8 @@ Reglas:
       ? `\n\nTambién, identifica citas textuales relevantes de los participantes conocidos del programa:\n${speakerContext}\n\nPara cada cita textual encontrada, incluí en el JSON un campo "quotes" como array de objetos con:\n- "speaker": nombre exacto del participante (debe coincidir con la lista anterior)\n- "role": rol del participante\n- "text": la cita textual exacta (sin modificar las palabras)\n- "confidence": "high" si el hablante se identifica explícitamente en el texto, "medium" si se puede inferir del contexto, "low" si es una suposición\n\nIMPORTANTE: NO inventes atribuciones. Si no estás seguro de quién habla, usá "Desconocido" como speaker.`
       : "";
 
-  const userPrompt = basePrompt + speakerBlock;
+  const editorialSection = editorialBlock?.trim() ? `\n\n${editorialBlock.trim()}` : "";
+  const userPrompt = basePrompt + speakerBlock + editorialSection;
 
   try {
     const { text } = await chatCompletion({

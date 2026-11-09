@@ -71,10 +71,14 @@ interface CreateClipInput {
  * Usa Gemini para identificar 1-3 momentos "clip-worthy" en la transcripción.
  * Cada candidato tiene: startMs, endMs, hookText (frase gancho), reason.
  * Los clips deben durar entre 15 y 60 segundos.
+ *
+ * `editorialBlock` (opcional, PC-06): la línea editorial guía qué momentos
+ * le importan al canal (rubro, reglas, temas prohibidos, tono).
  */
 export async function detectHighlights(
   text: string,
   utterances: Utterance[],
+  editorialBlock?: string,
 ): Promise<ClipCandidate[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY no configurada');
@@ -84,8 +88,10 @@ export async function detectHighlights(
     `[${Math.round(u.start / 1000)}s - ${Math.round(u.end / 1000)}s] ${u.speaker}: ${u.text}`
   ).join('\n');
 
+  const editorialSection = editorialBlock?.trim() ? `\n\n${editorialBlock.trim()}\n` : '';
+
   const prompt = `Sos un productor de contenido viral experto en redes sociales.
-Analizá esta transcripción de un programa de radio/TV y encontrá los 1-3 momentos más impactantes, virales o compartibles.
+Analizá esta transcripción de un programa de radio/TV y encontrá los 1-3 momentos más impactantes, virales o compartibles.${editorialSection}
 
 TRANSCRIPCIÓN:
 ${text.slice(0, 3000)}

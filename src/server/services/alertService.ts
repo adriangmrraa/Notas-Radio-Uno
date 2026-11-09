@@ -67,7 +67,7 @@ function escapeRegex(s: string): string {
 
 // ── AI analysis via Gemini ───────────────────────────────────────────────────
 
-const GEMINI_ALERT_PROMPT = (text: string) => `
+const GEMINI_ALERT_PROMPT = (text: string, editorialBlock?: string) => `
 Analizá este fragmento de una transmisión en vivo y detectá momentos relevantes:
 
 "${text}"
@@ -94,6 +94,7 @@ Para cada detección, devolvé JSON:
 
 Si no hay nada relevante, devolvé { "alerts": [] }.
 Sé selectivo: solo alertas genuinamente importantes, no ruido.
+${editorialBlock?.trim() ? `\n${editorialBlock.trim()}\n` : ''}
 `.trim();
 
 interface GeminiAlertPayload {
@@ -107,7 +108,7 @@ interface GeminiAlertPayload {
   }>;
 }
 
-async function detectWithGemini(text: string): Promise<LiveAlert[]> {
+async function detectWithGemini(text: string, editorialBlock?: string): Promise<LiveAlert[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return [];
 
@@ -118,7 +119,7 @@ async function detectWithGemini(text: string): Promise<LiveAlert[]> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
     const body = {
-      contents: [{ role: "user", parts: [{ text: GEMINI_ALERT_PROMPT(text) }] }],
+      contents: [{ role: "user", parts: [{ text: GEMINI_ALERT_PROMPT(text, editorialBlock) }] }],
       generationConfig: {
         responseMimeType: "application/json",
         temperature: 0.2,
@@ -166,15 +167,18 @@ async function detectWithGemini(text: string): Promise<LiveAlert[]> {
  * @param text           Texto a analizar
  * @param keywords       Lista de palabras clave configuradas por el tenant
  * @param _speakerContext Contexto de conductores/invitados (reservado para uso futuro)
+ * @param editorialBlock Línea editorial del canal (PC-06): filtra qué
+ *                       momentos le importan a este medio
  */
 export async function detectAlerts(
   text: string,
   keywords: string[],
   _speakerContext?: string | null,
+  editorialBlock?: string,
 ): Promise<LiveAlert[]> {
   const [keywordAlerts, aiAlerts] = await Promise.all([
     Promise.resolve(detectKeywords(text, keywords)),
-    detectWithGemini(text),
+    detectWithGemini(text, editorialBlock),
   ]);
 
   return [...keywordAlerts, ...aiAlerts];

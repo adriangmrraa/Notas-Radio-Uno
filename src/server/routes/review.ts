@@ -26,6 +26,10 @@ import { chatCompletion } from "../services/aiSdkService.js";
 import { processImage } from "../services/imageService.js";
 import { loadTenantBranding } from "../services/brandingService.js";
 import { generateContentVariants, regenerateVariant } from "../services/contentMultiplierService.js";
+import {
+  programBelongsToTenant,
+  resolveEditorialPromptContext,
+} from "../services/editorialPromptService.js";
 import type { EditHistoryEntry, TemplateId, FontFamilyId, ContentVariants } from "../../shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -307,9 +311,10 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
   app.post("/api/review/:id/regenerate-variant", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
     const id = req.params.id;
-    const { variant, prompt: customPrompt } = req.body as {
+    const { variant, prompt: customPrompt, programId } = req.body as {
       variant?: keyof ContentVariants;
       prompt?: string;
+      programId?: string;
     };
 
     const validVariants: Array<keyof ContentVariants> = [
@@ -320,6 +325,11 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
       res.status(400).json({
         error: `El campo 'variant' es requerido. Valores válidos: ${validVariants.join(', ')}`,
       });
+      return;
+    }
+
+    if (programId !== undefined && typeof programId !== "string") {
+      res.status(400).json({ error: "programId debe ser un string." });
       return;
     }
 
@@ -335,7 +345,13 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
     }
 
     try {
-      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt);
+      // programId opcional (PC-06): si viene, debe ser del tenant.
+      if (programId && !(await programBelongsToTenant(tenantId, programId.trim()))) {
+        res.status(404).json({ error: "Programa no encontrado" });
+        return;
+      }
+      const editorial = await resolveEditorialPromptContext(tenantId, programId?.trim() || null);
+      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt, editorial.block);
 
       // Actualizar la variante en DB manteniendo las demás intactas
       const currentVariants: ContentVariants = pub.contentVariants ?? {
@@ -381,8 +397,22 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
       return;
     }
 
+    const { programId } = (req.body ?? {}) as { programId?: string };
+    if (programId !== undefined && typeof programId !== "string") {
+      res.status(400).json({ error: "programId debe ser un string." });
+      return;
+    }
+
     try {
-      const variants = await generateContentVariants(pub.title, pub.content, "formal");
+      // programId opcional (PC-06): si viene, debe ser del tenant. El tono
+      // pasa a ser el de la línea editorial cuando existe (antes "formal"
+      // hardcodeado); sin perfil se mantiene "formal".
+      if (programId && !(await programBelongsToTenant(tenantId, programId.trim()))) {
+        res.status(404).json({ error: "Programa no encontrado" });
+        return;
+      }
+      const editorial = await resolveEditorialPromptContext(tenantId, programId?.trim() || null);
+      const variants = await generateContentVariants(pub.title, pub.content, editorial.tone ?? "formal", editorial);
       await updatePublicationContent(id, tenantId, { contentVariants: variants });
       res.json({ success: true, variants });
     } catch (err) {

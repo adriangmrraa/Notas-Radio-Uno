@@ -256,6 +256,8 @@ export interface NewsGenerationOptions {
   webContext?: string;
   insights?: string;
   context?: string;
+  /** Bloque serializado de la línea editorial (PC-06); "" = sin perfil. */
+  editorialBlock?: string;
 }
 
 // Webhook settings
