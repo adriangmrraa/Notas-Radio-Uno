@@ -4,6 +4,7 @@ import { relations } from 'drizzle-orm';
 export * from './enums.js';
 export * from './tenants.js';
 export * from './users.js';
+export * from './userTenants.js';
 export * from './credentials.js';
 export * from './publications.js';
 export * from './agents.js';
@@ -24,6 +25,7 @@ export * from './editorialProfiles.js';
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
 import { users } from './users.js';
+import { userTenants } from './userTenants.js';
 import { credentials } from './credentials.js';
 import { publications, transcriptions } from './publications.js';
 import { customAgents, pipelineConfigs } from './agents.js';
@@ -54,6 +56,7 @@ import { editorialProfiles } from './editorialProfiles.js';
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   owner: one(users, { fields: [tenants.ownerId], references: [users.id], relationName: 'TenantOwner' }),
   users: many(users, { relationName: 'TenantUsers' }),
+  memberships: many(userTenants),
   credentials: many(credentials),
   businessAssets: many(businessAssets),
   socialPortfolios: many(socialPortfolios),
@@ -92,11 +95,18 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
 // ── users relations ───────────────────────────────────────────────────────────
 export const usersRelations = relations(users, ({ one, many }) => ({
   tenant: one(tenants, { fields: [users.tenantId], references: [tenants.id], relationName: 'TenantUsers' }),
+  memberships: many(userTenants),
   ownedTenants: many(tenants, { relationName: 'TenantOwner' }),
   refreshTokens: many(refreshTokens),
   auditLogs: many(auditLog),
   scheduledJobs: many(scheduledJobs, { relationName: 'JobCreator' }),
   invitationsSent: many(teamInvitations, { relationName: 'InvitedBy' }),
+}));
+
+// ── user_tenants relations (membresías N:M) ───────────────────────────────────
+export const userTenantsRelations = relations(userTenants, ({ one }) => ({
+  user: one(users, { fields: [userTenants.userId], references: [users.id] }),
+  tenant: one(tenants, { fields: [userTenants.tenantId], references: [tenants.id] }),
 }));
 
 // ── credentials relations ─────────────────────────────────────────────────────

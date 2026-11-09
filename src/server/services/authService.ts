@@ -6,9 +6,16 @@ import { AppError } from '../lib/errors.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } from './emailService.js';
 import slugify from 'slugify';
 import { UserRole, UserStatus } from '../db/schema/enums.js';
-import { users, tenants, subscriptions, plans, refreshTokens, tenantFeatures } from '../db/schema/index.js';
+import { users, tenants, subscriptions, plans, refreshTokens, tenantFeatures, userTenants } from '../db/schema/index.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { buildFeatureRowsForPlan } from './tenantFeaturesService.js';
+import {
+    listUserMemberships,
+    pickDefaultMembership,
+    requireActiveMembership,
+    touchMembership,
+} from './membershipService.js';
+import { signSessionToken } from '../middleware/auth.js';
 import { startTrial } from './subscriptionLifecycleService.js';
 import { eq, and, isNull } from 'drizzle-orm';
 
@@ -60,6 +67,8 @@ export async function register(input: {
             email: normalizedEmail,
             passwordHash,
             fullName,
+            // Legacy (B-2): primer tenant del usuario. El acceso real vive en
+            // `user_tenants`.
             tenantId: tenant.id,
             role: UserRole.owner,
             status: isDev ? UserStatus.active : UserStatus.pending,
@@ -71,6 +80,15 @@ export async function register(input: {
         await tx.update(tenants)
             .set({ ownerId: user.id })
             .where(eq(tenants.id, tenant.id));
+
+        // Membresía owner del tenant recién creado (fuente de verdad del acceso).
+        await tx.insert(userTenants).values({
+            userId: user.id,
+            tenantId: tenant.id,
+            role: UserRole.owner,
+            status: 'active',
+            lastUsedAt: new Date(),
+        });
 
         const [trialPlan] = await tx.select().from(plans).where(eq(plans.name, 'trial')).limit(1);
 
@@ -147,20 +165,11 @@ export async function login(
 ) {
     const normalizedEmail = input.email.toLowerCase().trim();
 
-    const rows = await db.select({
-        user: users,
-        tenant: tenants,
-    })
-        .from(users)
-        .leftJoin(tenants, eq(users.tenantId, tenants.id))
+    const [user] = await db.select().from(users)
         .where(eq(users.email, normalizedEmail))
         .limit(1);
 
-    const row = rows[0];
-    if (!row) throw new AppError('Credenciales invalidas', 401);
-
-    const user = row.user;
-    const tenant = row.tenant;
+    if (!user) throw new AppError('Credenciales invalidas', 401);
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) {
@@ -198,67 +207,194 @@ export async function login(
         );
     }
 
-    const payload = {
-        userId: user.id,
-        tenantId: user.tenantId,
-        email: user.email,
-        role: user.role,
-        isPlatformAdmin: user.isPlatformAdmin,
-    };
+    // Multi-tenant (B-2): el tenant activo es el último usado y operable; el
+    // rol efectivo es el de ESA membresía, no el rol histórico del usuario.
+    const memberships = await listUserMemberships(user.id);
+    const active = pickDefaultMembership(memberships);
+    const activeTenantId = active?.tenantId ?? null;
+    const role = active?.role ?? user.role;
 
-    const accessToken = jwt.sign(payload, JWT_SECRET, {
-        expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256',
+    const accessToken = signSessionToken({
+        userId: user.id,
+        activeTenantId,
+        email: user.email,
+        role,
+        isPlatformAdmin: user.isPlatformAdmin,
     });
 
     await db.update(users)
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id));
 
+    if (activeTenantId) {
+        await touchMembership(user.id, activeTenantId);
+    }
+
     await recordAuditEvent({
         action: AUDIT_ACTIONS.LOGIN_SUCCESS,
-        tenantId: user.tenantId,
+        tenantId: activeTenantId,
         userId: user.id,
         actorEmail: user.email,
-        actorRole: user.role,
+        actorRole: role,
         entityType: 'session',
         ipAddress,
         userAgent,
+        metadata: { memberships: memberships.length, activeTenantId },
     });
 
     return {
         user: {
             id: user.id, email: user.email, fullName: user.fullName,
-            role: user.role, status: user.status, isVerified: user.isVerified,
+            role, status: user.status, isVerified: user.isVerified,
             isPlatformAdmin: user.isPlatformAdmin,
+            tenantId: activeTenantId,
         },
-        tenant: tenant ? {
-            id: tenant.id, name: tenant.name, slug: tenant.slug,
-            platformName: tenant.platformName, logoUrl: tenant.logoUrl, timezone: tenant.timezone,
+        tenant: active ? {
+            id: active.tenantId, name: active.name, slug: active.slug,
+            platformName: active.platformName, logoUrl: active.logoUrl,
         } : null,
+        tenants: memberships.map((m) => ({
+            id: m.tenantId,
+            name: m.name,
+            slug: m.slug,
+            platformName: m.platformName,
+            logoUrl: m.logoUrl,
+            role: m.role,
+            status: m.status,
+            isActive: m.isActive,
+            lastUsedAt: m.lastUsedAt,
+        })),
         accessToken,
+    };
+}
+
+// =============================================
+// SWITCH DE TENANT (B-2 / T-37)
+// =============================================
+export async function switchTenant(userId: string, tenantId: string, ipAddress?: string, userAgent?: string) {
+    // Valida membresía activa + tenant operativo, o lanza el motivo exacto.
+    const membership = await requireActiveMembership(userId, tenantId);
+
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user) throw new AppError('Usuario no encontrado', 404);
+    if (user.status === UserStatus.suspended) {
+        throw new AppError('Tu cuenta esta suspendida', 403, 'ACCOUNT_SUSPENDED');
+    }
+
+    await touchMembership(userId, tenantId);
+
+    const memberships = await listUserMemberships(userId);
+    const role = membership.role;
+
+    const accessToken = signSessionToken({
+        userId: user.id,
+        activeTenantId: tenantId,
+        email: user.email,
+        role,
+        isPlatformAdmin: user.isPlatformAdmin,
+    });
+
+    await recordAuditEvent({
+        action: AUDIT_ACTIONS.TENANT_SWITCHED,
+        tenantId,
+        userId: user.id,
+        actorEmail: user.email,
+        actorRole: role,
+        entityType: 'session',
+        entityId: tenantId,
+        ipAddress,
+        userAgent,
+    });
+
+    return {
+        accessToken,
+        role,
+        tenant: {
+            id: membership.tenant.id,
+            name: membership.tenant.name,
+            slug: membership.tenant.slug,
+            platformName: membership.tenant.platformName,
+            logoUrl: membership.tenant.logoUrl,
+            timezone: membership.tenant.timezone,
+        },
+        tenants: memberships.map((m) => ({
+            id: m.tenantId,
+            name: m.name,
+            slug: m.slug,
+            platformName: m.platformName,
+            logoUrl: m.logoUrl,
+            role: m.role,
+            status: m.status,
+            isActive: m.isActive,
+            lastUsedAt: m.lastUsedAt,
+        })),
+    };
+}
+
+/** Membresías del usuario autenticado (para el switcher de la UI). */
+export async function listMyTenants(userId: string) {
+    const memberships = await listUserMemberships(userId);
+    return {
+        tenants: memberships.map((m) => ({
+            id: m.tenantId,
+            name: m.name,
+            slug: m.slug,
+            platformName: m.platformName,
+            logoUrl: m.logoUrl,
+            role: m.role,
+            status: m.status,
+            isActive: m.isActive,
+            lastUsedAt: m.lastUsedAt,
+        })),
     };
 }
 
 // =============================================
 // GET ME
 // =============================================
-export async function getMe(userId: string) {
-    const rows = await db.select({ user: users, tenant: tenants })
-        .from(users)
-        .leftJoin(tenants, eq(users.tenantId, tenants.id))
-        .where(eq(users.id, userId))
-        .limit(1);
+export async function getMe(userId: string, activeTenantId: string | null) {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user) throw new AppError('Usuario no encontrado', 404);
 
-    const row = rows[0];
-    if (!row) throw new AppError('Usuario no encontrado', 404);
+    const memberships = await listUserMemberships(userId);
+    const tenantsView = memberships.map((m) => ({
+        id: m.tenantId,
+        name: m.name,
+        slug: m.slug,
+        platformName: m.platformName,
+        logoUrl: m.logoUrl,
+        role: m.role,
+        status: m.status,
+        isActive: m.isActive,
+        lastUsedAt: m.lastUsedAt,
+    }));
 
-    const { user, tenant } = row;
-    if (!tenant) throw new AppError('Tenant no encontrado', 404);
+    // Sin tenant activo: platform admin en consola o usuario sin membresías.
+    if (!activeTenantId) {
+        return {
+            user: {
+                id: user.id, email: user.email, fullName: user.fullName,
+                avatarUrl: user.avatarUrl, role: user.role, status: user.status,
+                isVerified: user.isVerified, isPlatformAdmin: user.isPlatformAdmin,
+                tenantId: null,
+                lastLoginAt: user.lastLoginAt,
+                createdAt: user.createdAt,
+            },
+            tenant: null,
+            tenants: tenantsView,
+            subscription: null,
+        };
+    }
+
+    // La membresía del tenant activo manda: rol efectivo y datos del tenant.
+    const membership = await requireActiveMembership(userId, activeTenantId);
+    const tenant = membership.tenant;
+    const role = membership.role;
 
     const subRows = await db.select({ sub: subscriptions, plan: plans })
         .from(subscriptions)
         .leftJoin(plans, eq(subscriptions.planId, plans.id))
-        .where(eq(subscriptions.tenantId, user.tenantId))
+        .where(eq(subscriptions.tenantId, activeTenantId))
         .limit(1);
 
     const subRow = subRows[0];
@@ -280,16 +416,18 @@ export async function getMe(userId: string) {
     return {
         user: {
             id: user.id, email: user.email, fullName: user.fullName,
-            avatarUrl: user.avatarUrl, role: user.role, status: user.status,
+            avatarUrl: user.avatarUrl, role, status: user.status,
             isVerified: user.isVerified, isPlatformAdmin: user.isPlatformAdmin,
+            tenantId: activeTenantId,
             lastLoginAt: user.lastLoginAt,
             createdAt: user.createdAt,
         },
         tenant: {
             id: tenant.id, name: tenant.name, slug: tenant.slug,
             platformName: tenant.platformName, logoUrl: tenant.logoUrl,
-            timezone: tenant.timezone, config: tenant.config,
+            timezone: tenant.timezone,
         },
+        tenants: tenantsView,
         subscription: subscription && plan ? {
             id: subscription.id,
             status: subscription.status,

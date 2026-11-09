@@ -57,6 +57,13 @@
       "when": 1794211589412,
       "tag": "0007_rare_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794196281797,
+      "tag": "0008_user_tenants_nm",
+      "breakpoints": true
     }
   ]
 }

@@ -15,6 +15,7 @@ import {
   tenantFeatures,
   tenants,
   usageRecords,
+  userTenants,
   users,
 } from '../db/schema/index.js';
 import { AppError } from '../lib/errors.js';
@@ -214,14 +215,15 @@ export async function getTenantDetail(tenantId: string) {
       id: users.id,
       email: users.email,
       fullName: users.fullName,
-      role: users.role,
-      status: users.status,
+      role: userTenants.role,
+      status: userTenants.status,
       lastLoginAt: users.lastLoginAt,
-      createdAt: users.createdAt,
+      createdAt: userTenants.createdAt,
     })
-    .from(users)
-    .where(eq(users.tenantId, tenantId))
-    .orderBy(users.createdAt);
+    .from(userTenants)
+    .innerJoin(users, eq(userTenants.userId, users.id))
+    .where(eq(userTenants.tenantId, tenantId))
+    .orderBy(userTenants.createdAt);
 
   const [subRow] = await db
     .select({ subscription: subscriptions, plan: plans })
@@ -567,18 +569,24 @@ export async function startImpersonation(input: {
 
   let targetUserId = input.targetUserId ?? null;
   if (!targetUserId) {
-    const [owner] = await db.select({ id: users.id }).from(users)
-      .where(and(eq(users.tenantId, input.tenantId), eq(users.role, 'owner')))
+    // Owner de la membresía (B-2), no el rol legacy del usuario.
+    const [owner] = await db.select({ id: userTenants.userId }).from(userTenants)
+      .where(and(
+        eq(userTenants.tenantId, input.tenantId),
+        eq(userTenants.role, 'owner'),
+        eq(userTenants.status, 'active'),
+      ))
       .limit(1);
-    const [anyUser] = owner ? [owner] : await db.select({ id: users.id }).from(users)
-      .where(eq(users.tenantId, input.tenantId)).limit(1);
-    if (!anyUser) throw new AppError('El tenant no tiene usuarios para impersonar', 409, 'NO_TARGET_USER');
-    targetUserId = anyUser.id;
+    const [anyMember] = owner ? [owner] : await db.select({ id: userTenants.userId }).from(userTenants)
+      .where(eq(userTenants.tenantId, input.tenantId)).limit(1);
+    if (!anyMember) throw new AppError('El tenant no tiene usuarios para impersonar', 409, 'NO_TARGET_USER');
+    targetUserId = anyMember.id;
   }
 
-  const [target] = await db.select().from(users).where(
-    and(eq(users.id, targetUserId), eq(users.tenantId, input.tenantId)),
-  ).limit(1);
+  const [target] = await db.select({ user: users, membership: userTenants }).from(userTenants)
+    .innerJoin(users, eq(userTenants.userId, users.id))
+    .where(and(eq(userTenants.userId, targetUserId), eq(userTenants.tenantId, input.tenantId)))
+    .limit(1);
   if (!target) throw new AppError('Usuario objetivo no pertenece al tenant', 404, 'TARGET_NOT_FOUND');
 
   const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_MINUTES * 60 * 1000);
@@ -586,19 +594,21 @@ export async function startImpersonation(input: {
   const [session] = await db.insert(impersonationSessions).values({
     adminUserId: input.actorUserId,
     tenantId: input.tenantId,
-    impersonatedUserId: target.id,
+    impersonatedUserId: target.user.id,
     reason: input.reason ?? null,
     ipAddress: input.ipAddress ?? null,
     userAgent: input.userAgent ?? null,
     expiresAt,
   }).returning();
 
+  // Token de impersonación: tenant activo + rol de la MEMBRESÍA impersonada.
   const token = jwt.sign(
     {
-      userId: target.id,
-      tenantId: target.tenantId,
-      email: target.email,
-      role: target.role,
+      userId: target.user.id,
+      activeTenantId: input.tenantId,
+      tenantId: input.tenantId,
+      email: target.user.email,
+      role: target.membership.role,
       impersonatedBy: input.actorUserId,
       imp: session.id,
     },
@@ -613,10 +623,10 @@ export async function startImpersonation(input: {
     actorRole: 'platform_admin',
     entityType: 'impersonation_session',
     entityId: session.id,
-    metadata: { targetUserId: target.id, reason: input.reason ?? null },
+    metadata: { targetUserId: target.user.id, reason: input.reason ?? null },
   });
 
-  return { sessionId: session.id, token, expiresAt, targetUserId: target.id };
+  return { sessionId: session.id, token, expiresAt, targetUserId: target.user.id };
 }
 
 export async function endImpersonation(input: {

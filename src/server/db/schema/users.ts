@@ -10,9 +10,13 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
     fullName: varchar('full_name', { length: 255 }).notNull(),
     avatarUrl: text('avatar_url'),
-    tenantId: uuid('tenant_id')
-      .notNull()
-      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /**
+     * Legacy: primer tenant del usuario (migrado a `user_tenants`, decisión B-2).
+     * El scope real de cada request sale del tenant ACTIVO de la sesión, no de
+     * esta columna. Nullable porque un usuario puede quedarse sin membresías.
+     */
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }),
+    /** Legacy: rol histórico. El rol efectivo vive en `user_tenants.role`. */
     role: userRoleEnum('role').notNull().default('owner'),
     status: userStatusEnum('status').notNull().default('pending'),
     isVerified: boolean('is_verified').notNull().default(false),

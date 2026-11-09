@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-export function useSocket() {
+// El return se anota explícitamente: con node_modules resuelto por symlink el
+// tipo inferido no es portable (TS2742) y rompe el gate `tsc --noEmit`.
+export function useSocket(): { socket: Socket | null; connected: boolean } {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
 

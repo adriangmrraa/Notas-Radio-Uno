@@ -5,10 +5,11 @@
  *  - Sólo se invitan roles `editor` o `viewer`. El rol `owner` no se invita:
  *    se transfiere desde el módulo de equipo (o queda el owner original).
  *  - Un invite nace `pending` con token UUID y vence a las 72 h.
- *  - Aceptar el invite crea el usuario YA activo y verificado: la posesión del
- *    token (que llegó por mail) prueba el mail. Nunca se puede aceptar dos veces.
- *  - `users.email` es único global, así que un mail que ya pertenece a otro
- *    tenant no puede aceptar: se devuelve un error explícito.
+ *  - Aceptar el invite crea la MEMBRESÍA en el tenant invitante: si el mail ya
+ *    tiene cuenta (en este o en otro tenant) se reutiliza, no se duplica.
+ *    La posesión del token (que llegó por mail) prueba el mail.
+ *  - `users.email` es único global (una identidad por persona, B-2), pero una
+ *    persona puede tener membresías en varios tenants con roles distintos.
  *  - Cupo: `plans.max_team_members` cuenta COLABORADORES además del owner
  *    (default 1 → el owner puede sumar 1 persona). 0 = sin equipo.
  */
@@ -19,15 +20,18 @@ import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   plans,
+  refreshTokens,
   subscriptions,
   teamInvitations,
   tenants,
+  userTenants,
   users,
 } from '../db/schema/index.js';
 import { UserRole, UserStatus } from '../db/schema/enums.js';
 import type { UserRole as UserRoleType } from '../db/schema/enums.js';
 import { AppError } from '../lib/errors.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
+import { countActiveOwners, ensureMembership } from './membershipService.js';
 import { sendTeamInviteEmail } from './emailService.js';
 
 const BCRYPT_ROUNDS = 12;
@@ -54,10 +58,16 @@ async function getCollaboratorSeatLimit(tenantId: string): Promise<number> {
 }
 
 async function countUsedSeats(tenantId: string): Promise<number> {
+  // Los asientos se cuentan sobre MEMBRESÍAS, no sobre usuarios: con B-2 una
+  // persona puede estar en varios tenants y el cupo es por tenant.
   const [members] = await db
     .select({ total: sql<number>`count(*)::int` })
-    .from(users)
-    .where(and(eq(users.tenantId, tenantId), ne(users.role, UserRole.owner), ne(users.status, UserStatus.suspended)));
+    .from(userTenants)
+    .where(and(
+      eq(userTenants.tenantId, tenantId),
+      ne(userTenants.role, UserRole.owner),
+      ne(userTenants.status, 'suspended'),
+    ));
 
   const [pending] = await db
     .select({ total: sql<number>`count(*)::int` })
@@ -150,15 +160,16 @@ export async function listTeam(tenantId: string): Promise<{
       email: users.email,
       fullName: users.fullName,
       avatarUrl: users.avatarUrl,
-      role: users.role,
-      status: users.status,
+      role: userTenants.role,
+      status: userTenants.status,
       isVerified: users.isVerified,
       lastLoginAt: users.lastLoginAt,
-      createdAt: users.createdAt,
+      createdAt: userTenants.createdAt,
     })
-    .from(users)
-    .where(eq(users.tenantId, tenantId))
-    .orderBy(asc(users.createdAt));
+    .from(userTenants)
+    .innerJoin(users, eq(userTenants.userId, users.id))
+    .where(eq(userTenants.tenantId, tenantId))
+    .orderBy(asc(userTenants.createdAt));
 
   const inviteRows = await db
     .select({
@@ -251,18 +262,22 @@ export async function inviteMember(input: {
     throw new AppError('Sólo se pueden invitar roles editor o viewer', 400, 'INVALID_ROLE');
   }
 
-  const [existingUser] = await db.select({ id: users.id, tenantId: users.tenantId }).from(users)
+  // Con B-2 un mail YA puede tener cuenta en otra organización: lo que no puede
+  // es estar dos veces en el mismo tenant.
+  const [existingUser] = await db.select({ id: users.id }).from(users)
     .where(eq(users.email, email)).limit(1);
 
   if (existingUser) {
-    if (existingUser.tenantId === input.tenantId) {
+    const [membership] = await db.select({ status: userTenants.status })
+      .from(userTenants)
+      .where(and(
+        eq(userTenants.userId, existingUser.id),
+        eq(userTenants.tenantId, input.tenantId),
+      ))
+      .limit(1);
+    if (membership) {
       throw new AppError('Ese email ya es parte de tu equipo', 409, 'ALREADY_MEMBER');
     }
-    throw new AppError(
-      'Ese email ya tiene una cuenta en otra organización. Pedile que use otro email.',
-      409,
-      'EMAIL_IN_OTHER_TENANT',
-    );
   }
 
   const used = await countUsedSeats(input.tenantId);
@@ -411,7 +426,9 @@ export async function revokeInvite(input: {
 }
 
 /**
- * Acepta la invitación: crea el usuario activo dentro del tenant del invite.
+ * Acepta la invitación: crea o reutiliza el usuario y le crea la MEMBRESÍA en el
+ * tenant del invite (B-2: si el mail ya tiene cuenta en otra organización, no se
+ * duplica el usuario ni se mueve de tenant — sólo se suma la membresía).
  * Público (no requiere sesión) — la prueba de identidad es el token del mail.
  */
 export async function acceptInvite(input: {
@@ -429,16 +446,8 @@ export async function acceptInvite(input: {
     throw new AppError('Esta invitación expiró. Pedí un reenvío.', 410, 'INVITE_EXPIRED');
   }
 
-  const [existingUser] = await db.select({ id: users.id, tenantId: users.tenantId }).from(users)
+  const [existingUser] = await db.select({ id: users.id }).from(users)
     .where(eq(users.email, invite.email)).limit(1);
-
-  if (existingUser && existingUser.tenantId !== invite.tenantId) {
-    throw new AppError(
-      'Ese email ya tiene una cuenta en otra organización.',
-      409,
-      'EMAIL_IN_OTHER_TENANT',
-    );
-  }
 
   const [tenantRow] = await db.select({ slug: tenants.slug, name: tenants.name })
     .from(tenants).where(eq(tenants.id, invite.tenantId)).limit(1);
@@ -447,19 +456,21 @@ export async function acceptInvite(input: {
   let userId: string;
 
   if (existingUser) {
-    // Ya era miembro: sólo se activa y se le actualiza el rol del invite.
-    await db.update(users).set({
-      role: invite.role,
-      status: UserStatus.active,
-      fullName: input.fullName,
-    }).where(eq(users.id, existingUser.id));
+    // Cuenta existente: la membresía es lo único que cambia. La cuenta y el
+    // acceso a sus otras organizaciones quedan intactos.
     userId = existingUser.id;
+    await db.update(users).set({
+      fullName: input.fullName,
+      status: UserStatus.active,
+      isVerified: true,
+    }).where(eq(users.id, userId));
   } else {
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
     const [created] = await db.insert(users).values({
       email: invite.email,
       passwordHash,
       fullName: input.fullName,
+      // Legacy: primer tenant del usuario.
       tenantId: invite.tenantId,
       role: invite.role,
       status: UserStatus.active,
@@ -467,6 +478,9 @@ export async function acceptInvite(input: {
     }).returning({ id: users.id });
     userId = created.id;
   }
+
+  // Membresía en el tenant invitante con el rol del invite (reactiva si existía).
+  await ensureMembership({ userId, tenantId: invite.tenantId, role: invite.role });
 
   await db.update(teamInvitations).set({
     status: 'accepted',
@@ -505,56 +519,72 @@ export async function changeMemberRole(input: {
     throw new AppError('Rol inválido', 400, 'INVALID_ROLE');
   }
 
-  const [member] = await db.select().from(users).where(
-    and(eq(users.tenantId, input.tenantId), eq(users.id, input.memberId)),
-  ).limit(1);
+  const [member] = await db
+    .select({ userId: userTenants.userId, role: userTenants.role })
+    .from(userTenants)
+    .where(and(eq(userTenants.tenantId, input.tenantId), eq(userTenants.userId, input.memberId)))
+    .limit(1);
 
   if (!member) throw new AppError('Miembro no encontrado', 404, 'MEMBER_NOT_FOUND');
 
   // No dejar el tenant sin owner.
   if (member.role === UserRole.owner && role !== UserRole.owner) {
-    const [owners] = await db.select({ total: sql<number>`count(*)::int` }).from(users)
-      .where(and(eq(users.tenantId, input.tenantId), eq(users.role, UserRole.owner)));
-    if ((owners?.total ?? 0) <= 1) {
+    if ((await countActiveOwners(input.tenantId)) <= 1) {
       throw new AppError('No podés quitar el último owner de la organización', 409, 'LAST_OWNER');
     }
   }
 
-  await db.update(users).set({ role }).where(eq(users.id, member.id));
+  await db.update(userTenants)
+    .set({ role, updatedAt: new Date() })
+    .where(and(eq(userTenants.tenantId, input.tenantId), eq(userTenants.userId, member.userId)));
 
   await recordAuditEvent({
     action: AUDIT_ACTIONS.MEMBER_ROLE_CHANGED,
     tenantId: input.tenantId,
     userId: input.actorUserId,
     entityType: 'user',
-    entityId: member.id,
+    entityId: member.userId,
     metadata: { from: member.role, to: role },
   });
 }
 
-/** Quita a un colaborador: suspende el acceso y revoca refresh tokens. */
+/**
+ * Quita a un colaborador: suspende SU MEMBRESÍA (no la cuenta, que puede seguir
+ * operando en otras organizaciones) y revoca sus refresh tokens en ese tenant.
+ */
 export async function removeMember(input: {
   tenantId: string;
   memberId: string;
   actorUserId: string;
 }): Promise<void> {
-  const [member] = await db.select().from(users).where(
-    and(eq(users.tenantId, input.tenantId), eq(users.id, input.memberId)),
-  ).limit(1);
+  const [member] = await db
+    .select({ userId: userTenants.userId, role: userTenants.role })
+    .from(userTenants)
+    .where(and(eq(userTenants.tenantId, input.tenantId), eq(userTenants.userId, input.memberId)))
+    .limit(1);
 
   if (!member) throw new AppError('Miembro no encontrado', 404, 'MEMBER_NOT_FOUND');
   if (member.role === UserRole.owner) {
     throw new AppError('No se puede quitar al owner. Transferí la titularidad primero.', 409, 'CANNOT_REMOVE_OWNER');
   }
 
-  await db.update(users).set({ status: UserStatus.suspended }).where(eq(users.id, member.id));
+  await db.update(userTenants)
+    .set({ status: 'suspended', updatedAt: new Date() })
+    .where(and(eq(userTenants.tenantId, input.tenantId), eq(userTenants.userId, member.userId)));
+
+  await db.update(refreshTokens)
+    .set({ isRevoked: true })
+    .where(and(eq(refreshTokens.userId, member.userId), eq(refreshTokens.tenantId, input.tenantId)));
+
+  const [memberUser] = await db.select({ email: users.email }).from(users)
+    .where(eq(users.id, member.userId)).limit(1);
 
   await recordAuditEvent({
     action: AUDIT_ACTIONS.MEMBER_REMOVED,
     tenantId: input.tenantId,
     userId: input.actorUserId,
     entityType: 'user',
-    entityId: member.id,
-    metadata: { email: member.email },
+    entityId: member.userId,
+    metadata: { email: memberUser?.email ?? null },
   });
 }
