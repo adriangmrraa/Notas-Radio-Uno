@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { eq, and, asc } from "drizzle-orm";
 
 import { requireAuth } from "../middleware/auth.js";
+import { AppError } from "../lib/errors.js";
 import { db } from "../db/index.js";
 import { guests, guestPhotos } from "../db/schema/guests.js";
 import { guestDossiers } from "../db/schema/dossiers.js";
@@ -643,7 +644,10 @@ export function registerGuestRoutes(app: Express): void {
   );
 
   // ------------------------------------------------------------------
-  // POST /api/guests/:id/dossier — Generate/regenerate dossier on demand
+  // POST /api/guests/:id/dossier — Generate/regenerate dossier on demand.
+  // Body opcional: { scheduledTransmissionId?: string } vincula el dossier a
+  // una emisión de la agenda (PC-09). 404 si la emisión es ajena o no existe;
+  // 400 si su programa no coincide con el del invitado.
   // ------------------------------------------------------------------
   app.post(
     "/api/guests/:id/dossier",
@@ -652,6 +656,17 @@ export function registerGuestRoutes(app: Express): void {
       try {
         const tenantId = req.auth!.tenantId;
         const { id } = req.params;
+        const { scheduledTransmissionId } = (req.body ?? {}) as {
+          scheduledTransmissionId?: unknown;
+        };
+
+        if (
+          scheduledTransmissionId !== undefined &&
+          (typeof scheduledTransmissionId !== "string" || scheduledTransmissionId.trim() === "")
+        ) {
+          res.status(400).json({ error: "scheduledTransmissionId inválido" });
+          return;
+        }
 
         // Verify guest belongs to tenant
         const [guest] = await db
@@ -665,9 +680,17 @@ export function registerGuestRoutes(app: Express): void {
           return;
         }
 
-        const result = await generateGuestDossier(id, tenantId);
+        const result = await generateGuestDossier(
+          id,
+          tenantId,
+          typeof scheduledTransmissionId === "string" ? scheduledTransmissionId : undefined,
+        );
         res.status(201).json({ success: true, dossierId: result.id, status: result.status });
       } catch (error) {
+        if (error instanceof AppError) {
+          res.status(error.statusCode).json({ error: error.message, code: error.code });
+          return;
+        }
         console.error("[Dossier] Error al generar dossier:", error);
         res.status(500).json({ error: "Error al generar el dossier" });
       }
@@ -675,14 +698,18 @@ export function registerGuestRoutes(app: Express): void {
   );
 
   // ------------------------------------------------------------------
-  // GET /api/dossiers — List dossiers by program/date
+  // GET /api/dossiers — List dossiers by program/date/scheduled transmission
   // ------------------------------------------------------------------
   app.get("/api/dossiers", requireAuth, async (req: Request, res: Response) => {
     try {
       const tenantId = req.auth!.tenantId;
-      const { programId, date } = req.query as { programId?: string; date?: string };
+      const { programId, date, scheduledTransmissionId } = req.query as {
+        programId?: string;
+        date?: string;
+        scheduledTransmissionId?: string;
+      };
 
-      const dossiers = await listDossiers(tenantId, { programId, date });
+      const dossiers = await listDossiers(tenantId, { programId, date, scheduledTransmissionId });
       res.json({ dossiers });
     } catch (error) {
       console.error("[Dossier] Error al listar dossiers:", error);

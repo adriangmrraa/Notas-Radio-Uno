@@ -71,6 +71,13 @@
       "when": 1794196281797,
       "tag": "0009_user_tenants_nm",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794236591040,
+      "tag": "0010_pc09_dossier_transmission",
+      "breakpoints": true
     }
   ]
 }

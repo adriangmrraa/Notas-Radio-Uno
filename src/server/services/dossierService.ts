@@ -3,6 +3,12 @@ import { db } from '../db/index.js';
 import { guestDossiers } from '../db/schema/dossiers.js';
 import { guests } from '../db/schema/guests.js';
 import { programs } from '../db/schema/programs.js';
+import { scheduledTransmissions } from '../db/schema/transmissions.js';
+import {
+  assertDossierTransmissionLink,
+  dossierMatchesListFilters,
+  type DossierListFilters,
+} from '../lib/dossierLink.js';
 import { chatCompletion, extractJSON } from './aiService.js';
 import { searchAndEnrich } from './searchService.js';
 import type { DossierContent } from '../../shared/types.js';
@@ -17,6 +23,7 @@ import type { DossierContent } from '../../shared/types.js';
 export async function generateGuestDossier(
   guestId: string,
   tenantId: string,
+  scheduledTransmissionId?: string,
 ): Promise<{ id: string; status: string }> {
   // 1. Fetch guest + program info
   const [guest] = await db
@@ -26,6 +33,23 @@ export async function generateGuestDossier(
     .limit(1);
 
   if (!guest) throw new Error('Invitado no encontrado');
+
+  // PC-09: si viene una emisión de agenda, validar que exista, sea del tenant
+  // y (cuando tiene programa) coincida con el programa del invitado. Lanza
+  // AppError(404/400) que la ruta mapea a su statusCode.
+  if (scheduledTransmissionId) {
+    const [transmission] = await db
+      .select({
+        id: scheduledTransmissions.id,
+        tenantId: scheduledTransmissions.tenantId,
+        programId: scheduledTransmissions.programId,
+      })
+      .from(scheduledTransmissions)
+      .where(eq(scheduledTransmissions.id, scheduledTransmissionId))
+      .limit(1);
+
+    assertDossierTransmissionLink(tenantId, guest.programId, transmission ?? null);
+  }
 
   const [program] = await db
     .select({ name: programs.name })
@@ -44,6 +68,7 @@ export async function generateGuestDossier(
       programId: guest.programId,
       guestName: guest.name,
       scheduledDate: guest.scheduledDate,
+      scheduledTransmissionId: scheduledTransmissionId ?? null,
       status: 'generating',
     })
     .returning({ id: guestDossiers.id });
@@ -160,40 +185,63 @@ REGLAS:
 // ---------------------------------------------------------------------------
 
 /**
- * Obtiene el dossier mas reciente de un invitado.
+ * Obtiene el dossier mas reciente de un invitado. Si esta vinculado a una
+ * emision de agenda, expone tambien su nombre y su horario (en su timezone)
+ * para que la UI muestre "Para: <emision> (<fecha>)".
  */
 export async function getLatestDossier(guestId: string, tenantId: string) {
-  const [dossier] = await db
-    .select()
+  const [row] = await db
+    .select({
+      dossier: guestDossiers,
+      scheduledTransmissionName: scheduledTransmissions.name,
+      scheduledTransmissionStartsAt: scheduledTransmissions.startsAt,
+      scheduledTransmissionTimezone: scheduledTransmissions.timezone,
+      programName: programs.name,
+    })
     .from(guestDossiers)
+    .leftJoin(
+      scheduledTransmissions,
+      eq(guestDossiers.scheduledTransmissionId, scheduledTransmissions.id),
+    )
+    .leftJoin(programs, eq(guestDossiers.programId, programs.id))
     .where(and(eq(guestDossiers.guestId, guestId), eq(guestDossiers.tenantId, tenantId)))
     .orderBy(sql`${guestDossiers.createdAt} DESC`)
     .limit(1);
 
-  return dossier || null;
+  if (!row) return null;
+  return {
+    ...row.dossier,
+    scheduledTransmissionName: row.scheduledTransmissionName,
+    scheduledTransmissionStartsAt: row.scheduledTransmissionStartsAt,
+    scheduledTransmissionTimezone: row.scheduledTransmissionTimezone,
+    programName: row.programName,
+  };
 }
 
 /**
- * Lista dossiers por programa y fecha.
+ * Lista dossiers del tenant con filtros opcionales (programId, date,
+ * scheduledTransmissionId). El origen trae las filas del tenant ordenadas
+ * desc por creacion y el predicado `dossierMatchesListFilters` aplica los
+ * filtros + re-verifica el tenant (misma regla, testeable sin DB).
  */
-export async function listDossiers(
+export type DossierRowsSource = (
   tenantId: string,
-  filters: { programId?: string; date?: string },
-) {
-  const conditions = [eq(guestDossiers.tenantId, tenantId)];
+) => Promise<(typeof guestDossiers.$inferSelect)[]>;
 
-  if (filters.programId) {
-    conditions.push(eq(guestDossiers.programId, filters.programId));
-  }
-  if (filters.date) {
-    conditions.push(eq(guestDossiers.scheduledDate, filters.date));
-  }
-
-  return db
+const drizzleDossierRows: DossierRowsSource = (tenantId) =>
+  db
     .select()
     .from(guestDossiers)
-    .where(and(...conditions))
+    .where(eq(guestDossiers.tenantId, tenantId))
     .orderBy(sql`${guestDossiers.createdAt} DESC`);
+
+export async function listDossiers(
+  tenantId: string,
+  filters: DossierListFilters = {},
+  source: DossierRowsSource = drizzleDossierRows,
+) {
+  const rows = await source(tenantId);
+  return rows.filter((row) => dossierMatchesListFilters(row, tenantId, filters));
 }
 
 // ---------------------------------------------------------------------------

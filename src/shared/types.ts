@@ -371,6 +371,12 @@ export interface GuestDossier {
   content: DossierContent | null;
   generatedAt: string | null;
   createdAt: string;
+  // PC-09: emisión de agenda vinculada (nullable: dossier sin emisión).
+  scheduledTransmissionId: string | null;
+  scheduledTransmissionName?: string | null;
+  scheduledTransmissionStartsAt?: string | null;
+  scheduledTransmissionTimezone?: string | null;
+  programName?: string | null;
 }
 
 export interface DossierContent {

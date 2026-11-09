@@ -155,10 +155,10 @@ if (pc02Migration) {
   }
 }
 
-// 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07) y la
-//    0009 (membresías N:M) se
+// 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
+//    0009 (membresías N:M) y la 0010 (PC-09 dossier↔emisión) se
 //    aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009']) {
+for (const tag of ['0005', '0006', '0008', '0009', '0010']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -338,6 +338,45 @@ if (missingFks.length > 0) {
   process.exit(1);
 }
 
+// 10) PC-09: guest_dossiers.scheduled_transmission_id existe, es NULLABLE y
+//     tiene FK a scheduled_transmissions + su índice.
+const { rows: pc09Cols } = await db.query(`
+  SELECT column_name, is_nullable FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name = 'guest_dossiers' AND column_name = 'scheduled_transmission_id'
+`);
+if (pc09Cols.length !== 1 || pc09Cols[0].is_nullable !== 'YES') {
+  console.error('PC-09: falta guest_dossiers.scheduled_transmission_id o no es nullable');
+  process.exit(1);
+}
+
+const { rows: pc09Fks } = await db.query(`
+  SELECT ccu.table_name AS foreign_table
+  FROM information_schema.table_constraints tc
+  JOIN information_schema.key_column_usage kcu
+    ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+  JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+  WHERE tc.constraint_type = 'FOREIGN KEY'
+    AND tc.table_schema = 'public'
+    AND tc.table_name = 'guest_dossiers'
+    AND kcu.column_name = 'scheduled_transmission_id'
+`);
+if (pc09Fks.length !== 1 || pc09Fks[0].foreign_table !== 'scheduled_transmissions') {
+  console.error('PC-09: la FK de scheduled_transmission_id no apunta a scheduled_transmissions');
+  process.exit(1);
+}
+
+const { rows: pc09Idx } = await db.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'guest_dossiers'
+    AND indexname = 'guest_dossiers_scheduled_transmission_id_idx'
+`);
+if (pc09Idx.length !== 1) {
+  console.error('PC-09: falta el índice guest_dossiers_scheduled_transmission_id_idx');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -345,5 +384,6 @@ console.log('columnas N:M:', expectedMembershipCols.join(', '));
 console.log('columnas PC-07:', expectedTCols.join(', '));
 console.log('enums PC-07:', Object.entries(expectedEnums).map(([k, v]) => `${k}(${v.join('|')})`).join(', '));
 console.log('fks PC-07:', expectedFks.join(', '));
+console.log('PC-09: guest_dossiers.scheduled_transmission_id (nullable) + FK->scheduled_transmissions + idx');
 await db.close();
 process.exit(0);

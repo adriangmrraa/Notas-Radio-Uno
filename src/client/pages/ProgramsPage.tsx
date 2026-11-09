@@ -74,6 +74,21 @@ interface GuestDossier {
     content: DossierContent | null;
     generatedAt: string | null;
     createdAt: string;
+    scheduledTransmissionId?: string | null;
+    scheduledTransmissionName?: string | null;
+    scheduledTransmissionStartsAt?: string | null;
+    scheduledTransmissionTimezone?: string | null;
+    programName?: string | null;
+}
+
+interface ScheduledAgendaItem {
+    id: string;
+    name: string;
+    programId: string | null;
+    startsAt: string;
+    timezone: string;
+    isActive: boolean;
+    rruleDescription?: string;
 }
 
 function photoSrc(conductorId: string, photoId: string): string {
@@ -82,6 +97,21 @@ function photoSrc(conductorId: string, photoId: string): string {
 
 function guestPhotoSrc(guestId: string, photoId: string): string {
     return `/api/guests/${guestId}/photos/${photoId}`;
+}
+
+// Fecha/hora de una emisión de agenda en SU timezone (PC-09).
+function formatTransmissionWhen(iso: string, timezone?: string | null): string {
+    try {
+        return new Date(iso).toLocaleString('es-AR', {
+            timeZone: timezone || undefined,
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    } catch {
+        return '';
+    }
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -650,13 +680,15 @@ function ConductorDialog({ conductor, programId, onClose, onSaved }: ConductorDi
 
 // ─── Dossier Panel (Premium Intelligence Brief) ─────────────────────────────
 
-function DossierPanel({ guestId, guestName }: { guestId: string; guestName: string }) {
+function DossierPanel({ guestId, guestName, programId }: { guestId: string; guestName: string; programId: string }) {
     const { fetchApi } = useApi();
     const [dossier, setDossier] = useState<GuestDossier | null>(null);
     const [loading, setLoading] = useState(true);
     const [generating, setGenerating] = useState(false);
     const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
     const [checkedTalking, setCheckedTalking] = useState<Set<number>>(new Set());
+    const [agendaItems, setAgendaItems] = useState<ScheduledAgendaItem[]>([]);
+    const [selectedTransmission, setSelectedTransmission] = useState('');
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     const fetchDossier = async () => {
@@ -668,6 +700,7 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
             } else {
                 stopPolling();
                 setGenerating(false);
+                setSelectedTransmission(data.dossier?.scheduledTransmissionId ?? '');
             }
         } catch { /* ignore */ }
         setLoading(false);
@@ -687,13 +720,23 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
 
     useEffect(() => {
         fetchDossier();
+        // Agenda del programa del invitado: entradas activas para vincular el
+        // dossier a una emisión (PC-09).
+        fetchApi<{ items: ScheduledAgendaItem[] }>('/transmissions/scheduled')
+            .then((data) => {
+                setAgendaItems((data.items ?? []).filter((i) => i.programId === programId && i.isActive));
+            })
+            .catch(() => {});
         return () => stopPolling();
     }, [guestId]);
 
     const generate = async () => {
         setGenerating(true);
         try {
-            await fetchApi(`/guests/${guestId}/dossier`, { method: 'POST' });
+            await fetchApi(`/guests/${guestId}/dossier`, {
+                method: 'POST',
+                body: selectedTransmission ? { scheduledTransmissionId: selectedTransmission } : {},
+            });
             await fetchDossier();
         } catch {
             setGenerating(false);
@@ -726,6 +769,26 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
         );
     }
 
+    // Selector de emisión de agenda (PC-09): "(sin emisión)" + entradas del
+    // programa. Se renderiza en los estados vacío y listo.
+    const transmissionSelect = agendaItems.length > 0 ? (
+        <div className="relative w-full">
+            <select
+                value={selectedTransmission}
+                onChange={(e) => setSelectedTransmission(e.target.value)}
+                className="input-premium appearance-none pr-8 !py-2.5 !px-3 text-xs cursor-pointer w-full"
+            >
+                <option value="" className="bg-[#0c1018]">(sin emisión)</option>
+                {agendaItems.map((item) => (
+                    <option key={item.id} value={item.id} className="bg-[#0c1018]">
+                        {item.name}{item.rruleDescription ? ` — ${item.rruleDescription}` : ''}
+                    </option>
+                ))}
+            </select>
+            <ChevronDown className="w-3.5 h-3.5 text-white/30 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        </div>
+    ) : null;
+
     // No dossier — generate button
     if (!dossier || dossier.status === 'error') {
         return (
@@ -739,6 +802,12 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
                 <p className="text-sm text-white/40 mb-4">
                     Genera un informe de inteligencia sobre <span className="text-white/60 font-medium">{guestName}</span>
                 </p>
+                {transmissionSelect && (
+                    <div className="w-full max-w-xs mb-4">
+                        <p className="text-[10px] text-white/25 uppercase tracking-wider mb-1.5">Vincular a emisión</p>
+                        {transmissionSelect}
+                    </div>
+                )}
                 <button
                     onClick={generate}
                     disabled={generating}
@@ -792,6 +861,14 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
                 {dossier.generatedAt && (
                     <p className="text-[10px] text-white/20 mt-3 uppercase tracking-wider">
                         Generado {new Date(dossier.generatedAt).toLocaleDateString('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                )}
+                {dossier.scheduledTransmissionName && (
+                    <p className="text-[10px] text-cyan-300/70 mt-1 uppercase tracking-wider inline-flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        Para: {dossier.scheduledTransmissionName}
+                        {dossier.scheduledTransmissionStartsAt &&
+                            ` · ${formatTransmissionWhen(dossier.scheduledTransmissionStartsAt, dossier.scheduledTransmissionTimezone)}`}
                     </p>
                 )}
             </div>
@@ -939,8 +1016,14 @@ function DossierPanel({ guestId, guestName }: { guestId: string; guestName: stri
                 </div>
             )}
 
-            {/* Regenerate button */}
-            <div className="pt-2 flex justify-center">
+            {/* Regenerate — con selector de emisión */}
+            <div className="pt-2 flex flex-col items-center gap-3">
+                {transmissionSelect && (
+                    <div className="w-full max-w-xs">
+                        <p className="text-[10px] text-white/25 uppercase tracking-wider mb-1.5 text-center">Vincular a emisión</p>
+                        {transmissionSelect}
+                    </div>
+                )}
                 <button
                     onClick={generate}
                     disabled={generating}
@@ -1307,7 +1390,7 @@ function GuestDialog({ guest, programId, onClose, onSaved }: GuestDialogProps) {
                 {/* ── Dossier tab ── */}
                 {dialogTab === 'dossier' && isEdit && (
                     <div className="modal-body max-h-[70vh] overflow-y-auto">
-                        <DossierPanel guestId={guestId!} guestName={name} />
+                        <DossierPanel guestId={guestId!} guestName={name} programId={programId} />
                     </div>
                 )}
             </div>
