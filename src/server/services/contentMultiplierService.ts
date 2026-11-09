@@ -6,7 +6,8 @@
  * YouTube y Newsletter.
  */
 
-import { chatCompletion, extractJSON } from "./aiSdkService.js";
+import { chatCompletion } from "./aiSdkService.js";
+import { extractJSON } from "./aiService.js";
 import type { ContentVariants } from "../../shared/types.js";
 
 const SYSTEM_PROMPT = `Sos un experto en contenido multiplataforma para medios de comunicación.

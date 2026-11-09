@@ -64,8 +64,8 @@ export default function PipelineEditor() {
   const [insertAfterStep, setInsertAfterStep] = useState<string>('generate_news');
 
   // React Flow
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   // Fetch data
   useEffect(() => {

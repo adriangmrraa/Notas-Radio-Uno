@@ -166,7 +166,7 @@ export async function processQuoteFlyer(
   ctx.shadowColor = 'rgba(0,0,0,0.5)';
   ctx.shadowBlur = 10;
 
-  let lines = wrapText(ctx, quote.quote, 820);
+  let lines = wrapText(ctx, quote.text, 820);
   if (lines.length > 5) {
     lines = lines.slice(0, 5);
     const last = lines[4];

@@ -65,7 +65,9 @@ export function SettingsPage() {
         branding.templateId !== brandingOriginal.templateId;
 
     useEffect(() => {
-        fetchApi<Record<string, string>>('/settings/webhooks').then(setWebhooks).catch(() => {});
+        fetchApi<Record<string, string>>('/settings/webhooks')
+            .then((data) => setWebhooks((prev) => ({ ...prev, ...data })))
+            .catch(() => {});
     }, []);
 
     useEffect(() => {
