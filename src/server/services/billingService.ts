@@ -12,12 +12,13 @@
  */
 
 import { and, eq } from 'drizzle-orm';
+import { PreApproval } from 'mercadopago';
 import { db } from '../db/index.js';
 import { billingEvents, plans, subscriptions, tenants } from '../db/schema/index.js';
 import { AppError } from '../lib/errors.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { syncTenantFeaturesForTenant } from './tenantFeaturesService.js';
-import { getStripe } from './billingProviders.js';
+import { getStripe, getMercadoPago } from './billingProviders.js';
 
 export type BillingPeriod = 'monthly' | 'yearly';
 export type WebhookProvider = 'stripe' | 'mercadopago';
@@ -71,8 +72,13 @@ export async function changePlan(input: {
   tenantId: string;
   planName: string;
   billingPeriod: BillingPeriod;
+  provider?: WebhookProvider;
   actorUserId?: string | null;
-}): Promise<{ applied: 'immediate' | 'deferred'; planName: string }> {
+  payerEmail?: string | null;
+}): Promise<
+  | { applied: 'immediate' | 'deferred'; planName: string }
+  | { applied: 'checkout'; checkoutUrl: string | null; provider: WebhookProvider }
+> {
   const [sub] = await db.select().from(subscriptions)
     .where(eq(subscriptions.tenantId, input.tenantId)).limit(1);
   if (!sub) throw new AppError('No hay suscripción para este tenant', 404, 'NO_SUBSCRIPTION');
@@ -89,6 +95,50 @@ export async function changePlan(input: {
   }
 
   const providerMutable = sub.status === 'active' || sub.status === 'past_due';
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+  // Sin suscripción externa: el cambio "a provider X" es un checkout nuevo —
+  // mismo comportamiento que POST /checkout (alta con provider).
+  const hasExternalSub = Boolean(sub.externalSubscriptionId);
+  if (input.provider === 'stripe' && (!hasExternalSub || sub.paymentProvider !== 'stripe')) {
+    const stripe = getStripe();
+    if (!stripe) throw new AppError('Stripe no está configurado', 503, 'STRIPE_NOT_CONFIGURED');
+    const priceId = input.billingPeriod === 'yearly' ? plan.stripePriceIdYearly : plan.stripePriceIdMonthly;
+    if (!priceId) throw new AppError('El plan no tiene precio configurado en Stripe', 400, 'PLAN_NO_STRIPE_PRICE');
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer_email: input.payerEmail ?? undefined,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${frontendUrl}/billing?status=success&provider=stripe`,
+      cancel_url: `${frontendUrl}/billing?status=cancel`,
+      metadata: { kind: 'subscription', tenantId: input.tenantId, planName: plan.name, billingPeriod: input.billingPeriod },
+    });
+    return { applied: 'checkout', checkoutUrl: session.url, provider: 'stripe' };
+  }
+
+  if (input.provider === 'mercadopago' && (!hasExternalSub || sub.paymentProvider !== 'mercadopago')) {
+    const mpConfig = getMercadoPago();
+    if (!mpConfig) throw new AppError('MercadoPago no está configurado', 503, 'MP_NOT_CONFIGURED');
+    const amount = input.billingPeriod === 'yearly'
+      ? Number(plan.priceArsYearly || plan.priceArs)
+      : Number(plan.priceArs);
+
+    const result = await new PreApproval(mpConfig).create({
+      body: {
+        reason: `PeriodistApp ${plan.displayName} - ${input.billingPeriod === 'yearly' ? 'Anual' : 'Mensual'}`,
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: input.billingPeriod === 'yearly' ? 'years' : 'months',
+          transaction_amount: amount,
+          currency_id: 'ARS',
+        },
+        external_reference: `tenant_${input.tenantId}_${plan.name}_${input.billingPeriod}`,
+        back_url: `${frontendUrl}/billing?status=success&provider=mercadopago`,
+      },
+    });
+    return { applied: 'checkout', checkoutUrl: result.init_point ?? null, provider: 'mercadopago' };
+  }
 
   const applyNow = async () => {
     await db.update(subscriptions)
@@ -113,6 +163,8 @@ export async function changePlan(input: {
         from: oldPlan?.name ?? null,
         to: plan.name,
         billingPeriod: input.billingPeriod,
+        provider: sub.paymentProvider ?? input.provider ?? null,
+        proration: sub.paymentProvider === 'stripe' && !deferred,
         deferred,
       },
     });
@@ -135,12 +187,28 @@ export async function changePlan(input: {
     const itemId = stripeSub.items.data[0]?.id;
     if (!itemId) throw new AppError('La suscripción de Stripe no tiene items', 502, 'STRIPE_SUB_NO_ITEMS');
 
-    await stripe.subscriptions.update(sub.externalSubscriptionId, {
+    const updatedSub = await stripe.subscriptions.update(sub.externalSubscriptionId, {
       items: [{ id: itemId, price: priceId }],
       proration_behavior: 'create_prorations',
+      cancel_at_period_end: false,
     });
 
-    await applyNow();
+    // Sincronizar período con lo que devolvió Stripe (en items en la API nueva).
+    const item = updatedSub.items.data[0] as unknown as {
+      current_period_start?: number;
+      current_period_end?: number;
+    } | undefined;
+
+    await db.update(subscriptions)
+      .set({
+        planId: plan.id,
+        billingPeriod: input.billingPeriod,
+        cancelAtPeriodEnd: false,
+        ...(item?.current_period_start ? { currentPeriodStart: new Date(item.current_period_start * 1000) } : {}),
+        ...(item?.current_period_end ? { currentPeriodEnd: new Date(item.current_period_end * 1000) } : {}),
+      })
+      .where(eq(subscriptions.id, sub.id));
+    await syncTenantFeaturesForTenant(input.tenantId);
     await auditAndEvent(false);
     return { applied: 'immediate', planName: plan.name };
   }

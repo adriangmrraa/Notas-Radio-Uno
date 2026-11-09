@@ -202,7 +202,7 @@ app.use(cors({
 
 // Stripe exige el body crudo para verificar la firma del webhook. Se monta
 // ANTES de express.json(): body-parser marca req._body y el parser JSON lo omite.
-app.use("/api/billing/webhook/stripe", express.raw({ type: "application/json" }));
+app.use("/api/billing/webhook/stripe", express.raw({ type: "*/*" }));
 
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());

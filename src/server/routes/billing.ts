@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import Stripe from 'stripe';
+import { z } from 'zod';
 import { PreApproval, Payment } from 'mercadopago';
 import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -18,7 +19,7 @@ import { listAddons, createAddonCheckout, applyAddonPurchase } from '../services
 import { AppError } from '../lib/errors.js';
 import { plans, subscriptions, usageRecords, invoices, addonPurchases } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, or } from 'drizzle-orm';
 
 const router = Router();
 
@@ -224,6 +225,7 @@ router.post('/checkout', requireAuth, requireOwner, async (req: Request, res: Re
                 success_url: `${frontendUrl}/billing?status=success&provider=stripe`,
                 cancel_url: `${frontendUrl}/billing?status=cancel`,
                 metadata: {
+                    kind: 'subscription',
                     tenantId: req.auth!.tenantId,
                     planName: plan.name,
                     billingPeriod,
@@ -278,9 +280,13 @@ router.post('/checkout', requireAuth, requireOwner, async (req: Request, res: Re
 // ---------------------------------------------------------------------------
 // GET /api/billing/addons — Catálogo de add-ons comprables (+N transmisiones)
 // ---------------------------------------------------------------------------
-router.get('/addons', requireAuth, async (_req: Request, res: Response) => {
+router.get('/addons', requireAuth, async (req: Request, res: Response) => {
     try {
-        res.json(await listAddons());
+        const [addonList, quota] = await Promise.all([
+            listAddons(),
+            getQuotaStatus(req.auth!.tenantId),
+        ]);
+        res.json({ addons: addonList, usageCycleId: quota.usageCycleId });
     } catch (err) {
         respondError(res, err, 'Error al obtener add-ons');
     }
@@ -384,23 +390,26 @@ router.post('/cancel', requireAuth, requireOwner, async (req: Request, res: Resp
 // ---------------------------------------------------------------------------
 // POST /api/billing/change-plan — Owner: cambia el plan de la suscripción
 // ---------------------------------------------------------------------------
+const changePlanSchema = z.object({
+    planName: z.string().min(1),
+    billingPeriod: z.enum(['monthly', 'yearly']).default('monthly'),
+    provider: z.enum(['stripe', 'mercadopago']).optional(),
+});
+
 router.post('/change-plan', requireAuth, requireOwner, async (req: Request, res: Response) => {
     try {
-        const { planName, billingPeriod = 'monthly' } = req.body ?? {};
-        if (typeof planName !== 'string' || !planName) {
-            res.status(400).json({ error: 'planName requerido' });
-            return;
-        }
-        if (billingPeriod !== 'monthly' && billingPeriod !== 'yearly') {
-            res.status(400).json({ error: 'billingPeriod inválido' });
-            return;
-        }
+        const data = changePlanSchema.parse(req.body ?? {});
+
+        const [user] = await db.select({ email: users.email }).from(users)
+            .where(eq(users.id, req.auth!.userId)).limit(1);
 
         const result = await changePlan({
             tenantId: req.auth!.tenantId,
-            planName,
-            billingPeriod,
+            planName: data.planName,
+            billingPeriod: data.billingPeriod,
+            provider: data.provider,
             actorUserId: req.auth!.userId,
+            payerEmail: user?.email ?? null,
         });
         res.json(result);
     } catch (err) {
@@ -468,7 +477,7 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                 const session = event.data.object as Stripe.Checkout.Session;
 
                 // Pago único de un add-on: no es una suscripción.
-                if (session.metadata?.kind === 'addon_purchase' && session.metadata.purchaseId) {
+                if (session.metadata?.kind === 'addon' && session.metadata.purchaseId) {
                     const result = await applyAddonPurchase({
                         purchaseId: session.metadata.purchaseId,
                         provider: 'stripe',
@@ -618,6 +627,43 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     entityId: failedInvoice.id,
                     metadata: { provider: 'stripe', event: 'invoice.payment_failed' },
                 });
+                break;
+            }
+
+            case 'customer.subscription.updated': {
+                const stripeSub = event.data.object as Stripe.Subscription;
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalSubscriptionId, stripeSub.id))
+                    .limit(1);
+                if (!subscription) break;
+
+                // Sincroniza período, cancel_at_period_end, status y plan (por
+                // price id → plans.stripe_price_id_*). En la API nueva el
+                // período vive en el item.
+                const item = stripeSub.items.data[0] as unknown as {
+                    price?: { id?: string };
+                    current_period_start?: number;
+                    current_period_end?: number;
+                } | undefined;
+                const priceId = item?.price?.id;
+
+                const patch: Partial<typeof subscriptions.$inferInsert> = {
+                    cancelAtPeriodEnd: stripeSub.cancel_at_period_end ?? false,
+                    ...(stripeSub.status === 'active' ? { status: 'active' as const } : {}),
+                    ...(stripeSub.status === 'past_due' || stripeSub.status === 'unpaid' ? { status: 'past_due' as const } : {}),
+                    ...(item?.current_period_start ? { currentPeriodStart: new Date(item.current_period_start * 1000) } : {}),
+                    ...(item?.current_period_end ? { currentPeriodEnd: new Date(item.current_period_end * 1000) } : {}),
+                };
+
+                if (priceId) {
+                    const [plan] = await db.select({ id: plans.id }).from(plans)
+                        .where(or(eq(plans.stripePriceIdMonthly, priceId), eq(plans.stripePriceIdYearly, priceId)))
+                        .limit(1);
+                    if (plan) patch.planId = plan.id;
+                }
+
+                await db.update(subscriptions).set(patch).where(eq(subscriptions.id, subscription.id));
+                await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
                 break;
             }
 
