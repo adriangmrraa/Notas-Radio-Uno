@@ -13,17 +13,39 @@ export interface AuthPayload {
     tenantId: string;
     email: string;
     role: UserRole;
+    /** Super admin de plataforma. Se refresca desde la DB en cada mutación. */
+    isPlatformAdmin?: boolean;
+    /** Id del super admin que está impersonando esta sesión (si aplica). */
+    impersonatedBy?: string;
 }
 
 declare global {
     namespace Express {
         interface Request {
             auth?: AuthPayload;
+            /** Motivo por el que optionalAuth no pudo habilitar la sesión. */
+            authBlocked?: 'suspended' | 'not_found';
         }
     }
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+    // optionalAuth ya resolvió la sesión para /api (con rol y estado frescos).
+    if (req.authBlocked) {
+        res.status(403).json({
+            error: req.authBlocked === 'suspended'
+                ? 'Tu cuenta está suspendida'
+                : 'La cuenta no existe',
+            code: req.authBlocked === 'suspended' ? 'ACCOUNT_SUSPENDED' : 'ACCOUNT_NOT_FOUND',
+        });
+        return;
+    }
+
+    if (req.auth) {
+        next();
+        return;
+    }
+
     // Support both Bearer header and HttpOnly cookie
     let token: string | undefined;
 

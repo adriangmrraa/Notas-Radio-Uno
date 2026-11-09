@@ -32,6 +32,7 @@ import { registerPublicRoutes } from "./routes/public.js";
 import { registerPublicPageRoutes } from "./routes/publicPages.js";
 import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
+import { optionalAuth, viewerWriteGuard } from "./middleware/authz.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { jobsRouter } from "./routes/jobs.js";
@@ -135,6 +136,14 @@ const CORS_ORIGIN = process.env.FRONTEND_URL || true;
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
+
+// ---------------------------------------------------------------------------
+// Autorización global de /api
+//   optionalAuth  → deja req.auth disponible sin rechazar rutas públicas
+//   viewerWriteGuard → un rol viewer nunca muta (403), salvo su propia cuenta
+// ---------------------------------------------------------------------------
+app.use("/api", optionalAuth);
+app.use("/api", viewerWriteGuard);
 
 // Static files: production client bundle
 app.use(express.static(path.join(PROJECT_ROOT, "dist", "client")));
