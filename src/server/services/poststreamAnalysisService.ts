@@ -18,6 +18,7 @@ import { extractInsights } from './insightService.js';
 import { analyzeTopicSegments, extractSegmentText } from './topicService.js';
 import { detectHighlights } from './clipService.js';
 import { listForTransmission } from './personService.js';
+import { ingestUtterances } from './attributionService.js';
 import { enqueue } from './jobsQueueService.js';
 import { getPlanLimits } from './quotaService.js';
 import { transition, getByIdAnyTenant } from './transmissionService.js';
@@ -174,6 +175,16 @@ export async function handlePoststreamAnalysis(payload: PoststreamPayload): Prom
             ? allUtterances.map((u) => `[${u.speaker}]: ${u.text}`).join('\n')
             : fullText;
         const speakerCount = new Set(allUtterances.map((u) => u.speaker)).size;
+
+        // T-26: re-fusión retroactiva del timeline completo (las appearances
+        // 'face' ya existen vía frameSampler). Corre ANTES de encolar los
+        // render_clip para que los clips hereden nombres/crop de atribución.
+        try {
+            const fused = await ingestUtterances(transmissionId, allUtterances);
+            console.log(`[Poststream] atribución: ${fused} appearances 'fusion' para tx=${transmissionId}`);
+        } catch (err) {
+            console.warn('[Poststream] fusión speaker↔rostro falló (degradado):', err instanceof Error ? err.message : err);
+        }
         const totalMs = allUtterances.length
             ? Math.max(...allUtterances.map((u) => u.end))
             : (tx.endedAt && tx.startedAt ? tx.endedAt.getTime() - tx.startedAt.getTime() : 0);

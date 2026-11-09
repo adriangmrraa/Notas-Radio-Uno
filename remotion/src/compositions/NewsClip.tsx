@@ -26,8 +26,13 @@ import {
 import { loadFont as loadSpace } from "@remotion/google-fonts/SpaceGrotesk";
 import { loadFont as loadSora } from "@remotion/google-fonts/Sora";
 
-const { fontFamily: space } = loadSpace();
-const { fontFamily: sora } = loadSora();
+// Fallback defensivo: si loadFont falla en bundle-eval (internals faltantes),
+// la composición registra igual con stacks del sistema (ver LiveClipOverlay).
+const safeFont = (loader: () => { fontFamily: string }, fallback: string): string => {
+  try { return loader().fontFamily; } catch { return fallback; }
+};
+const space = safeFont(() => loadSpace("normal", { weights: ["500", "700"], subsets: ["latin"] }), '"Space Grotesk", Arial, sans-serif');
+const sora = safeFont(() => loadSora("normal", { weights: ["500", "600", "700"], subsets: ["latin"] }), '"Sora", Arial, sans-serif');
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {

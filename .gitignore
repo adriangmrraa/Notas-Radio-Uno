@@ -7,6 +7,7 @@ uploads/
 *.db
 *.mp3
 *.py
+!face/**/*.py
 tweets_log_*.json
 Notas-Radio-Uno/
 .claude/

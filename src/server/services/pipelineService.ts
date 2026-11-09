@@ -110,6 +110,8 @@ class AutoPipeline {
   private currentChunkCaptureStartMs: number;
   /** render_clip ya encolados en esta sesión (cuota maxClipsPerTransmission). */
   private clipsEnqueued: number;
+  /** T-26: consumidor de utterances alineadas (attributionService vía engine). */
+  private utteranceSink: ((utterances: Utterance[]) => void) | null;
 
   constructor(io: Server, tenantId: string = 'default') {
     this.io = io;
@@ -156,6 +158,16 @@ class AutoPipeline {
     this.startedAtMs = null;
     this.currentChunkCaptureStartMs = 0;
     this.clipsEnqueued = 0;
+    this.utteranceSink = null;
+  }
+
+  /**
+   * T-26: registra un consumidor de utterances alineadas a wall-clock.
+   * El engine lo cablea a attributionService.ingestUtterances (fusión
+   * speaker↔rostro). Best-effort: un error del sink nunca rompe el chunk.
+   */
+  setUtteranceSink(sink: ((utterances: Utterance[]) => void) | null): void {
+    this.utteranceSink = sink;
   }
 
   /**
@@ -310,6 +322,10 @@ class AutoPipeline {
               ? result.utterances.map((u) => ({ ...u, start: u.start + base, end: u.end + base }))
               : result.utterances;
             this.recentUtterances = [...this.recentUtterances, ...aligned].slice(-200);
+            // T-26: fusión speaker↔rostro en vivo (solo si hay ancla wall-clock)
+            if (this.transmissionId && this.utteranceSink) {
+              try { this.utteranceSink(aligned); } catch { /* best-effort */ }
+            }
           }
           // Metering T-30: minutos de audio transcritos por chunk
           if (this.transmissionId) {

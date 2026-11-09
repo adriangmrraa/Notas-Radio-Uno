@@ -1,0 +1,8 @@
+# face service — InsightFace + FastAPI (CPU) — T-23
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+insightface==0.7.3
+onnxruntime==1.20.1
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pillow==11.0.0

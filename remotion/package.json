@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@remotion/cli": "4.0.241",
-    "@remotion/google-fonts": "^4.0.241",
+    "@remotion/google-fonts": "4.0.241",
     "@remotion/player": "4.0.241",
     "hyperframes": "^0.4.29",
     "react": "^18.3.1",

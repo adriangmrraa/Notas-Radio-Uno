@@ -9,6 +9,10 @@ import { initDossierScheduler } from './services/dossierService.js';
 import { handlePoststreamAnalysis, type PoststreamPayload } from './services/poststreamAnalysisService.js';
 import { handleVodIngest, type VodIngestPayload } from './services/vodIngestService.js';
 import { handleDunningCycle } from './services/dunningService.js';
+import { handleRenderClip, type RenderClipPayload } from './services/clipCutterService.js';
+import { handlePurgeRecording, startPurgeLoop, type PurgeRecordingPayload } from './services/recordingPurgeService.js';
+import { startFrameSamplerLoop } from './services/frameSamplerService.js';
+import { ingestUtterances } from './services/attributionService.js';
 import { AutoPipeline } from './services/pipelineService.js';
 import { emitToTenant, INTERNAL_EMIT_SECRET } from './services/notificationService.js';
 import { jobNotify } from './services/notificationService.js';
@@ -53,6 +57,13 @@ function startAudioTap(tx: Transmission): void {
         transmissionId: tx.id,
         startedAt: tx.startedAt ?? new Date(),
         programId: tx.programId,
+    });
+
+    // T-26: utterances alineadas a wall-clock → fusión speaker↔rostro en vivo.
+    pipeline.setUtteranceSink((utterances) => {
+        void ingestUtterances(tx.id, utterances).catch((e) =>
+            console.warn(`[Engine] ingestUtterances tx=${tx.id}:`, e instanceof Error ? e.message : e),
+        );
     });
 
     // Espejo de eventos del canvas → notificaciones del tenant (como hacía el
@@ -126,12 +137,14 @@ export async function initEngine(opts: { io: Server | null }): Promise<EngineHan
     registerJobHandler<PoststreamPayload>('poststream_analysis', (p) => handlePoststreamAnalysis(p));
     registerJobHandler<VodIngestPayload>('vod_ingest', (p) => handleVodIngest(p));
     registerJobHandler('dunning_cycle', () => handleDunningCycle({}).then(() => undefined));
-    // 'render_clip' y 'purge_recording' quedan para T-31/T-32 y T-36 (WU3b):
-    // sin handler → el job va a dead tras maxAttempts con error explícito.
+    registerJobHandler<RenderClipPayload>('render_clip', (p) => handleRenderClip(p).then(() => undefined));
+    registerJobHandler<PurgeRecordingPayload>('purge_recording', (p) => handlePurgeRecording(p));
 
     // ── Workers + loops ─────────────────────────────────────────────────────
     const worker = startWorker({ workerId: `engine-${process.pid}` });
     const recorder = startRecorderLoop();
+    const frameSampler = startFrameSamplerLoop(); // T-25: rostros por segmento
+    const purgeLoop = startPurgeLoop();           // T-36: retención + disco
     initJobScheduler(opts.io ?? undefined);
     initDossierScheduler();
 
@@ -149,6 +162,8 @@ export async function initEngine(opts: { io: Server | null }): Promise<EngineHan
         stop: () => {
             worker.stop();
             recorder.stop();
+            frameSampler.stop();
+            purgeLoop.stop();
             clearInterval(dunningTimer);
             for (const [, p] of audioTaps) {
                 try { p.stop(); } catch { /* ignore */ }

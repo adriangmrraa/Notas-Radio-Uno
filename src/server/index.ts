@@ -42,6 +42,7 @@ import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
 import { registerPeopleRoutes } from "./routes/people.js";
 import { registerTransmissionRoutes } from "./routes/transmissions.js";
+import { initFaceService } from "./services/faceService.js";
 import { initEngine, createInternalEmitRouter } from "./engine.js";
 
 // ---------------------------------------------------------------------------
@@ -248,6 +249,10 @@ if (!IS_ENGINE) {
   registerClipRoutes(app);
   registerPeopleRoutes(app);
   registerTransmissionRoutes(app);
+
+  // T-24: enrolamiento facial async — el upload de person_photos corre en
+  // este proceso (api|combined). Registra el processor en personService.
+  initFaceService();
 }
 
 // ---------------------------------------------------------------------------

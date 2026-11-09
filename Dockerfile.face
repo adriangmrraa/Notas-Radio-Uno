@@ -1,0 +1,41 @@
+# Dockerfile.face — servicio de rostros InsightFace (T-23, D4)
+#
+# Container separado en EasyPanel (`face`, puerto interno 8000, sin
+# exposición pública). CPU-only: onnxruntime + modelo buffalo_l horneado
+# en la imagen (no depende de download en runtime ni de volumen).
+#
+#   build:  docker build -f Dockerfile.face -t periodistapp-face .
+#   run:    docker run -p 8000:8000 periodistapp-face
+#   check:  curl localhost:8000/health
+
+FROM python:3.11-slim
+
+# libglib2.0/libgomp: requeridos por onnxruntime/opencv en slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY face/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download del modelo buffalo_l en build-time → imagen self-contained
+# (stateless, arranca sin red). INSIGHTFACE_ROOT apunta al mismo path en
+# runtime para que FaceAnalysis lo encuentre sin descargar.
+ENV INSIGHTFACE_ROOT=/models
+RUN mkdir -p /models && python -c "\
+from insightface.app import FaceAnalysis; \
+fa = FaceAnalysis(name='buffalo_l', root='/models', providers=['CPUExecutionProvider']); \
+fa.prepare(ctx_id=0, det_size=(640, 640)); \
+print('modelo buffalo_l listo en /models')"
+
+COPY face/main.py ./main.py
+
+ENV PORT=8000
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"
+
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

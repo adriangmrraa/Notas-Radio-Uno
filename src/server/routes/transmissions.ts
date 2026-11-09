@@ -18,6 +18,7 @@ import {
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import * as transmissionService from '../services/transmissionService.js';
 import { consume as consumeQuota } from '../services/quotaService.js';
+import { correctSpeaker, fuseTransmission } from '../services/attributionService.js';
 import { enqueue } from '../services/jobsQueueService.js';
 import { emitToTenant } from '../services/notificationService.js';
 import { audit } from '../services/auditService.js';
@@ -341,13 +342,18 @@ export function registerTransmissionRoutes(app: Express): void {
     });
 
     // ------------------------------------------------------------------
-    // POST /api/live/:txId/correct — corrección de atribución
+    // POST /api/live/:txId/correct — corrección de atribución (T-26)
     //
     //   a) { appearanceId, personId|null } → re-etiqueta una aparición
     //      (personId null → desasignar). Marca source='manual'.
-    //   b) { startMs, endMs, speakerLabel?, personId } → aparición manual nueva.
-    //   Sin motor de atribución automática (T-24) → 501 cuando el body pide
-    //   una corrección automática (kind='auto').
+    //   b) { speakerLabel, personId|null } → corrección de speaker:
+    //      re-etiqueta TODAS las appearances emitidas con ese label
+    //      (backward) y fija el mapa label→persona (forward) vía
+    //      attributionService.correctSpeaker.
+    //   c) { startMs, endMs, speakerLabel?, personId } → aparición manual
+    //      nueva sobre una ventana puntual.
+    //   d) { kind:'auto' } → re-corre la fusión sobre las ventanas speaker
+    //      de transmission_segments (attributionService.fuseTransmission).
     // ------------------------------------------------------------------
     app.post('/api/live/:txId/correct', requireAuth, async (req: Request, res: Response) => {
         try {
@@ -367,8 +373,12 @@ export function registerTransmissionRoutes(app: Express): void {
                 kind?: 'manual' | 'auto';
             };
 
+            // (d) re-fusión automática de la transmisión
             if (body.kind === 'auto') {
-                res.status(501).json({ error: 'Corrección automática de atribución no implementada todavía (ver T-24)' });
+                const { fused } = await fuseTransmission(tx.id);
+                emitToTenant(tenantId, 'transmission:update', { transmissionId: tx.id, refused: fused });
+                void audit({ actorUserId: req.auth!.userId, tenantId, action: 'live.attribution_refused', metadata: { transmissionId: tx.id, fused } });
+                res.json({ success: true, fused });
                 return;
             }
 
@@ -404,10 +414,22 @@ export function registerTransmissionRoutes(app: Express): void {
                 return;
             }
 
-            // (b) aparición manual nueva
+            // (b) corrección de speaker label — backward + forward (T-26)
+            if (body.speakerLabel && body.startMs === undefined && body.endMs === undefined) {
+                const { updated } = await correctSpeaker({
+                    txId: tx.id,
+                    speakerLabel: body.speakerLabel,
+                    personId: body.personId ?? null,
+                    actorUserId: req.auth!.userId,
+                });
+                res.json({ success: true, updated });
+                return;
+            }
+
+            // (c) aparición manual nueva
             const { startMs, endMs, speakerLabel, personId } = body;
             if (typeof startMs !== 'number' || typeof endMs !== 'number' || startMs < 0 || endMs <= startMs || !personId) {
-                res.status(400).json({ error: 'Se requiere appearanceId o {startMs, endMs, personId} válidos' });
+                res.status(400).json({ error: 'Se requiere appearanceId, {speakerLabel, personId} o {startMs, endMs, personId} válidos' });
                 return;
             }
             const [person] = await db.select({ id: persons.id }).from(persons)

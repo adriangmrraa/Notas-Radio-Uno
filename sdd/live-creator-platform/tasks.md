@@ -169,22 +169,22 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
   Pasos: liveDetect ventana 15×2min → `yt-dlp -g` una vez → `ffmpeg -c copy -f segment -segment_time 60 -strftime 1` en `/data/media/{tenant}/{tx}/`; al caer stream re-resuelve; registra `stream_recordings`+`recording_segments` (startMs por strftime−startedAt); heartbeat; stop limpio; maxDurationMinutes → stop suave.
   ✔ `tsc` + grabación real de stream de prueba produce segmentos MP4 + filas `recording_segments` con ms coherentes.
 
-- [ ] **T-23 · Servicio face (Python FastAPI)** — `face-attribution` · M · deps: T-06 (GATE-1) · épicas: PC-04, PE-03
+- [x] **T-23 · Servicio face (Python FastAPI)** — `face-attribution` · M · deps: T-06 (GATE-1) · épicas: PC-04, PE-03
   Files: `face/main.py`, `Dockerfile.face`
   Pasos: `POST /enroll` (foto→faceCount+embedding512), `POST /detect` (frame→faces[bbox,embedding]), `GET /health`; insightface+onnxruntime CPU, modelo `buffalo_l`.
   ✔ `docker build` + curl /enroll con foto devuelve embedding de 512 floats.
 
-- [ ] **T-24 · faceService (cliente) + enrolamiento de fotos** — `face-attribution`, `people-directory` · M · deps: T-23, T-09 · épicas: PC-04
+- [x] **T-24 · faceService (cliente) + enrolamiento de fotos** — `face-attribution`, `people-directory` · M · deps: T-23, T-09 · épicas: PC-04
   Files: `src/server/services/faceService.ts`
   Pasos: HTTP client con timeout/retry + health/degradación (enrolled-off); pipeline al subir `person_photos`: detect→1 cara→insert `face_embeddings`; estados `pending/enrolled/no_face/multi_face/error`; `enrollment_status` derivado en persons.
   ✔ `tsc` + subir foto real → embedding en DB y `persons.enrollment_status='ready'` (con ≥1 enrolled); face caído → degradación sin romper request.
 
-- [ ] **T-25 · frameSamplerService → person_appearances(face)** — `face-attribution` · M · deps: T-22, T-24 · épicas: PE-03
+- [x] **T-25 · frameSamplerService → person_appearances(face)** — `face-attribution` · M · deps: T-22, T-24 · épicas: PE-03
   Files: `src/server/services/frameSamplerService.ts`
   Pasos: watcher de segmento completado → `ffmpeg -vf fps=1` → POST /detect por frame → match `face_embeddings WHERE tenant_id ORDER BY embedding<=> LIMIT 1` (umbral ~0.5) → `person_appearances(source='face', personId?, bbox, startMs/endMs)`.
   ✔ `tsc` + segmento con cara enrolada genera appearances con personId y bbox; desconocida → personId null.
 
-- [ ] **T-26 · attributionService (fusión speaker↔rostro)** — `face-attribution`, `live-room` · L · deps: T-25 · épicas: PE-03, PE-05
+- [x] **T-26 · attributionService (fusión speaker↔rostro)** — `face-attribution`, `live-room` · L · deps: T-25 · épicas: PE-03, PE-05
   Files: `src/server/services/attributionService.ts`
   Pasos: fusión wall-clock speaker_label × appearances en ventana → persona dominante → `person_appearances(source='fusion', confidence)`; mapa speakerLabel→personId por transmisión; corrección manual `POST /live/:tx/correct` aplica forward+backward sobre emitidas (source='manual'); ambiguo → baja confianza, nunca inventa.
   ✔ `tsc` + corrección manual re-etiqueta timeline y persiste appearances 'manual'.
@@ -209,12 +209,12 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
   Pasos: utterances con `wallMs` (offset de chunk acumulado) anclado a `startedAt`; topics/moments → `transmission_segments` con speakers jsonb; moment detection → `jobs_queue.enqueue('render_clip')` respetando `maxClipsPerTransmission`; prompts vía T-29; metering vía T-18; vincula corrida a `transmissionId`.
   ✔ `tsc` + segmento de prueba genera `transmission_segments` con wallMs coherentes con `recording_segments`.
 
-- [ ] **T-31 · Remotion LiveClipOverlay (webm transparente)** — `clip-extraction` · M · deps: — · épicas: PF-03
+- [x] **T-31 · Remotion LiveClipOverlay (webm transparente)** — `clip-extraction` · M · deps: — · épicas: PF-03
   Files: `remotion/src/compositions/LiveClipOverlay.tsx` (+ registro)
   Pasos: composición alpha: logo tenant, lower-third nombre+rol persona, progreso/watermark; render script → `overlay.webm`.
   ✔ `npx remotion render` produce webm con alpha; visual OK en frame extraído.
 
-- [ ] **T-32 · clipCutterService (cut→crop→subs→overlay)** — `clip-extraction` · L · deps: T-22, T-25, T-31, T-11 · épicas: PF-01, PF-02, PF-05
+- [x] **T-32 · clipCutterService (cut→crop→subs→overlay)** — `clip-extraction` · L · deps: T-22, T-25, T-31, T-11 · épicas: PF-01, PF-02, PF-05
   Files: `src/server/services/clipCutterService.ts`
   Pasos: resolver segmentos que cubren [startMs,endMs] → concat/cut `-ss/-t`; crop 9:16 centro=bbox ponderado del speaker dominante por tramo (split en speaker-change, fallback centrado); ASS subs de utterances ventana (nombres resueltos, fuente tenant); una pasada ffmpeg crop→scale 1080x1920→subs→overlay webm → `assets(type='clip',source='footage')` + thumb + `asset_persons`; versionado de re-cortes.
   ✔ `tsc` + render_clip job produce MP4 1080x1920 con subs y overlay; asset en `ready`.
@@ -234,7 +234,7 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
   Pasos: upload de video → `transmission(source='vod_upload')` → job `vod_ingest` lo segmenta en `recording_segments` (startedAt=inicio archivo) → mismo pipeline.
   ✔ `tsc` + upload MP4 produce segmentos y entra a pipeline normal.
 
-- [ ] **T-36 · Purga de crudos por retención de plan** — `stream-recording`, `go-live-ops` · M · deps: T-14, T-22 · épicas: PD-06, PI-05
+- [x] **T-36 · Purga de crudos por retención de plan** — `stream-recording`, `go-live-ops` · M · deps: T-14, T-22 · épicas: PD-06, PI-05
   Files: `src/server/services/jobsQueueService.ts` (handler `purge_recording`), scheduler diario en engine
   Pasos: purga diaria por `plan.retention_days`; verifica refs en jobs_queue/render pendientes antes de borrar; marca `recording_segments.status='purged'`; alerta uso de disco.
   ✔ `tsc` + segmento viejo con render pendiente NO se borra; sin refs → archivo fuera + status purged.
