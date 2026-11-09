@@ -47,6 +47,7 @@ import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
 import { seedPlans } from "./services/planService.js";
+import { seedAddons } from "./services/addonService.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -346,12 +347,13 @@ app.get("*", (_req, res) => {
     process.exit(1);
   }
 
-  // Seed de planes (Épica B): idempotente, nunca pisa precios ajustados a mano.
-  // try/catch — sin DB o con schema viejo el server igual levanta.
+  // Seed de planes y add-ons (Épica B): idempotente, nunca pisa precios
+  // ajustados a mano. try/catch — sin DB o con schema viejo el server igual levanta.
   try {
     await seedPlans();
+    await seedAddons();
   } catch (err) {
-    console.error("[Seed] No se pudo ejecutar seedPlans:", err);
+    console.error("[Seed] No se pudo ejecutar el seed de billing:", err);
   }
 
   // Register all fonts from /fonts directory

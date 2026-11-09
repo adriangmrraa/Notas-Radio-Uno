@@ -14,8 +14,9 @@ import {
     changePlan,
     reactivateSubscription,
 } from '../services/billingService.js';
+import { listAddons, createAddonCheckout, applyAddonPurchase } from '../services/addonService.js';
 import { AppError } from '../lib/errors.js';
-import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
+import { plans, subscriptions, usageRecords, invoices, addonPurchases } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc } from 'drizzle-orm';
 
@@ -275,6 +276,52 @@ router.post('/checkout', requireAuth, requireOwner, async (req: Request, res: Re
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/billing/addons — Catálogo de add-ons comprables (+N transmisiones)
+// ---------------------------------------------------------------------------
+router.get('/addons', requireAuth, async (_req: Request, res: Response) => {
+    try {
+        res.json(await listAddons());
+    } catch (err) {
+        respondError(res, err, 'Error al obtener add-ons');
+    }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/billing/addons/checkout — Owner: compra un add-on de transmisiones
+// ---------------------------------------------------------------------------
+router.post('/addons/checkout', requireAuth, requireOwner, async (req: Request, res: Response) => {
+    try {
+        const { addonName, provider = 'stripe' } = req.body ?? {};
+        if (typeof addonName !== 'string' || !addonName) {
+            res.status(400).json({ error: 'addonName requerido' });
+            return;
+        }
+        if (provider !== 'stripe' && provider !== 'mercadopago') {
+            res.status(400).json({ error: 'provider inválido' });
+            return;
+        }
+
+        const [user] = await db.select({ email: users.email }).from(users)
+            .where(eq(users.id, req.auth!.userId)).limit(1);
+
+        void auditFromRequest(req, AUDIT_ACTIONS.BILLING_CHECKOUT, {
+            entityType: 'addon_purchase',
+            metadata: { addonName, provider },
+        });
+
+        res.json(await createAddonCheckout({
+            tenantId: req.auth!.tenantId,
+            addonName,
+            provider,
+            actorUserId: req.auth!.userId,
+            payerEmail: user?.email ?? null,
+        }));
+    } catch (err) {
+        respondError(res, err, 'Error al crear checkout de add-on');
+    }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/billing/cancel — Auth required
 // ---------------------------------------------------------------------------
 router.post('/cancel', requireAuth, requireOwner, async (req: Request, res: Response) => {
@@ -419,6 +466,24 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
         switch (event.type) {
             case 'checkout.session.completed': {
                 const session = event.data.object as Stripe.Checkout.Session;
+
+                // Pago único de un add-on: no es una suscripción.
+                if (session.metadata?.kind === 'addon_purchase' && session.metadata.purchaseId) {
+                    const result = await applyAddonPurchase({
+                        purchaseId: session.metadata.purchaseId,
+                        provider: 'stripe',
+                        externalId: session.id,
+                    });
+                    if (result.applied) {
+                        const [purchase] = await db.select({ tenantId: addonPurchases.tenantId })
+                            .from(addonPurchases)
+                            .where(eq(addonPurchases.id, session.metadata.purchaseId))
+                            .limit(1);
+                        if (purchase) await tagBillingEventTenant('stripe', event.id, purchase.tenantId);
+                    }
+                    break;
+                }
+
                 const { tenantId, planName, billingPeriod } = session.metadata || {};
                 if (!tenantId || !planName) break;
 
@@ -677,6 +742,27 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
 
             const payment = new Payment(mpConfig);
             const paymentData = await payment.get({ id: data.id });
+
+            // Pago único de un add-on: external_reference = addonpurchase:{id}
+            const addonMatch = paymentData.external_reference?.match(/^addonpurchase:(.+)$/);
+            if (paymentData.status === 'approved' && addonMatch) {
+                const purchaseId = addonMatch[1];
+                const [purchase] = await db.select({ tenantId: addonPurchases.tenantId })
+                    .from(addonPurchases)
+                    .where(eq(addonPurchases.id, purchaseId))
+                    .limit(1);
+
+                const result = await applyAddonPurchase({
+                    purchaseId,
+                    provider: 'mercadopago',
+                    externalId: String(data.id),
+                });
+                if (result.applied && purchase) {
+                    await tagBillingEventTenant('mercadopago', externalEventId, purchase.tenantId);
+                }
+                res.json({ received: true });
+                return;
+            }
 
             if (paymentData.status === 'approved' && paymentData.external_reference) {
                 const match = paymentData.external_reference.match(/^tenant_(.+?)_/);

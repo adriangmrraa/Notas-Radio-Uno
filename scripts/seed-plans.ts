@@ -11,6 +11,7 @@
 import 'dotenv/config';
 import { db, disconnectDb } from '../src/server/db/index.js';
 import { seedPlans } from '../src/server/services/planService.js';
+import { seedAddons } from '../src/server/services/addonService.js';
 
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) {
@@ -20,6 +21,9 @@ async function main(): Promise<void> {
 
   const result = await seedPlans();
   console.log(`[seed-plans] OK — insertados: ${result.inserted.length}, completados: ${result.updated.length}`);
+
+  const addons = await seedAddons();
+  console.log(`[seed-plans] Add-ons — insertados: ${addons.inserted.length}`);
 
   const { plans } = await import('../src/server/db/schema/index.js');
   const { asc } = await import('drizzle-orm');
