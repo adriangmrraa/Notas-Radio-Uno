@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { QuotaExceededError, type QuotaInfo, type QuotaUpsell } from '../lib/billing';
 
 interface FetchOptions {
   method?: string;
@@ -38,10 +39,20 @@ export function useApi() {
     });
 
     if (response.status === 402) {
+      // Leer el código para distinguir cuota agotada de suscripción inactiva:
+      // QUOTA_EXCEEDED NO redirige — el caller decide (UpgradeModal); el resto
+      // de los 402 mantiene el comportamiento anterior (redirect a /billing).
+      let payload: { error?: string; code?: string; quota?: QuotaInfo; upsell?: QuotaUpsell } = {};
+      try { payload = await response.json(); } catch { /* body no-JSON */ }
+
+      if (payload.code === 'QUOTA_EXCEEDED') {
+        throw new QuotaExceededError(payload.error || 'Sin transmisiones disponibles', payload.quota, payload.upsell);
+      }
+
       if (!options.skipRedirect && !window.location.pathname.startsWith('/billing')) {
         window.location.href = '/billing';
       }
-      throw new Error('Suscripción requerida');
+      throw new Error(payload.error || 'Suscripción requerida');
     }
 
     if (response.status === 401) {

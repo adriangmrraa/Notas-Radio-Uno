@@ -10,6 +10,7 @@ import {
   STEP_META as stepMeta,
   DETAIL_ICONS as detailIcons,
 } from '../types';
+import { QuotaExceededError, type QuotaInfo, type QuotaUpsell } from '../lib/billing';
 
 // ─── Utility ────────────────────────────────────────────────
 
@@ -327,6 +328,13 @@ export function PipelineProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify(config),
     });
     const data = await res.json();
+    if (res.status === 402 && data.code === 'QUOTA_EXCEEDED') {
+      throw new QuotaExceededError(
+        data.error || 'Sin transmisiones disponibles',
+        data.quota as QuotaInfo | undefined,
+        data.upsell as QuotaUpsell | undefined,
+      );
+    }
     if (!res.ok || !data.success) throw new Error(data.error || 'Error al iniciar el pipeline.');
     // Reset state for new run
     setRunning(true);

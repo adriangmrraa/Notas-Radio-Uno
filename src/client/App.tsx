@@ -3,6 +3,9 @@ import { usePipelineState } from './hooks/usePipelineState';
 import { ImageEditModal } from './components/ImageEditModal';
 import { MarkdownViewer } from './components/ai/MarkdownViewer';
 import { PipelineView } from './components/pipeline/PipelineView';
+import { UsageBanner } from './components/billing/UsageBanner';
+import { UpgradeModal } from './components/billing/UpgradeModal';
+import { isQuotaExceededError, type QuotaInfo, type QuotaUpsell } from './lib/billing';
 import {
   Play, Square, Settings, Wrench, Clock, ChevronDown,
 } from 'lucide-react';
@@ -78,6 +81,7 @@ function PipelineControl() {
 
   // Local UI state
   const [showStatus, setShowStatus] = useState(false);
+  const [upgradeState, setUpgradeState] = useState<{ quota: QuotaInfo | null; upsell: QuotaUpsell | null } | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [selectedNote, setSelectedNote] = useState<{ title: string; content?: string; previewUrl?: string; timestamp: string } | null>(null);
   const [editingImage, setEditingImage] = useState<{ url: string; path: string } | null>(null);
@@ -117,6 +121,11 @@ function PipelineControl() {
       await startPipeline({ url, tone, structure, imageModel, segmentDuration, autoPublish, ...(programId ? { programId } : {}) });
       setShowStatus(true);
     } catch (err: any) {
+      // Cuota agotada → paywall modal, no un alert genérico.
+      if (isQuotaExceededError(err)) {
+        setUpgradeState({ quota: err.quota, upsell: err.upsell });
+        return;
+      }
       alert('Error: ' + err.message);
     }
   };
@@ -140,6 +149,9 @@ function PipelineControl() {
           <p className="card-description">Captura continua + segmentación inteligente con IA</p>
         </div>
       </div>
+
+      {/* Aviso de cuota: aparece al acercarse al límite del ciclo */}
+      <div className="mb-4"><UsageBanner /></div>
 
       {/* Config form */}
       <div className="pipeline-config">
@@ -271,6 +283,14 @@ function PipelineControl() {
             <TranscriptionViewer transcription={transcription} />
           </div>
         </div>
+      )}
+
+      {upgradeState && (
+        <UpgradeModal
+          quota={upgradeState.quota}
+          upsell={upgradeState.upsell}
+          onClose={() => setUpgradeState(null)}
+        />
       )}
 
       <NoteModal note={selectedNote} onClose={() => setSelectedNote(null)} />
