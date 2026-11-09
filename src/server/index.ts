@@ -46,6 +46,7 @@ import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
+import { seedPlans } from "./services/planService.js";
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -339,6 +340,14 @@ app.get("*", (_req, res) => {
   } catch (err) {
     console.error("[Server] Error running migrations:", err);
     process.exit(1);
+  }
+
+  // Seed de planes (Épica B): idempotente, nunca pisa precios ajustados a mano.
+  // try/catch — sin DB o con schema viejo el server igual levanta.
+  try {
+    await seedPlans();
+  } catch (err) {
+    console.error("[Seed] No se pudo ejecutar seedPlans:", err);
   }
 
   // Register all fonts from /fonts directory

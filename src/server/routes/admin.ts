@@ -24,6 +24,7 @@ import {
   startImpersonation,
   endImpersonation,
 } from '../services/adminService.js';
+import { listPlans, updatePlan } from '../services/planService.js';
 
 export const adminRouter = Router();
 
@@ -146,6 +147,60 @@ adminRouter.post('/tenants/:id/suspend', mutationLimiter, async (req: Request, r
     res.json({ success: true, suspended: data.suspended });
   } catch (err) {
     fail(res, err, 'POST /tenants/:id/suspend');
+  }
+});
+
+// ── Planes (PB-03) ────────────────────────────────────────────────────────────
+
+adminRouter.get('/plans', async (_req: Request, res: Response) => {
+  try {
+    res.json(await listPlans());
+  } catch (err) {
+    fail(res, err, 'GET /plans');
+  }
+});
+
+const planPatchSchema = z.object({
+  displayName: z.string().min(1).max(100).optional(),
+  priceUsd: z.number().nonnegative().optional(),
+  priceUsdYearly: z.number().nonnegative().nullish(),
+  priceArs: z.number().nonnegative().nullish(),
+  priceArsYearly: z.number().nonnegative().nullish(),
+  transmissionsPerCycle: z.number().int().nonnegative().nullish(),
+  maxTransmissionMinutes: z.number().int().positive().nullish(),
+  maxClipsPerTransmission: z.number().int().positive().nullish(),
+  maxPeople: z.number().int().positive().nullish(),
+  rawRetentionDays: z.number().int().positive().nullish(),
+  maxTeamMembers: z.number().int().positive().optional(),
+  maxStorageGb: z.number().int().positive().optional(),
+  isActive: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+adminRouter.patch('/plans/:id', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const data = planPatchSchema.parse(req.body);
+
+    // Las columnas de precio son numeric: viajan como string en drizzle.
+    const patch: Parameters<typeof updatePlan>[0]['patch'] = {};
+    if (data.displayName !== undefined) patch.displayName = data.displayName;
+    if (data.priceUsd !== undefined) patch.priceUsd = String(data.priceUsd);
+    if (data.priceUsdYearly !== undefined) patch.priceUsdYearly = data.priceUsdYearly === null ? null : String(data.priceUsdYearly);
+    if (data.priceArs !== undefined) patch.priceArs = data.priceArs === null ? null : String(data.priceArs);
+    if (data.priceArsYearly !== undefined) patch.priceArsYearly = data.priceArsYearly === null ? null : String(data.priceArsYearly);
+    if (data.transmissionsPerCycle !== undefined) patch.transmissionsPerCycle = data.transmissionsPerCycle;
+    if (data.maxTransmissionMinutes !== undefined) patch.maxTransmissionMinutes = data.maxTransmissionMinutes;
+    if (data.maxClipsPerTransmission !== undefined) patch.maxClipsPerTransmission = data.maxClipsPerTransmission;
+    if (data.maxPeople !== undefined) patch.maxPeople = data.maxPeople;
+    if (data.rawRetentionDays !== undefined) patch.rawRetentionDays = data.rawRetentionDays;
+    if (data.maxTeamMembers !== undefined) patch.maxTeamMembers = data.maxTeamMembers;
+    if (data.maxStorageGb !== undefined) patch.maxStorageGb = data.maxStorageGb;
+    if (data.isActive !== undefined) patch.isActive = data.isActive;
+    if (data.sortOrder !== undefined) patch.sortOrder = data.sortOrder;
+
+    res.json(await updatePlan({ planId: req.params.id, patch, actorUserId: actor(req) }));
+  } catch (err) {
+    fail(res, err, 'PATCH /plans/:id');
   }
 });
 

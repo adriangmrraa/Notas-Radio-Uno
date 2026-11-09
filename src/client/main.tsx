@@ -22,6 +22,7 @@ import PipelineEditor from './editor/PipelineEditor';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { AdminTenants } from './pages/admin/AdminTenants';
 import { AdminTenantDetail } from './pages/admin/AdminTenantDetail';
+import { AdminPlans } from './pages/admin/AdminPlans';
 import './index.css';
 import './App.css';
 
@@ -69,6 +70,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route index element={<Navigate to="/admin/tenants" replace />} />
               <Route path="tenants" element={<AdminTenants />} />
               <Route path="tenants/:id" element={<AdminTenantDetail />} />
+              <Route path="plans" element={<AdminPlans />} />
             </Route>
 
             {/* Redirect root to dashboard */}

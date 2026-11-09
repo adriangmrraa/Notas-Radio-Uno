@@ -1,10 +1,11 @@
 import { Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Building2, LayoutDashboard, LogOut, ArrowLeft, ShieldCheck } from 'lucide-react';
+import { Building2, LayoutDashboard, LogOut, ArrowLeft, ShieldCheck, CreditCard } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 const NAV = [
   { to: '/admin', icon: LayoutDashboard, label: 'Resumen', end: true },
   { to: '/admin/tenants', icon: Building2, label: 'Tenants', end: false },
+  { to: '/admin/plans', icon: CreditCard, label: 'Planes', end: false },
 ];
 
 export function AdminLayout() {
