@@ -1,11 +1,25 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/index.js';
 import { requireAuth, requireActiveSubscription } from '../middleware/auth.js';
-import { stopJob, isJobRunning, getActiveJobIds } from '../services/jobSchedulerService.js';
-import { scheduledJobs, subscriptions, plans, jobExecutions, notifications } from '../db/schema/index.js';
+import { stopJob, isJobRunning, getActiveJobIds, isValidIanaTimezone } from '../services/jobSchedulerService.js';
+import { scheduledJobs, subscriptions, plans, jobExecutions, notifications, programs, tenants } from '../db/schema/index.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 const router = Router();
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates a programId: must be a UUID referencing a program of THIS tenant.
+ * Returns the program row or null.
+ */
+async function findTenantProgram(programId: string, tenantId: string) {
+    const [program] = await db.select().from(programs)
+        .where(and(eq(programs.id, programId), eq(programs.tenantId, tenantId)))
+        .limit(1);
+    return program ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/jobs — List all scheduled jobs for tenant
@@ -35,11 +49,41 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 router.post('/', requireAuth, requireActiveSubscription, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
-        const { name, description, streamUrl, scheduleType, daysOfWeek, startTime, durationMinutes, pipelineConfig } = req.body;
+        const { name, description, streamUrl, scheduleType, daysOfWeek, startTime, durationMinutes, pipelineConfig, timezone, programId, scheduledDate } = req.body;
 
         if (!name?.trim() || !streamUrl?.trim() || !startTime) {
             res.status(400).json({ error: 'Nombre, URL del canal y hora son requeridos' });
             return;
+        }
+
+        // timezone: optional — defaults to the tenant's timezone; must be valid IANA
+        if (timezone !== undefined && !isValidIanaTimezone(timezone)) {
+            res.status(400).json({ error: `Timezone invalida: '${timezone}'. Usar un nombre IANA (ej: 'America/Argentina/Buenos_Aires').` });
+            return;
+        }
+
+        // scheduledDate: 'YYYY-MM-DD', required for one_time jobs
+        if (scheduledDate !== undefined && scheduledDate !== null && !DATE_RE.test(scheduledDate)) {
+            res.status(400).json({ error: 'scheduledDate debe tener formato YYYY-MM-DD' });
+            return;
+        }
+        if ((scheduleType || 'recurring') === 'one_time' && !scheduledDate) {
+            res.status(400).json({ error: 'scheduledDate es requerida para jobs de tipo one_time' });
+            return;
+        }
+
+        // programId: optional — must reference a program owned by this tenant
+        let program: { id: string } | null = null;
+        if (programId !== undefined && programId !== null) {
+            if (!UUID_RE.test(programId)) {
+                res.status(400).json({ error: 'programId debe ser un UUID valido' });
+                return;
+            }
+            program = await findTenantProgram(programId, tenantId);
+            if (!program) {
+                res.status(404).json({ error: 'Programa no encontrado en este tenant' });
+                return;
+            }
         }
 
         // Check plan limit
@@ -63,6 +107,16 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
             return;
         }
 
+        // Default timezone = tenant's configured timezone
+        let resolvedTimezone = timezone as string | undefined;
+        if (!resolvedTimezone) {
+            const [tenant] = await db.select({ timezone: tenants.timezone })
+                .from(tenants)
+                .where(eq(tenants.id, tenantId))
+                .limit(1);
+            resolvedTimezone = tenant?.timezone;
+        }
+
         const [job] = await db.insert(scheduledJobs).values({
             tenantId,
             createdById: req.auth!.userId,
@@ -73,6 +127,9 @@ router.post('/', requireAuth, requireActiveSubscription, async (req: Request, re
             daysOfWeek: daysOfWeek || [],
             startTime,
             durationMinutes: durationMinutes || 120,
+            timezone: resolvedTimezone,
+            scheduledDate: scheduledDate || null,
+            programId: program?.id ?? null,
             pipelineConfig: pipelineConfig || {},
             isActive: true,
         }).returning();
@@ -98,7 +155,33 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
             .limit(1);
         if (!job) { res.status(404).json({ error: 'Job no encontrado' }); return; }
 
-        const { name, description, streamUrl, scheduleType, daysOfWeek, startTime, durationMinutes, pipelineConfig, isActive } = req.body;
+        const { name, description, streamUrl, scheduleType, daysOfWeek, startTime, durationMinutes, pipelineConfig, isActive, timezone, programId, scheduledDate } = req.body;
+
+        // timezone: if present, must be a valid IANA name
+        if (timezone !== undefined && !isValidIanaTimezone(timezone)) {
+            res.status(400).json({ error: `Timezone invalida: '${timezone}'. Usar un nombre IANA (ej: 'America/Argentina/Buenos_Aires').` });
+            return;
+        }
+
+        // scheduledDate: 'YYYY-MM-DD' or null to clear
+        if (scheduledDate !== undefined && scheduledDate !== null && !DATE_RE.test(scheduledDate)) {
+            res.status(400).json({ error: 'scheduledDate debe tener formato YYYY-MM-DD' });
+            return;
+        }
+
+        // programId: uuid of a program owned by this tenant, or null to unassign
+        let program: { id: string } | null = null;
+        if (programId !== undefined && programId !== null) {
+            if (!UUID_RE.test(programId)) {
+                res.status(400).json({ error: 'programId debe ser un UUID valido' });
+                return;
+            }
+            program = await findTenantProgram(programId, req.auth!.tenantId);
+            if (!program) {
+                res.status(404).json({ error: 'Programa no encontrado en este tenant' });
+                return;
+            }
+        }
 
         const updateData: Partial<typeof job> = {};
         if (name) updateData.name = name.trim();
@@ -110,6 +193,9 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
         if (durationMinutes) updateData.durationMinutes = durationMinutes;
         if (pipelineConfig) updateData.pipelineConfig = pipelineConfig;
         if (isActive !== undefined) updateData.isActive = isActive;
+        if (timezone !== undefined) updateData.timezone = timezone;
+        if (scheduledDate !== undefined) updateData.scheduledDate = scheduledDate;
+        if (programId !== undefined) updateData.programId = program?.id ?? null;
 
         const [updated] = await db.update(scheduledJobs)
             .set(updateData)

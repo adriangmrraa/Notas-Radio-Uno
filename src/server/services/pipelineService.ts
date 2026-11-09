@@ -46,9 +46,9 @@ const __dirname = dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
 const outputDir = path.join(PROJECT_ROOT, "output");
 
-// Webhooks: configurable via DB settings, then .env, then empty
-async function getWebhookPipelineUrl(): Promise<string> {
-  return (await getSetting("webhook_pipeline")) || process.env.WEBHOOK_URL_PIPELINE || "";
+// Webhooks: configurable via DB settings (per-tenant), then .env, then empty
+async function getWebhookPipelineUrl(tenantId: string): Promise<string> {
+  return (await getSetting("webhook_pipeline", tenantId)) || process.env.WEBHOOK_URL_PIPELINE || "";
 }
 
 // Alert keywords: configurable per tenant via settings table
@@ -991,7 +991,7 @@ class AutoPipeline {
 
           // Solo publicar en canales externos si autoPublish está activo
           if (this.config.autoPublish) {
-            const webhookUrl = await getWebhookPipelineUrl();
+            const webhookUrl = await getWebhookPipelineUrl(this.tenantId);
             let quoteDriveUrl = "";
             try {
               const auth = await this.authorizeGoogleDrive();
@@ -1618,7 +1618,7 @@ class AutoPipeline {
       message: "Enviando a webhook (Make.com/N8N)...",
       icon: "send",
     });
-    const webhookUrl = await getWebhookPipelineUrl();
+    const webhookUrl = await getWebhookPipelineUrl(this.tenantId);
     if (!webhookUrl) {
       this.emit("detail", {
         step: "publishing", sub: "webhook_skip",

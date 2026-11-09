@@ -12,7 +12,7 @@
 │                                                                    │
 │  ┌──────────────────┐     ┌──────────────────┐                    │
 │  │    frontend       │     │       api         │                   │
-│  │  (Nginx + React)  │────►│  (Express+Prisma) │                   │
+│  │  (Nginx + React)  │────►│ (Express+Drizzle) │                   │
 │  │  Puerto 80        │     │  Puerto 3001      │                   │
 │  │  DOMINIO PÚBLICO  │     │  DOMINIO PÚBLICO  │                   │
 │  └──────────────────┘     └────────┬─────────┘                    │
@@ -40,10 +40,10 @@ Servicios internos (sin dominio público):
 | Aspecto | ClinicForge / Platform AI | PeriodistApp |
 |---------|--------------------------|--------------|
 | Backend | Python FastAPI + BFF Node.js | **Express.js directo** (no necesita BFF) |
-| ORM | SQLAlchemy + Alembic | **Prisma ORM + Prisma Migrate** |
+| ORM | SQLAlchemy + Alembic | **Drizzle ORM + drizzle-kit** |
 | Frontend proxy | Nginx proxea a BFF, BFF proxea a orchestrator | **Nginx proxea directo al API** |
 | Servicios | 5-8 microservicios | **2 servicios app + 2 add-ons** |
-| Migraciones | `alembic upgrade head` en start.sh | **`npx prisma migrate deploy`** en CMD |
+| Migraciones | `alembic upgrade head` en start.sh | **`runMigrations()` automático** al boot del server |
 | Runtime env | envsubst para Vite vars | **Build-time args para Vite vars** |
 
 ---
@@ -106,12 +106,11 @@ periodistapp/
 ├── Dockerfile                    # Para el servicio API
 ├── Dockerfile.frontend           # Para el servicio Frontend
 ├── nginx.conf                    # Config de Nginx para el frontend
-├── prisma/
-│   ├── schema.prisma             # Schema de Prisma (fuente de verdad)
-│   ├── migrations/               # Migraciones versionadas (auto-generadas)
-│   └── seed.ts                   # Seed de planes iniciales
+├── drizzle/                      # Migraciones SQL versionadas (drizzle-kit)
+├── drizzle.config.ts             # Config de drizzle-kit
 ├── src/
 │   ├── server/                   # Backend Express
+│   │   └── db/schema/            # Schema Drizzle (fuente de verdad)
 │   └── client/                   # Frontend React
 ├── public/                       # Assets estáticos
 ├── fonts/                        # Tipografías
@@ -139,63 +138,54 @@ uploads
 
 ```dockerfile
 # ============================================
-# STAGE 1: Build TypeScript + Generate Prisma
+# STAGE 1: Build TypeScript + Generate Drizzle migrations
 # ============================================
 FROM node:20-slim AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
-COPY prisma/ prisma/
-COPY tsconfig.json ./
+COPY tsconfig*.json ./
+COPY drizzle.config.ts ./
 
 RUN npm ci
 
-# Generar Prisma Client (tipos TypeScript)
-RUN npx prisma generate
-
 COPY src/ src/
+COPY index.html ./
+COPY vite.config.ts ./
+COPY postcss.config.js ./
+COPY public/ public/
 
-RUN npm run build:server
+# Drizzle NO requiere codegen de cliente: solo se generan las migraciones SQL
+RUN npm run build:client && npm run build:server
+RUN npx drizzle-kit generate
 
 # ============================================
 # STAGE 2: Runtime
 # ============================================
 FROM node:20-slim
 
-# Dependencias del sistema: ffmpeg, python/whisper, yt-dlp
+# Dependencias del sistema: ffmpeg + yt-dlp
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    python3 \
-    python3-pip \
-    python3-venv \
     curl \
     ca-certificates \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Whisper en venv aislado
-RUN python3 -m venv /opt/whisper-venv \
-    && /opt/whisper-venv/bin/pip install --no-cache-dir openai-whisper
-
 # yt-dlp
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
     -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp
-
-ENV PATH="/opt/whisper-venv/bin:$PATH"
 
 WORKDIR /app
 
 # Solo producción
 COPY package*.json ./
-COPY prisma/ prisma/
 RUN npm ci --omit=dev
 
-# Regenerar Prisma Client en imagen runtime
-RUN npx prisma generate
-
-# Copiar build compilado
+# Copiar build compilado y migraciones
 COPY --from=builder /app/dist/ dist/
+COPY --from=builder /app/drizzle/ drizzle/
 
 # Assets
 COPY public/ public/
@@ -211,12 +201,12 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:3001/api/health || exit 1
 
-# Prisma migrate deploy + start server
-# (mismo patrón que alembic upgrade head en start.sh de ClinicForge)
-CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed || true && node dist/server/index.js"]
+# El server aplica las migraciones de drizzle/ automáticamente al arrancar
+# (runMigrations() en src/server/index.ts — mismo patrón que alembic upgrade head)
+CMD ["node", "dist/server/index.js"]
 ```
 
-> **Nota sobre el CMD**: `npx prisma db seed || true` ejecuta el seed la primera vez y no falla si ya se ejecutó (los seeds usan `skipDuplicates: true`). Esto es equivalente al `start.sh` de ClinicForge que detecta si la DB es nueva.
+> **Nota sobre el CMD**: no hay paso de migración en el CMD — `runMigrations()` corre `drizzle/` al boot antes de levantar Express. Es equivalente al `start.sh` de ClinicForge que detecta si la DB es nueva.
 
 ### 3.4 `Dockerfile.frontend` (Servicio Frontend)
 
@@ -346,7 +336,7 @@ server {
 Ir a la pestaña **"Environment"** del servicio `api` y agregar:
 
 ```env
-# === DATABASE (Prisma) ===
+# === DATABASE (PostgreSQL + Drizzle) ===
 DATABASE_URL=postgresql://periodistapp:TU_PASSWORD@periodistapp_postgres:5432/periodistapp
 
 # === REDIS ===
@@ -470,18 +460,16 @@ EasyPanel genera los certificados SSL automáticamente con Let's Encrypt una vez
 
 1. En EasyPanel, ir al servicio `api` → **"Deploy"**
 2. EasyPanel clona el repo, construye la imagen Docker
-3. El `CMD` ejecuta:
-   - `npx prisma migrate deploy` → crea todas las tablas
-   - `npx prisma db seed` → inserta los planes (trial, starter, professional, enterprise)
-   - `node dist/server/index.js` → inicia Express
+3. El `CMD` ejecuta `node dist/server/index.js`, que al arrancar:
+   - `runMigrations()` → aplica `drizzle/*.sql` y crea todas las tablas
+   - inicia Express
 
 4. Verificar en los logs de EasyPanel:
    ```
-   [Prisma] Aplicando migración: 20260323_init
-   Seeding database...
-   Seed completed.
-   [Server] Escuchando en puerto 3001
-   [Prisma] Conectado a PostgreSQL
+   [DB] Connected to database.
+   [DB] Running migrations...
+   [DB] Migrations complete.
+   [Server] Servidor corriendo en http://localhost:3001
    ```
 
 ### 7.3 Deploy del Frontend
@@ -520,10 +508,10 @@ EasyPanel genera los certificados SSL automáticamente con Let's Encrypt una vez
 curl https://api.periodistapp.com/api/health
 # → {"status":"ok","timestamp":"..."}
 
-# 2. Verificar que Prisma migró correctamente
+# 2. Verificar que las migraciones Drizzle aplicaron
 # (desde la terminal del container en EasyPanel)
-npx prisma migrate status
-# → Database schema is up to date!
+npx drizzle-kit migrate --config drizzle.config.ts   # idempotente: no-op si ya están aplicadas
+# → o revisar los logs del boot: "[DB] Migrations complete."
 
 # 3. Verificar planes creados
 curl https://api.periodistapp.com/api/billing/plans
@@ -599,7 +587,7 @@ docker logs $(docker ps -qf "name=periodistapp.*api") --tail 50
 
 Causas comunes:
 - `DATABASE_URL` mal configurada → verificar hostname (`periodistapp_postgres`, no `postgres`)
-- Prisma migrate falla → verificar que el schema.prisma está incluido en la imagen Docker
+- Migraciones fallan → verificar que `drizzle/` está incluido en la imagen Docker (logs: `[DB] Running migrations...`)
 - Puerto ocupado → verificar que no hay otro servicio en 3001
 
 ### Problema: Frontend no carga
@@ -619,20 +607,20 @@ Causas comunes:
 - En producción, Socket.IO debe conectar a `https://api.periodistapp.com`
 - Verificar que EasyPanel no tiene timeout para WebSocket (por defecto sí lo soporta)
 
-### Problema: Prisma migrate falla
+### Problema: las migraciones Drizzle fallan
 
 ```bash
 # Entrar al container del API
 docker exec -it $(docker ps -qf "name=periodistapp.*api") sh
 
-# Ver estado de migraciones
-npx prisma migrate status
+# Aplicar migraciones manualmente (idempotente)
+npx drizzle-kit migrate
 
-# Forzar deploy (si hay problemas)
-npx prisma migrate deploy
+# Regenerar migraciones desde el schema (si hay drift)
+npx drizzle-kit generate
 
-# Reset completo (DESTRUCTIVO - solo si es necesario)
-npx prisma migrate reset --force
+# Inspeccionar la DB
+npx drizzle-kit studio
 ```
 
 ---
@@ -663,13 +651,12 @@ Cada push a `master` en GitHub puede triggerear un redeploy automático en EasyP
 
 1. EasyPanel detecta el push (webhook de GitHub)
 2. Reconstruye la imagen Docker
-3. El nuevo container ejecuta `npx prisma migrate deploy` (aplica migraciones nuevas)
-4. El seed no duplica datos (`skipDuplicates: true`)
-5. Express inicia con el código actualizado
-6. Zero downtime: EasyPanel hace rolling update (container viejo sigue respondiendo hasta que el nuevo está healthy)
+3. El nuevo container aplica las migraciones nuevas de `drizzle/` al boot (`runMigrations()`)
+4. Express inicia con el código actualizado
+5. Zero downtime: EasyPanel hace rolling update (container viejo sigue respondiendo hasta que el nuevo está healthy)
 
 Para cambios de schema:
-1. Modificar `prisma/schema.prisma` localmente
-2. `npx prisma migrate dev --name descripcion_del_cambio`
-3. Commitear `prisma/migrations/` al repo
+1. Modificar `src/server/db/schema/` localmente
+2. `npm run db:generate` (=`npx drizzle-kit generate`) → crea `drizzle/NNNN_*.sql`
+3. Commitear `drizzle/` al repo
 4. Push → deploy automático → migración se aplica en producción

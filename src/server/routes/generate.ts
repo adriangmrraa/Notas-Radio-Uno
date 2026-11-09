@@ -274,7 +274,7 @@ export function registerGenerateRoutes(
       };
 
       // 1. Try webhook first
-      const webhookViejoUrl = await getWebhookViejoBoton();
+      const webhookViejoUrl = await getWebhookViejoBoton(req.auth!.tenantId);
       let webhookSent = false;
       if (webhookViejoUrl) {
         await sendToWebhook(webhookViejoUrl, note);
@@ -359,7 +359,7 @@ export function registerGenerateRoutes(
       };
 
       // 1. Try webhook first
-      const webhookNuevoUrl = await getWebhookNuevoBoton();
+      const webhookNuevoUrl = await getWebhookNuevoBoton(req.auth!.tenantId);
       let webhookSent = false;
       if (webhookNuevoUrl) {
         await sendToWebhook(webhookNuevoUrl, webhookData);

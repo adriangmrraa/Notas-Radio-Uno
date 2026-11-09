@@ -117,9 +117,6 @@ nano .env  # o vim, o usar cat
 # Instalar dependencias de Node
 npm ci
 
-# Generar cliente de Prisma
-npx prisma generate
-
 # Construir frontend (React)
 npm run build:client
 
@@ -131,17 +128,18 @@ npm run build:server
 
 ---
 
-## 🗄️ Paso 5: Ejecutar Migraciones y Seed
+## 🗄️ Paso 5: Migraciones (Drizzle)
+
+PeriodistApp usa **Drizzle ORM**: el schema vive en `src/server/db/schema/` y las
+migraciones SQL en `drizzle/`. **El servidor aplica las migraciones
+automáticamente al arrancar** — no hace falta ningún paso manual.
 
 ```bash
-# Aplicar migraciones de Prisma a la base de datos
-npx prisma migrate deploy
+# (Opcional) Aplicar migraciones manualmente contra la DB
+npm run db:migrate   # = npx drizzle-kit migrate
 
-# Poblar datos iniciales (opcional)
-npx prisma db seed
-
-# Verificar que las tablas se crearon
-npx prisma studio  # opcional, interface web en http://localhost:5555
+# (Opcional) Inspeccionar la DB con Drizzle Studio
+npm run db:studio    # interface web de drizzle-kit
 ```
 
 ---
@@ -426,7 +424,7 @@ git pull origin master
 npm ci
 npm run build:client
 npm run build:server
-npx prisma migrate deploy
+npx drizzle-kit migrate   # opcional: el server también las aplica al boot
 pm2 restart periodistapp-api
 ```
 

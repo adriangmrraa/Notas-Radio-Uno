@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import Stripe from 'stripe';
 import { MercadoPagoConfig, PreApproval, Payment } from 'mercadopago';
 import { db } from '../db/index.js';
@@ -301,9 +302,10 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
 
     let event: Stripe.Event;
     try {
-        // For raw body, we need express.raw() on this route
-        const rawBody = JSON.stringify(req.body);
-        event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+        // req.body is a raw Buffer here: index.ts mounts express.raw() on this
+        // path BEFORE express.json(). If that ordering ever breaks, req.body is a
+        // parsed object and constructEvent throws — failing closed with a 400.
+        event = stripe.webhooks.constructEvent(req.body as Buffer, sig, webhookSecret);
     } catch (err) {
         console.error('[Stripe Webhook] Signature verification failed:', err);
         res.status(400).send('Webhook signature verification failed');
@@ -404,18 +406,68 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// MercadoPago webhook signature verification
+// Docs: https://www.mercadopago.com/developers/en/docs/your-integrations/notifications/webhooks
+// x-signature: "ts=<unix>,v1=<hmac-sha256 hex>" — signed manifest:
+//   "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"
+// If MP_WEBHOOK_SECRET is not set, verification is skipped and the handler
+// relies solely on the mandatory API re-fetch below (never trusts req.body).
+// ---------------------------------------------------------------------------
+function verifyMercadoPagoSignature(req: Request): boolean {
+    const secret = process.env.MP_WEBHOOK_SECRET;
+    if (!secret) return true;
+
+    const xSignature = req.headers['x-signature'];
+    const xRequestId = req.headers['x-request-id'];
+    if (typeof xSignature !== 'string' || typeof xRequestId !== 'string') return false;
+
+    const parts: Record<string, string> = {};
+    for (const pair of xSignature.split(',')) {
+        const [k, v] = pair.split('=');
+        if (k && v) parts[k.trim()] = v.trim();
+    }
+    const ts = parts['ts'];
+    const v1 = parts['v1'];
+    if (!ts || !v1) return false;
+
+    const dataId = String(
+        req.query['data.id'] ?? (req.body as { data?: { id?: unknown } } | undefined)?.data?.id ?? ''
+    );
+    const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+    const expected = createHmac('sha256', secret).update(manifest).digest('hex');
+
+    const a = Buffer.from(expected, 'utf8');
+    const b = Buffer.from(v1, 'utf8');
+    return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/billing/webhook/mercadopago — No auth
 // ---------------------------------------------------------------------------
 router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
-    try {
-        const { type, data } = req.body;
+    if (!verifyMercadoPagoSignature(req)) {
+        console.warn('[MercadoPago Webhook] Invalid x-signature — request rejected');
+        res.status(401).json({ error: 'Invalid webhook signature' });
+        return;
+    }
 
-        if (type === 'subscription_preapproval' && data?.id) {
+    try {
+        // MP may send { type, data.id } in the body or as ?type=&data.id= query params.
+        const type = (req.query.type as string) || (req.body as { type?: string })?.type;
+        const dataId =
+            (req.query['data.id'] as string) ||
+            (req.body as { data?: { id?: unknown } })?.data?.id;
+
+        // SECURITY: req.body is NEVER trusted for state mutations. Every branch
+        // below re-fetches the entity from the MercadoPago API (preApproval.get /
+        // payment.get) and mutates only from that verified response.
+
+        if (type === 'subscription_preapproval' && dataId) {
             const mpConfig = getMercadoPago();
             if (!mpConfig) { res.sendStatus(503); return; }
 
             const preApproval = new PreApproval(mpConfig);
-            const result = await preApproval.get({ id: data.id });
+            const result = await preApproval.get({ id: String(dataId) });
 
             const externalRef = result.external_reference || '';
             const match = externalRef.match(/^tenant_(.+?)_(.+?)_(.+)$/);
@@ -436,7 +488,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                     status: 'active',
                     paymentProvider: 'mercadopago',
                     billingPeriod,
-                    externalSubscriptionId: String(data.id),
+                    externalSubscriptionId: String(dataId),
                     currentPeriodStart: new Date(),
                     trialEndsAt: null,
                     cancelAtPeriodEnd: false,
@@ -448,7 +500,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                         status: 'active',
                         paymentProvider: 'mercadopago',
                         billingPeriod,
-                        externalSubscriptionId: String(data.id),
+                        externalSubscriptionId: String(dataId),
                         currentPeriodStart: new Date(),
                         trialEndsAt: null,
                         cancelAtPeriodEnd: false,
@@ -463,12 +515,12 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             }
         }
 
-        if (type === 'payment' && data?.id) {
+        if (type === 'payment' && dataId) {
             const mpConfig = getMercadoPago();
             if (!mpConfig) { res.sendStatus(503); return; }
 
             const payment = new Payment(mpConfig);
-            const paymentData = await payment.get({ id: data.id });
+            const paymentData = await payment.get({ id: String(dataId) });
 
             if (paymentData.status === 'approved' && paymentData.external_reference) {
                 const match = paymentData.external_reference.match(/^tenant_(.+?)_/);
@@ -485,7 +537,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                             currency: 'ARS',
                             status: 'paid',
                             paymentProvider: 'mercadopago',
-                            externalPaymentId: String(data.id),
+                            externalPaymentId: String(dataId),
                             paidAt: new Date(),
                         });
                     }

@@ -37,13 +37,75 @@ export function initJobScheduler(io: Server) {
     console.log('[JobScheduler] Initialized — checking jobs every 60s');
 }
 
+// ---------------------------------------------------------------------------
+// Timezone helpers — all trigger comparisons happen in job.timezone, NOT in the
+// server's local timezone (a job at 10:00 America/Argentina/Buenos_Aires must
+// fire at 13:00 UTC on a UTC server, never at 10:00 UTC).
+// ---------------------------------------------------------------------------
+
+/** Returns true if `tz` is a valid IANA timezone name. */
+export function isValidIanaTimezone(tz: unknown): tz is string {
+    if (typeof tz !== 'string' || tz.trim().length === 0) return false;
+    try {
+        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Resolves a stored timezone, falling back to UTC if invalid/legacy. */
+function resolveJobTimezone(tz: string | null | undefined): string {
+    if (isValidIanaTimezone(tz)) return tz;
+    if (tz) console.warn(`[JobScheduler] Invalid timezone '${tz}' — falling back to UTC`);
+    return 'UTC';
+}
+
+const WEEKDAY_TO_INDEX: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+};
+
+interface JobLocalParts {
+    /** 0=Sunday … 6=Saturday, in the job's timezone */
+    day: number;
+    /** 'HH:MM' 24h, in the job's timezone */
+    time: string;
+    /** 'YYYY-MM-DD' local calendar date in the job's timezone */
+    date: string;
+}
+
+/**
+ * Decomposes `date` into day-of-week, 'HH:MM' and 'YYYY-MM-DD' **in `timeZone`**.
+ * Used both for the trigger check (against `now`) and for dedup (against
+ * `lastRunAt` — a job "already ran today" iff lastRunAt's job-local date equals
+ * today's job-local date).
+ */
+function getJobLocalParts(date: Date, timeZone: string): JobLocalParts {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        weekday: 'short',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    return {
+        day: WEEKDAY_TO_INDEX[get('weekday')] ?? 0,
+        time: `${get('hour')}:${get('minute')}`,
+        date: `${get('year')}-${get('month')}-${get('day')}`,
+    };
+}
+
 /**
  * Main loop: find jobs that should run NOW and start them.
+ * Day / startTime / dedup are all evaluated in `job.timezone`.
  */
 async function checkAndRunJobs() {
     const now = new Date();
-    const currentDay = now.getDay(); // 0=Sunday
-    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     // Get active jobs that match current time and day
     const jobs = await db.select().from(scheduledJobs)
@@ -59,22 +121,40 @@ async function checkAndRunJobs() {
             break;
         }
 
-        // Check day match
-        const daysOfWeek = (job.daysOfWeek as number[]) || [];
-        if (daysOfWeek.length > 0 && !daysOfWeek.includes(currentDay)) continue;
+        const jobTz = resolveJobTimezone(job.timezone);
+        const local = getJobLocalParts(now, jobTz);
 
-        // Check time match (exact minute)
-        if (job.startTime !== currentTime) continue;
+        if (job.scheduleType === 'one_time') {
+            // one_time: fires only on its scheduledDate (job-local date)
+            if (!job.scheduledDate) continue;
+            if (local.date < job.scheduledDate) continue; // not yet
+            if (local.date > job.scheduledDate) {
+                // Past date that never ran — mark expired so it stops evaluating
+                console.log(`[JobScheduler] one_time job '${job.name}' expired (scheduledDate ${job.scheduledDate} < ${local.date} ${jobTz})`);
+                await db.update(scheduledJobs)
+                    .set({ isActive: false, lastRunStatus: 'expired' })
+                    .where(eq(scheduledJobs.id, job.id));
+                continue;
+            }
+            if (job.lastRunAt) continue; // already ran — one_time never repeats
+        } else {
+            // recurring: check day-of-week in the job's timezone
+            const daysOfWeek = (job.daysOfWeek as number[]) || [];
+            if (daysOfWeek.length > 0 && !daysOfWeek.includes(local.day)) continue;
+        }
 
-        // Check if already ran today (prevent double-runs)
-        if (job.lastRunAt) {
-            const lastRun = new Date(job.lastRunAt);
-            if (lastRun.toDateString() === now.toDateString() && job.scheduleType === 'recurring') {
-                continue; // Already ran today
+        // Check time match (exact minute, in the job's timezone)
+        if (job.startTime !== local.time) continue;
+
+        // Dedup: "already ran today" = lastRunAt's job-local date == today's job-local date
+        if (job.lastRunAt && job.scheduleType === 'recurring') {
+            const lastRunLocalDate = getJobLocalParts(new Date(job.lastRunAt), jobTz).date;
+            if (lastRunLocalDate === local.date) {
+                continue; // Already ran today (job-local date)
             }
         }
 
-        console.log(`[JobScheduler] Triggering job: ${job.name} (${job.id})`);
+        console.log(`[JobScheduler] Triggering job: ${job.name} (${job.id}) @ ${local.time} ${jobTz}`);
         startJobDetection(job);
     }
 }

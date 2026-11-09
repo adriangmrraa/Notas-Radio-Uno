@@ -5,33 +5,35 @@ import { getSetting, setSetting } from "../services/databaseService.js";
 
 // ---------------------------------------------------------------------------
 // Webhook URL helpers (async — read from DB with env fallback)
+// tenantId is REQUIRED: webhook URLs are per-tenant settings.
 // ---------------------------------------------------------------------------
-async function getWebhookUrl(settingKey: string, envKey: string): Promise<string> {
-  return (await getSetting(settingKey)) || process.env[envKey] || "";
+async function getWebhookUrl(settingKey: string, envKey: string, tenantId: string): Promise<string> {
+  return (await getSetting(settingKey, tenantId)) || process.env[envKey] || "";
 }
 
-export async function getWebhookNuevoBoton(): Promise<string> {
-  return getWebhookUrl("webhook_nuevo_boton", "WEBHOOK_URL_NUEVO_BOTON");
+export async function getWebhookNuevoBoton(tenantId: string): Promise<string> {
+  return getWebhookUrl("webhook_nuevo_boton", "WEBHOOK_URL_NUEVO_BOTON", tenantId);
 }
 
-export async function getWebhookViejoBoton(): Promise<string> {
-  return getWebhookUrl("webhook_viejo_boton", "WEBHOOK_URL_VIEJO_BOTON");
+export async function getWebhookViejoBoton(tenantId: string): Promise<string> {
+  return getWebhookUrl("webhook_viejo_boton", "WEBHOOK_URL_VIEJO_BOTON", tenantId);
 }
 
-export async function getWebhookTercerBoton(): Promise<string> {
-  return getWebhookUrl("webhook_tercer_boton", "WEBHOOK_URL_TERCER_BOTON");
+export async function getWebhookTercerBoton(tenantId: string): Promise<string> {
+  return getWebhookUrl("webhook_tercer_boton", "WEBHOOK_URL_TERCER_BOTON", tenantId);
 }
 
 export function registerSettingsRoutes(app: Express): void {
   // ------------------------------------------------------------------
   // GET /api/settings/webhooks
   // ------------------------------------------------------------------
-  app.get("/api/settings/webhooks", requireAuth, async (_req: Request, res: Response) => {
+  app.get("/api/settings/webhooks", requireAuth, async (req: Request, res: Response) => {
+    const tenantId = req.auth!.tenantId;
     const [nuevoBoton, viejoBoton, tercerBoton, pipeline] = await Promise.all([
-      getWebhookNuevoBoton(),
-      getWebhookViejoBoton(),
-      getWebhookTercerBoton(),
-      getSetting("webhook_pipeline").then((v) => v || process.env.WEBHOOK_URL_PIPELINE || ""),
+      getWebhookNuevoBoton(tenantId),
+      getWebhookViejoBoton(tenantId),
+      getWebhookTercerBoton(tenantId),
+      getSetting("webhook_pipeline", tenantId).then((v) => v || process.env.WEBHOOK_URL_PIPELINE || ""),
     ]);
 
     res.json({
@@ -46,6 +48,7 @@ export function registerSettingsRoutes(app: Express): void {
   // POST /api/settings/webhooks
   // ------------------------------------------------------------------
   app.post("/api/settings/webhooks", requireAuth, async (req: Request, res: Response) => {
+    const tenantId = req.auth!.tenantId;
     const {
       webhook_nuevo_boton,
       webhook_viejo_boton,
@@ -56,16 +59,16 @@ export function registerSettingsRoutes(app: Express): void {
     const updates: Promise<void>[] = [];
 
     if (webhook_nuevo_boton !== undefined) {
-      updates.push(setSetting("webhook_nuevo_boton", webhook_nuevo_boton));
+      updates.push(setSetting("webhook_nuevo_boton", webhook_nuevo_boton, tenantId));
     }
     if (webhook_viejo_boton !== undefined) {
-      updates.push(setSetting("webhook_viejo_boton", webhook_viejo_boton));
+      updates.push(setSetting("webhook_viejo_boton", webhook_viejo_boton, tenantId));
     }
     if (webhook_tercer_boton !== undefined) {
-      updates.push(setSetting("webhook_tercer_boton", webhook_tercer_boton));
+      updates.push(setSetting("webhook_tercer_boton", webhook_tercer_boton, tenantId));
     }
     if (webhook_pipeline !== undefined) {
-      updates.push(setSetting("webhook_pipeline", webhook_pipeline));
+      updates.push(setSetting("webhook_pipeline", webhook_pipeline, tenantId));
     }
 
     await Promise.all(updates);
@@ -76,4 +79,3 @@ export function registerSettingsRoutes(app: Express): void {
     });
   });
 }
-

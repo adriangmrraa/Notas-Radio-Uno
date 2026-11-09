@@ -32,8 +32,8 @@ const __dirname = dirname(__filename);
 // Helpers internos
 // ---------------------------------------------------------------------------
 
-async function getWebhookPipelineUrl(): Promise<string> {
-  return (await getSetting("webhook_pipeline")) || process.env.WEBHOOK_URL_PIPELINE || "";
+async function getWebhookPipelineUrl(tenantId: string): Promise<string> {
+  return (await getSetting("webhook_pipeline", tenantId)) || process.env.WEBHOOK_URL_PIPELINE || "";
 }
 
 async function authorizeGoogleDrive(): Promise<InstanceType<typeof google.auth.JWT>> {
@@ -119,7 +119,7 @@ export async function publishToChannels(input: PublishInput): Promise<PublishRes
   }
 
   // 2. Webhook Make/N8N (opcional)
-  const webhookUrl = await getWebhookPipelineUrl();
+  const webhookUrl = await getWebhookPipelineUrl(input.tenantId);
   if (webhookUrl) {
     try {
       await axios.post(webhookUrl, {

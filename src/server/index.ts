@@ -133,6 +133,15 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 // ---------------------------------------------------------------------------
 const CORS_ORIGIN = process.env.FRONTEND_URL || true;
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
+
+// Stripe webhook signature verification requires the RAW request body.
+// This parser must be mounted BEFORE express.json() so req.body stays a Buffer
+// for that route only (express.json() skips requests already parsed).
+app.use(
+  "/api/billing/webhook/stripe",
+  express.raw({ type: "application/json" })
+);
+
 app.use(express.json());
 app.use(cookieParser());
 

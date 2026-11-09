@@ -13,41 +13,27 @@
 
 ---
 
-## 🛠️ Paso 1: Generar Migraciones de Prisma (Local)
+## 🛠️ Paso 1: Migraciones de Drizzle (Local)
 
-**Si ya tenés `prisma/migrations/`** podés saltar este paso.  
-**Si no**, ejecutá localmente (requiere PostgreSQL instalado o Docker):
+**Si ya tenés `drizzle/` con archivos `*.sql`** podés saltar este paso.
+PeriodistApp usa **Drizzle ORM** — el schema vive en `src/server/db/schema/` y las
+migraciones SQL versionadas en `drizzle/` (sin client codegen: no hay paso `generate` de cliente).
 
-### Opción A – Con PostgreSQL local
+**Si no**, generá las migraciones localmente (solo necesita el schema, no una DB viva):
+
 ```bash
-# 1. Asegurate de que PostgreSQL esté corriendo
-sudo service postgresql start  # o equivalente
+# 1. Generar migraciones SQL a partir del schema Drizzle
+npm run db:generate        # = npx drizzle-kit generate → escribe drizzle/NNNN_*.sql
 
-# 2. Crear una base de datos temporal
-createdb periodistapp_temp
+# 2. Verificar que se crearon los archivos
+ls -la drizzle/
 
-# 3. Generar migraciones
-DATABASE_URL="postgresql://postgres@localhost/periodistapp_temp" npx prisma migrate dev --name init
-
-# 4. Verificar que se creó `prisma/migrations/`
-ls -la prisma/migrations/
+# 3. (Opcional) Aplicarlas a mano contra una DB
+DATABASE_URL="postgresql://postgres@localhost/periodistapp_temp" npm run db:migrate   # = npx drizzle-kit migrate
 ```
 
-### Opción B – Con Docker (si no tenés PostgreSQL)
-```bash
-# 1. Levantar PostgreSQL temporal
-docker run --name pg_temp -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16
-
-# 2. Generar migraciones
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/postgres" npx prisma migrate dev --name init
-
-# 3. Detener y eliminar el contenedor después
-docker stop pg_temp && docker rm pg_temp
-```
-
-### Opción C – Usar las migraciones ya generadas
-**Ya incluí una migración inicial** (`prisma/migrations/20250330000000_init/`).  
-Podés usarla directamente, pero **verificá que el SQL sea compatible** con tu versión de PostgreSQL.
+> **Nota**: en producción NO hace falta correr `db:migrate` — el servidor aplica
+> las migraciones automáticamente al arrancar (`runMigrations()` en `src/server/index.ts`).
 
 ---
 
@@ -222,14 +208,13 @@ EasyPanel generará certificados SSL automáticamente una vez que el DNS apunte.
 En los logs de EasyPanel del servicio `api` buscar:
 
 ```
-[Prisma] Aplicando migración: 20250330000000_init
-Seeding database...
-Seed completed.
-[Server] Escuchando en puerto 3001
-[Prisma] Conectado a PostgreSQL
+[DB] Connected to database.
+[DB] Running migrations...
+[DB] Migrations complete.
+[Server] Servidor corriendo en http://localhost:3001
 ```
 
-Si hay errores de migración, verificar que `prisma/migrations/` existe en el repo.
+Si hay errores de migración, verificar que `drizzle/` existe en el repo con los `*.sql` generados.
 
 ### 8.2 Verificar frontend
 Abrir `https://app.tudominio.com` → debe cargar la landing page.
@@ -260,7 +245,7 @@ curl -X POST https://api.tudominio.com/api/auth/register \
 
 | Problema | Solución |
 |----------|----------|
-| **Migraciones no aplican** | Verificar que `prisma/migrations/` existe en el repo. Si no, generar localmente (Paso 1). |
+| **Migraciones no aplican** | Verificar que `drizzle/` existe en el repo con los `*.sql`. Si no, generar localmente (Paso 1). |
 | **API no conecta a PostgreSQL** | Revisar `DATABASE_URL` (usar hostname interno `periodistapp_postgres`). |
 | **Frontend no carga** | Verificar `VITE_API_BASE_URL` en build args del frontend. |
 | **WebSockets no funcionan** | El API ya incluye Socket.IO; asegurarse de que el frontend use `wss://api.tudominio.com`. |
@@ -272,17 +257,17 @@ curl -X POST https://api.tudominio.com/api/auth/register \
 
 1. **Push al repo** → EasyPanel detecta cambios y redepliega automáticamente.
 2. **Cambiar variables** → Actualizar en EasyPanel → redeploy.
-3. **Nuevas migraciones** → Agregar archivos a `prisma/migrations/` y commit → redeploy del API las aplicará.
+3. **Nuevas migraciones** → `npm run db:generate` tras tocar `src/server/db/schema/`, commitear `drizzle/` → redeploy del API las aplica al arrancar.
 
 ---
 
 ## 📦 Archivos de Deploy Incluidos
 
-- `Dockerfile` – Backend (Express + Prisma + Python/Whisper)
+- `Dockerfile` – Backend (Express + Drizzle + Python/Whisper)
 - `Dockerfile.frontend` – Frontend (React + Nginx)
 - `nginx.conf` – Configuración Nginx para SPA
 - `.dockerignore` – Excluye archivos innecesarios
-- `prisma/migrations/20250330000000_init/` – Migración inicial (todas las tablas)
+- `drizzle/` – Migraciones SQL versionadas (se aplican solas al boot del API)
 - `src/server/index.ts` – Endpoint `/api/health` agregado
 
 ---

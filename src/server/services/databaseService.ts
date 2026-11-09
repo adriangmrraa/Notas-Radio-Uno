@@ -127,26 +127,35 @@ function mapAsset(row: typeof businessAssets.$inferSelect): MetaAsset {
 // ---------------------------------------------------------------------------
 
 /**
- * Obtiene un setting por clave.
+ * Obtiene un setting por clave — `tenantId` OBLIGATORIO.
+ * Los settings son datos por-tenant: ningún llamador puede caer silenciosamente
+ * al system tenant. Para claves de plataforma usar `getGlobalSetting`.
  */
-export async function getSetting(key: string, tenantId?: string): Promise<string | null> {
-  const tid = tenantId ?? getSystemTenantId();
+export async function getSetting(key: string, tenantId: string): Promise<string | null> {
   const rows = await db
     .select({ value: settings.value })
     .from(settings)
-    .where(and(eq(settings.tenantId, tid), eq(settings.key, key)))
+    .where(and(eq(settings.tenantId, tenantId), eq(settings.key, key)))
     .limit(1);
   return rows[0]?.value ?? null;
 }
 
 /**
- * Guarda o actualiza un setting.
+ * Obtiene un setting GLOBAL de plataforma (system tenant).
+ * Reservado para claves que son realmente de plataforma — nunca para datos
+ * de tenant. Lee las filas históricas que quedaron bajo el system tenant.
  */
-export async function setSetting(key: string, value: string, tenantId?: string): Promise<void> {
-  const tid = tenantId ?? getSystemTenantId();
+export async function getGlobalSetting(key: string): Promise<string | null> {
+  return getSetting(key, getSystemTenantId());
+}
+
+/**
+ * Guarda o actualiza un setting — `tenantId` OBLIGATORIO.
+ */
+export async function setSetting(key: string, value: string, tenantId: string): Promise<void> {
   await db
     .insert(settings)
-    .values({ tenantId: tid, key, value })
+    .values({ tenantId, key, value })
     .onConflictDoUpdate({
       target: [settings.tenantId, settings.key],
       set: { value, updatedAt: new Date() },
@@ -154,27 +163,25 @@ export async function setSetting(key: string, value: string, tenantId?: string):
 }
 
 /**
- * Obtiene todos los settings que coincidan con un prefijo.
+ * Obtiene todos los settings que coincidan con un prefijo — `tenantId` OBLIGATORIO.
  */
 export async function getSettingsByPrefix(
   prefix: string,
-  tenantId?: string,
+  tenantId: string,
 ): Promise<Array<{ key: string; value: string | null }>> {
-  const tid = tenantId ?? getSystemTenantId();
   return db
     .select({ key: settings.key, value: settings.value })
     .from(settings)
-    .where(and(eq(settings.tenantId, tid), like(settings.key, `${prefix}%`)));
+    .where(and(eq(settings.tenantId, tenantId), like(settings.key, `${prefix}%`)));
 }
 
 /**
- * Elimina un setting.
+ * Elimina un setting — `tenantId` OBLIGATORIO.
  */
-export async function deleteSetting(key: string, tenantId?: string): Promise<void> {
-  const tid = tenantId ?? getSystemTenantId();
+export async function deleteSetting(key: string, tenantId: string): Promise<void> {
   await db
     .delete(settings)
-    .where(and(eq(settings.tenantId, tid), eq(settings.key, key)));
+    .where(and(eq(settings.tenantId, tenantId), eq(settings.key, key)));
 }
 
 // ---------------------------------------------------------------------------

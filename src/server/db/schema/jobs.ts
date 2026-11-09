@@ -14,6 +14,7 @@ import {
 import { scheduleTypeEnum, jobExecutionStatusEnum } from './enums.js';
 import { tenants } from './tenants.js';
 import { users } from './users.js';
+import { programs } from './programs.js';
 
 export const scheduledJobs = pgTable(
   'scheduled_jobs',
@@ -34,6 +35,7 @@ export const scheduledJobs = pgTable(
     durationMinutes: integer('duration_minutes').notNull(),
     timezone: varchar('timezone', { length: 50 }).notNull().default('America/Argentina/Buenos_Aires'),
     scheduledDate: date('scheduled_date'),
+    programId: uuid('program_id').references(() => programs.id, { onDelete: 'set null' }),
     pipelineConfig: jsonb('pipeline_config').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
     lastRunAt: timestamp('last_run_at', { withTimezone: true }),

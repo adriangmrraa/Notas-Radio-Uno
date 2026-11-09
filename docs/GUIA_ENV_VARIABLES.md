@@ -99,7 +99,7 @@ Ejemplo real:
 postgresql://periodistapp_owner:abc123xyz@ep-cool-smoke-a5b2c3.us-east-2.aws.neon.tech/neondb?sslmode=require
 ```
 
-> **Ojo**: El panel te ofrece dos opciones: conexión directa y conexión **pooled** (con `-pooler` en el hostname). Para producción con muchas conexiones simultáneas, usá la **pooled**. Para migraciones de Prisma (`prisma migrate deploy`), usá la **directa** sin pooler.
+> **Ojo**: El panel te ofrece dos opciones: conexión directa y conexión **pooled** (con `-pooler` en el hostname). Para producción con muchas conexiones simultáneas, usá la **pooled**. Para migraciones de Drizzle (`npx drizzle-kit migrate`), usá la **directa** sin pooler.
 
 ---
 
