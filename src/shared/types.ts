@@ -481,6 +481,95 @@ export interface TransmissionErrorEvent {
     message: string;
 }
 
+// ─── PD-05: Sala "En vivo" — payload de GET /api/live/transmissions/:id ───────
+
+export interface LiveRoomTransmission {
+    id: string;
+    status: string;
+    source: string;
+    streamUrl: string | null;
+    crudoRef: string | null;
+    startedAt: string | null;
+    endedAt: string | null;
+    durationMinutes: number | null;
+    errorMessage: string | null;
+    programId: string | null;
+    programName: string | null;
+}
+
+export interface LiveRoomRecording {
+    id: string;
+    status: string;
+    segmentCount: number;
+    totalBytes: number;
+    startedAt: string | null;
+    endedAt: string | null;
+}
+
+export interface LiveRoomSegment {
+    sequence: number;
+    startMs: number;
+    endMs: number | null;
+    bytes: number;
+    status: string;
+}
+
+export interface LiveRoomTimelineItem {
+    id: string;
+    startMs: number;
+    endMs: number;
+    speakerLabel: string | null;
+    personId: string | null;
+    personName: string | null;
+    personPhotoUrl: string | null;
+    text: string;
+    confidence: number | null;
+}
+
+export interface LiveRoomMoment {
+    id: string;
+    kind: string;
+    startMs: number;
+    endMs: number;
+    title: string | null;
+    reason: string | null;
+    score: number | null;
+    clipId: string | null;
+}
+
+export interface LiveRoomClip {
+    id: string;
+    title: string;
+    hookText: string;
+    status: string;
+    duration: number;
+    videoUrl: string | null;
+}
+
+export interface LiveRoomPerson {
+    personId: string;
+    name: string;
+    photoUrl: string | null;
+    confidence: number | null;
+    speakerLabel: string | null;
+}
+
+export interface LiveRoomState {
+    transmission: LiveRoomTransmission;
+    recording: LiveRoomRecording | null;
+    segments: LiveRoomSegment[];
+    timeline: LiveRoomTimelineItem[];
+    moments: LiveRoomMoment[];
+    clips: LiveRoomClip[];
+    people: LiveRoomPerson[];
+}
+
+/** Respuesta de POST /api/live/transmissions/:id/mark. */
+export interface LiveRoomMarkResult {
+    moment: LiveRoomMoment;
+    clip: LiveRoomClip | null;
+}
+
 // Guest
 export interface Guest {
   id: string;

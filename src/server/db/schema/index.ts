@@ -23,6 +23,7 @@ export * from './persons.js';
 export * from './editorialProfiles.js';
 export * from './transmissions.js';
 export * from './recordings.js';
+export * from './live.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -55,6 +56,7 @@ import { persons, personPhotos, faceEmbeddings, personProgram } from './persons.
 import { editorialProfiles } from './editorialProfiles.js';
 import { transmissions, scheduledTransmissions } from './transmissions.js';
 import { streamRecordings, recordingSegments } from './recordings.js';
+import { transcriptSegments, transmissionMoments } from './live.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -98,6 +100,8 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   scheduledTransmissions: many(scheduledTransmissions),
   streamRecordings: many(streamRecordings),
   recordingSegments: many(recordingSegments),
+  transcriptSegments: many(transcriptSegments),
+  transmissionMoments: many(transmissionMoments),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -288,6 +292,10 @@ export const guestDossiersRelations = relations(guestDossiers, ({ one }) => ({
 // ── clips relations ───────────────────────────────────────────────────────────
 export const clipsRelations = relations(clips, ({ one }) => ({
   tenant: one(tenants, { fields: [clips.tenantId], references: [tenants.id] }),
+  transmission: one(transmissions, {
+    fields: [clips.transmissionId],
+    references: [transmissions.id],
+  }),
 }));
 
 // ── features relations ────────────────────────────────────────────────────────
@@ -349,7 +357,7 @@ export const editorialProfilesRelations = relations(editorialProfiles, ({ one })
 }));
 
 // ── transmissions relations ───────────────────────────────────────────────────
-export const transmissionsRelations = relations(transmissions, ({ one }) => ({
+export const transmissionsRelations = relations(transmissions, ({ one, many }) => ({
   tenant: one(tenants, { fields: [transmissions.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [transmissions.programId], references: [programs.id] }),
   scheduledTransmission: one(scheduledTransmissions, {
@@ -359,6 +367,9 @@ export const transmissionsRelations = relations(transmissions, ({ one }) => ({
   }),
   // 1-a-1: stream_recordings.transmission_id es UNIQUE.
   recording: one(streamRecordings),
+  transcriptSegments: many(transcriptSegments),
+  moments: many(transmissionMoments),
+  clips: many(clips),
 }));
 
 export const scheduledTransmissionsRelations = relations(scheduledTransmissions, ({ one, many }) => ({
@@ -387,5 +398,30 @@ export const recordingSegmentsRelations = relations(recordingSegments, ({ one })
   recording: one(streamRecordings, {
     fields: [recordingSegments.recordingId],
     references: [streamRecordings.id],
+  }),
+}));
+
+// ── live room relations (PD-05) ───────────────────────────────────────────────
+export const transcriptSegmentsRelations = relations(transcriptSegments, ({ one }) => ({
+  tenant: one(tenants, { fields: [transcriptSegments.tenantId], references: [tenants.id] }),
+  transmission: one(transmissions, {
+    fields: [transcriptSegments.transmissionId],
+    references: [transmissions.id],
+  }),
+  person: one(persons, {
+    fields: [transcriptSegments.personId],
+    references: [persons.id],
+  }),
+}));
+
+export const transmissionMomentsRelations = relations(transmissionMoments, ({ one }) => ({
+  tenant: one(tenants, { fields: [transmissionMoments.tenantId], references: [tenants.id] }),
+  transmission: one(transmissions, {
+    fields: [transmissionMoments.transmissionId],
+    references: [transmissions.id],
+  }),
+  clip: one(clips, {
+    fields: [transmissionMoments.clipId],
+    references: [clips.id],
   }),
 }));

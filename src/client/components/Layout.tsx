@@ -5,8 +5,10 @@ import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
 import { Menu } from 'lucide-react';
 import { ImpersonationBanner } from './ImpersonationBanner';
+import { Toaster } from './ui/toaster';
 
 const PAGE_TITLES: Record<string, string> = {
+  '/en-vivo': 'En vivo',
   '/dashboard': 'Dashboard',
   '/persons': 'Personas',
   '/editorial': 'Línea editorial',
@@ -19,6 +21,7 @@ const PAGE_TITLES: Record<string, string> = {
 };
 
 const PAGE_DESCRIPTIONS: Record<string, string> = {
+  '/en-vivo': 'Sala de monitoreo de la transmisión activa',
   '/dashboard': 'Centro de control de tu newsroom',
   '/persons': 'Biblioteca de personas del canal',
   '/editorial': 'Tono, reglas y formatos del canal y por programa',
@@ -105,6 +108,7 @@ export function Layout() {
         </main>
       </div>
       </div>
+      <Toaster />
     </div>
   );
 }

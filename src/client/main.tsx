@@ -23,6 +23,7 @@ import { OnboardingPage } from './pages/OnboardingPage';
 import { EditorialPage } from './pages/EditorialPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ClipsPage } from './pages/ClipsPage';
+import { LiveRoomPage } from './pages/LiveRoomPage';
 import PipelineEditor from './editor/PipelineEditor';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { AdminTenants } from './pages/admin/AdminTenants';
@@ -57,6 +58,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/review" element={<ReviewPage />} />
               <Route path="/clips" element={<ClipsPage />} />
+              <Route path="/en-vivo" element={<LiveRoomPage />} />
+              <Route path="/en-vivo/:transmissionId" element={<LiveRoomPage />} />
               <Route path="/editor" element={<PipelineEditor />} />
               <Route path="/programs" element={<ProgramsPage />} />
               <Route path="/persons" element={<PersonsPage />} />

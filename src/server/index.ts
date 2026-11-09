@@ -46,6 +46,7 @@ import { personsRouter } from "./routes/persons.js";
 import { onboardingRouter } from "./routes/onboarding.js";
 import { editorialRouter } from "./routes/editorial.js";
 import { transmissionsRouter } from "./routes/transmissions.js";
+import { liveRouter } from "./routes/live.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
@@ -264,6 +265,7 @@ app.use("/api/persons", personsRouter);
 app.use("/api/onboarding", onboardingRouter);
 app.use("/api/editorial", editorialRouter);
 app.use("/api/transmissions", transmissionsRouter);
+app.use("/api/live", liveRouter);
 
 // Initialize background services
 initNotificationService(io);

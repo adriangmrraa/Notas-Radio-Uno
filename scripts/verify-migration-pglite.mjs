@@ -156,9 +156,9 @@ if (pc02Migration) {
 }
 
 // 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
-//    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión) y la 0011
-//    (PD-01 crudo de video) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011']) {
+//    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
+//    (PD-01 crudo de video) y la 0012 (PD-05 sala en vivo) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -496,6 +496,123 @@ if (!/CREATE UNIQUE INDEX/i.test(txIdx) || !/UNIQUE INDEX/i.test(seqIdx)) {
   process.exit(1);
 }
 
+// 15) PD-05: transcript_segments, transmission_moments y clips.transmission_id.
+const { rows: pd05Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public'
+    AND tablename IN ('transcript_segments', 'transmission_moments')
+  ORDER BY tablename
+`);
+if (pd05Tables.length !== 2) {
+  console.error(`PD-05: faltan tablas de la sala en vivo (encontradas: ${pd05Tables.map((r) => r.tablename).join(', ') || 'ninguna'})`);
+  process.exit(1);
+}
+
+const { rows: pd05Cols } = await db.query(`
+  SELECT table_name, column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name IN ('transcript_segments', 'transmission_moments', 'clips')
+`);
+const pd05ColInfo = new Map(pd05Cols.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const checkPd05Col = (fqcol, dataType, nullable, needsDefault) => {
+  const c = pd05ColInfo.get(fqcol);
+  if (!c) return `falta ${fqcol}`;
+  if (c.data_type !== dataType) return `${fqcol} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `${fqcol} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `${fqcol} sin DEFAULT`;
+  return null;
+};
+const pd05ColErrors = [
+  // transcript_segments
+  ['transcript_segments.id', 'uuid', 'NO', true],
+  ['transcript_segments.tenant_id', 'uuid', 'NO', false],
+  ['transcript_segments.transmission_id', 'uuid', 'NO', false],
+  ['transcript_segments.start_ms', 'bigint', 'NO', false],
+  ['transcript_segments.end_ms', 'bigint', 'NO', false],
+  ['transcript_segments.speaker_label', 'character varying', 'YES', false],
+  ['transcript_segments.person_id', 'uuid', 'YES', false],
+  ['transcript_segments.text', 'text', 'NO', false],
+  ['transcript_segments.confidence', 'real', 'YES', false],
+  ['transcript_segments.created_at', 'timestamp with time zone', 'NO', true],
+  // transmission_moments
+  ['transmission_moments.id', 'uuid', 'NO', true],
+  ['transmission_moments.tenant_id', 'uuid', 'NO', false],
+  ['transmission_moments.transmission_id', 'uuid', 'NO', false],
+  ['transmission_moments.kind', 'character varying', 'NO', true],
+  ['transmission_moments.start_ms', 'bigint', 'NO', false],
+  ['transmission_moments.end_ms', 'bigint', 'NO', false],
+  ['transmission_moments.title', 'text', 'YES', false],
+  ['transmission_moments.reason', 'text', 'YES', false],
+  ['transmission_moments.score', 'real', 'YES', false],
+  ['transmission_moments.clip_id', 'uuid', 'YES', false],
+  ['transmission_moments.created_at', 'timestamp with time zone', 'NO', true],
+  // clips.transmission_id (columna nueva, nullable, SET NULL)
+  ['clips.transmission_id', 'uuid', 'YES', false],
+].map(([c, t, n, d]) => checkPd05Col(c, t, n, d)).filter(Boolean);
+if (pd05ColErrors.length > 0) {
+  console.error(`PD-05 columnas incorrectas:\n  ${pd05ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const momentKindDef = pd05ColInfo.get('transmission_moments.kind')?.column_default ?? '';
+if (!momentKindDef.includes("'detected'")) {
+  console.error(`PD-05: default de transmission_moments.kind incorrecto (${momentKindDef})`);
+  process.exit(1);
+}
+
+// 16) PD-05: las FKs apuntan a la tabla correcta con el ON DELETE esperado.
+const { rows: pd05Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f'
+    AND con.conrelid::regclass::text IN ('transcript_segments', 'transmission_moments', 'clips')
+`);
+const pd05FkMap = new Map(pd05Fks.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const expectedPd05Fks = [
+  // [columna, tabla destino, confdeltype ('c' cascade, 'n' set null)]
+  ['transcript_segments.tenant_id', 'tenants', 'c'],
+  ['transcript_segments.transmission_id', 'transmissions', 'c'],
+  ['transcript_segments.person_id', 'persons', 'n'],
+  ['transmission_moments.tenant_id', 'tenants', 'c'],
+  ['transmission_moments.transmission_id', 'transmissions', 'c'],
+  ['transmission_moments.clip_id', 'clips', 'n'],
+  ['clips.transmission_id', 'transmissions', 'n'],
+];
+const badPd05Fks = expectedPd05Fks.filter(([col, target, deltype]) => {
+  const row = pd05FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== deltype;
+});
+if (badPd05Fks.length > 0) {
+  console.error(`PD-05: faltan FKs, apuntan mal o el ON DELETE no es el esperado: ${badPd05Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+
+// 17) PD-05: los índices de la sala existen.
+const { rows: pd05Idx } = await db.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND tablename IN ('transcript_segments', 'transmission_moments', 'clips')
+`);
+const pd05IdxNames = new Set(pd05Idx.map((r) => r.indexname));
+const expectedPd05Idx = [
+  'transcript_segments_tenant_id_idx',
+  'transcript_segments_transmission_id_start_ms_idx',
+  'transcript_segments_person_id_idx',
+  'transmission_moments_tenant_id_idx',
+  'transmission_moments_transmission_id_start_ms_idx',
+  'clips_transmission_id_idx',
+];
+const missingPd05Idx = expectedPd05Idx.filter((name) => !pd05IdxNames.has(name));
+if (missingPd05Idx.length > 0) {
+  console.error(`PD-05: faltan índices: ${missingPd05Idx.join(', ')}`);
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -507,5 +624,8 @@ console.log('PC-09: guest_dossiers.scheduled_transmission_id (nullable) + FK->sc
 console.log('tablas PD-01:', pd01Tables.map((r) => r.tablename).join(', '));
 console.log('fks PD-01 (cascade):', expectedPd01Fks.join(', '));
 console.log('índices PD-01:', expectedPd01Idx.join(', '));
+console.log('tablas PD-05:', pd05Tables.map((r) => r.tablename).join(', '));
+console.log('fks PD-05:', expectedPd05Fks.map(([c, t, d]) => `${c}->${t}(${d})`).join(', '));
+console.log('índices PD-05:', expectedPd05Idx.join(', '));
 await db.close();
 process.exit(0);

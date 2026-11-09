@@ -1,5 +1,6 @@
 import { pgTable, uuid, text, integer, jsonb, varchar, timestamp, index } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants.js';
+import { transmissions } from './transmissions.js';
 
 export const clips = pgTable(
   'clips',
@@ -10,6 +11,11 @@ export const clips = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     publicationId: uuid('publication_id'),
     programId: uuid('program_id'),
+    // Corrida que originó el clip (Sala "En vivo", PD-05). SET NULL: borrar
+    // la transmisión no borra el clip ya producido.
+    transmissionId: uuid('transmission_id').references(() => transmissions.id, {
+      onDelete: 'set null',
+    }),
     title: varchar('title', { length: 255 }).notNull(),
     hookText: text('hook_text').notNull(),
     audioPath: text('audio_path'),
@@ -24,5 +30,6 @@ export const clips = pgTable(
     index('clips_tenant_id_idx').on(t.tenantId),
     index('clips_tenant_id_status_idx').on(t.tenantId, t.status),
     index('clips_tenant_id_created_at_idx').on(t.tenantId, t.createdAt),
+    index('clips_transmission_id_idx').on(t.transmissionId),
   ],
 );
