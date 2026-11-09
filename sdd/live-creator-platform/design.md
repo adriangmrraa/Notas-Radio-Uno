@@ -1,6 +1,6 @@
 # Design: live-creator-platform — PeriodistApp, plataforma de canales en vivo
 
-Contrato técnico del cambio. Deriva de `proposal.md` + 21 specs en `specs/`, verificado contra el código real en `src/server/`, `src/client/`, `remotion/`, `Dockerfile`, `docs/DEPLOYMENT_EASYPANEL.md`.
+Contrato técnico del cambio. Deriva de `proposal.md` + 23 specs en `specs/`, verificado contra el código real en `src/server/`, `src/client/`, `remotion/`, `Dockerfile`, `docs/DEPLOYMENT_EASYPANEL.md`.
 
 Subdocs:
 - `design/schema.md` — DDL Drizzle completo (tablas nuevas/alteradas, columnas, índices, FKs, orden de migraciones).
