@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar';
 import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
 import { Menu } from 'lucide-react';
+import { ImpersonationBanner } from './ImpersonationBanner';
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -43,7 +44,9 @@ export function Layout() {
   )?.[1] || '';
 
   return (
-    <div className="h-screen overflow-hidden flex bg-void relative">
+    <div className="h-screen overflow-hidden flex flex-col bg-void relative">
+      <ImpersonationBanner />
+      <div className="flex-1 flex overflow-hidden relative">
       {/* Background ambient */}
       <div className="layout-ambient-1" />
       <div className="layout-ambient-2" />
@@ -96,6 +99,7 @@ export function Layout() {
         <main className="flex-1 min-h-0 overflow-y-auto layout-content">
           <Outlet />
         </main>
+      </div>
       </div>
     </div>
   );

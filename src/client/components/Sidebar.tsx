@@ -14,6 +14,7 @@ import {
   Mic,
   ClipboardCheck,
   Film,
+  ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -122,6 +123,28 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         ))}
 
         <div className="sidebar-divider" />
+        {user?.isPlatformAdmin && (
+          <>
+            <div className="sidebar-nav-label">Plataforma</div>
+            <NavLink
+              to="/admin"
+              className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
+              onClick={() => onClose()}
+            >
+              {({ isActive }) => (
+                <>
+                  <div className={`sidebar-item-indicator ${isActive ? 'visible' : ''}`} />
+                  <div className={`sidebar-item-icon ${isActive ? 'active' : ''}`}>
+                    <ShieldCheck className="w-[18px] h-[18px]" />
+                  </div>
+                  <span className="sidebar-item-label">Super Admin</span>
+                  {isActive && <ChevronRight className="sidebar-item-chevron" />}
+                </>
+              )}
+            </NavLink>
+          </>
+        )}
+
         <div className="sidebar-nav-label">Sistema</div>
 
         {NAV_BOTTOM.map(({ to, icon: Icon, label }) => (

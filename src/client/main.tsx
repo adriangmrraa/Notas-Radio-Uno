@@ -19,6 +19,9 @@ import { ProgramsPage } from './pages/ProgramsPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ClipsPage } from './pages/ClipsPage';
 import PipelineEditor from './editor/PipelineEditor';
+import { AdminLayout } from './pages/admin/AdminLayout';
+import { AdminTenants } from './pages/admin/AdminTenants';
+import { AdminTenantDetail } from './pages/admin/AdminTenantDetail';
 import './index.css';
 import './App.css';
 
@@ -52,6 +55,20 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/billing" element={<BillingPage />} />
+            </Route>
+
+            {/* Super admin de plataforma */}
+            <Route
+              path="/admin"
+              element={
+                <PrivateRoute>
+                  <AdminLayout />
+                </PrivateRoute>
+              }
+            >
+              <Route index element={<Navigate to="/admin/tenants" replace />} />
+              <Route path="tenants" element={<AdminTenants />} />
+              <Route path="tenants/:id" element={<AdminTenantDetail />} />
             </Route>
 
             {/* Redirect root to dashboard */}

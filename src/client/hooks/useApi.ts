@@ -18,6 +18,12 @@ export function useApi() {
       headers['Content-Type'] = 'application/json';
     }
 
+    // El token explícito (impersonación o sesión recién creada) manda sobre la cookie.
+    const bearer = typeof localStorage !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    if (bearer && !headers.Authorization) {
+      headers.Authorization = `Bearer ${bearer}`;
+    }
+
     const url = endpoint.startsWith('http') ? endpoint : `/api${endpoint}`;
 
     const response = await fetch(url, {
