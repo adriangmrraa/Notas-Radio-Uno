@@ -15,6 +15,7 @@ import {
   ClipboardCheck,
   Film,
   ShieldCheck,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatures } from '../hooks/useFeature';
@@ -25,6 +26,7 @@ const NAV_MAIN = [
   { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor', feature: 'pipeline_editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },
+  { to: '/persons', icon: Users, label: 'Personas' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
   { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },
