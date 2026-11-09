@@ -425,6 +425,62 @@ export interface LiveAlert {
 }
 
 
+// Transmissions — eventos Socket.IO (PD-04)
+// Unión duplicada del enum del server (`TransmissionStatus` en
+// db/schema/enums.ts): shared/ no puede importar el schema drizzle porque
+// el cliente empaquetaría drizzle-orm. Mismos literales.
+export type TransmissionStatus =
+    | 'scheduled'
+    | 'waiting'
+    | 'live'
+    | 'processing'
+    | 'done'
+    | 'error'
+    | 'canceled';
+
+/** Payload del evento `transmission:status` (room transmission + tenant). */
+export interface TransmissionStatusEvent {
+    transmissionId: string;
+    tenantId: string;
+    status: TransmissionStatus;
+    previousStatus: TransmissionStatus;
+    startedAt: string | null;
+    endedAt: string | null;
+    errorMessage: string | null;
+    crudoRef: string | null;
+    updatedAt: string;
+}
+
+/**
+ * Payload del evento `transmission:updated` (room del tenant): la fila
+ * completa serializada, sin `resolvedStreamUrl` (URL resuelta efímera que
+ * puede venir firmada — los eventos no llevan URLs firmadas).
+ */
+export interface SerializedTransmission {
+    id: string;
+    tenantId: string;
+    programId: string | null;
+    scheduledTransmissionId: string | null;
+    source: 'live_capture' | 'vod_upload' | 'manual';
+    status: TransmissionStatus;
+    streamUrl: string | null;
+    crudoRef: string | null;
+    durationMinutes: number | null;
+    startedAt: string | null;
+    endedAt: string | null;
+    waitingSince: string | null;
+    lastHeartbeatAt: string | null;
+    errorMessage: string | null;
+    pipelineConfig: unknown;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/** Payload del evento `transmission:error` (subscribe rechazado). */
+export interface TransmissionErrorEvent {
+    message: string;
+}
+
 // Guest
 export interface Guest {
   id: string;

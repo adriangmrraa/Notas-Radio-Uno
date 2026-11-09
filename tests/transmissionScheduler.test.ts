@@ -4,9 +4,11 @@
  * Deterministas: sin DB real, sin red, sin timers reales. El `now` es
  * inyectado y cada `checkAndRunScheduledTransmissions` es UN tick — el test
  * avanza el reloj a mano entre llamadas. El detector de live, el recorder,
- * el gate de suscripción, la cuota, el emisor de eventos y el store son
- * mocks/fakes (store en memoria con los mismos filtros por tenant que el
- * drizzle).
+ * el gate de suscripción, la cuota y el store son mocks/fakes (store en
+ * memoria con los mismos filtros por tenant que el drizzle). Los cambios de
+ * `transmissions.status` van por `createMemoryTransitionRunner` — la FSM
+ * REAL validando aristas y emitiendo eventos al fake `onEmit`, igual que
+ * `transitionTransmission` hace post-commit en prod.
  *
  * Casos obligatorios del brief:
  *   1. Stream al aire → live + startRecording con el tenantId correcto.
@@ -50,6 +52,7 @@ import {
   type MemoryRun,
   type MemoryScheduled,
 } from './helpers/memorySchedulerStore';
+import { createMemoryTransitionRunner } from './helpers/memoryTransitionRunner';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
 const TENANT_B = '00000000-0000-4000-8000-00000000000b';
@@ -149,6 +152,15 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
     result: { ok: true, maxTransmissionMinutes: null },
   };
 
+  // El ejecutor de transiciones replica la semántica real: FSM + UPDATE +
+  // eventos post-commit (los captura `events` vía onEmit).
+  const transitionRun = createMemoryTransitionRunner({
+    find: (tenantId, id) =>
+      state.runs.find((r) => r.id === id && r.tenantId === tenantId),
+    onEmit: (e) => events.push(e),
+    now,
+  });
+
   const deps: TransmissionSchedulerDeps = {
     store,
     detectLive: (url) => {
@@ -177,8 +189,7 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
       releaseCalls.push(input);
       return { released: true };
     },
-    emitEvent: (tenantId, event, payload) =>
-      events.push({ tenantId, event, payload }),
+    transitionRun,
   };
 
   return {
@@ -189,7 +200,22 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
       detectImpl = fn;
     },
     recCalls,
-    resolveDone: (index, outcome) => doneResolvers[index](outcome),
+    resolveDone: (index, outcome) => {
+      // El recorder real deja la corrida en `processing` (o `error`) en su
+      // finalize ANTES de resolver `done`: se replica para que la
+      // transición final del scheduler (done/error) sea una arista válida.
+      const opts = recCalls[index];
+      void transitionRun({
+        tenantId: opts.tenantId,
+        transmissionId: opts.transmissionId,
+        to: outcome.status === 'completed' ? 'processing' : 'error',
+        errorMessage: outcome.errorMessage ?? undefined,
+        patch:
+          outcome.status === 'completed'
+            ? { crudoRef: `mem/${opts.transmissionId}` }
+            : undefined,
+      }).finally(() => doneResolvers[index](outcome));
+    },
     events,
     consumeCalls,
     releaseCalls,
@@ -253,12 +279,19 @@ describe('dispatch con live al aire', () => {
     expect(sched.lastRunAt).toEqual(new Date(T0));
     expect(sched.lastTransmissionId).toBe(run.id);
 
-    // Evento al room del tenant.
-    expect(w.events).toHaveLength(1);
-    expect(w.events[0].event).toBe('transmission-update');
+    // La transición a live emitió los dos eventos del service por rooms:
+    // transmission:status (room transmisión + tenant) y transmission:updated
+    // (room tenant). Esto reemplaza al viejo `transmission-update` manual.
+    expect(w.events).toHaveLength(2);
+    expect(w.events[0].event).toBe('transmission:status');
     expect(w.events[0].tenantId).toBe(TENANT_A);
-    expect(w.events[0].payload.id).toBe(run.id);
+    expect(w.events[0].payload.transmissionId).toBe(run.id);
     expect(w.events[0].payload.status).toBe('live');
+    expect(w.events[0].payload.previousStatus).toBe('scheduled');
+    expect(w.events[1].event).toBe('transmission:updated');
+    expect(w.events[1].tenantId).toBe(TENANT_A);
+    expect(w.events[1].payload.id).toBe(run.id);
+    expect(w.events[1].payload.status).toBe('live');
   });
 
   it('cuando el recorder termina OK la corrida pasa a done; si falla, a error', async () => {

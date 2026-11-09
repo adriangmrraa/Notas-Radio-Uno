@@ -28,6 +28,7 @@ import {
 } from '../src/server/services/streamRecorderService';
 import type { ResolvedStream } from '../src/server/services/streamSourceResolver';
 import { createMemoryRecorderStore } from './helpers/memoryRecorderStore';
+import { createMemoryTransitionRunner } from './helpers/memoryTransitionRunner';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
 const TX_A = '00000000-0000-4000-8000-0000000000e1';
@@ -225,6 +226,13 @@ describe('startRecording — loop de captura', () => {
             stopGraceMs: 50,
             sleep: () => Promise.resolve(),
             now: () => nowMs,
+            // Los cambios de estado de la corrida van por la FSM real (PD-04),
+            // igual que transitionTransmission hace sobre la DB.
+            transitionRun: createMemoryTransitionRunner({
+                find: (tenantId, id) =>
+                    state.transmissions.get(`${tenantId}/${id}`),
+                now: () => new Date(nowMs),
+            }),
         };
         return { deps, store, state, resolverCalls };
     }

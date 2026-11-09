@@ -50,8 +50,15 @@
  *     ocurrencia vencida ya la consumió la corrida existente.
  *
  * Dependencias inyectables (`opts.deps`): store de DB, detector de live,
- * recorder, gate de suscripción, cuota y emisor de eventos — los tests corren
- * sin DB, sin red y sin timers reales (inyectan `now` y llaman al tick).
+ * recorder, gate de suscripción, cuota y el ejecutor de transiciones — los
+ * tests corren sin DB, sin red y sin timers reales (inyectan `now` y llaman
+ * al tick).
+ *
+ * TODO cambio de `transmissions.status` pasa por `deps.transitionRun`
+ * (`transitionTransmission` en prod — PD-04): la FSM valida la arista y los
+ * eventos `transmission:status`/`transmission:updated` se emiten por rooms
+ * tras el commit. El `updateRun` del store queda sólo para parches SIN
+ * cambio de estado (p.ej. fijar `waiting_since` en una corrida ya waiting).
  */
 import type { Server } from 'socket.io';
 import { and, asc, count, eq, inArray, isNotNull, lte } from 'drizzle-orm';
@@ -82,6 +89,10 @@ import {
   releaseTransmission,
   type ConsumeResult,
 } from './transmissionMeteringService.js';
+import {
+  transitionTransmission,
+  type TransitionRunner,
+} from './transmissionService.js';
 
 // ─── API pública ────────────────────────────────────────────────────────────
 
@@ -147,8 +158,12 @@ export interface SchedulerRunInsert {
   startedAt: Date;
 }
 
+/**
+ * Parche SIN cambio de estado sobre `transmissions`. El `status` no está en
+ * este tipo a propósito: todo cambio de estado pasa por `transitionRun`
+ * (FSM + eventos) — PD-04.
+ */
 export interface SchedulerRunPatch {
-  status?: TransmissionStatus;
   waitingSince?: Date;
   startedAt?: Date;
   endedAt?: Date;
@@ -225,12 +240,12 @@ export interface TransmissionSchedulerDeps {
     operationId: string;
     reason: string;
   }) => Promise<unknown>;
-  /** Emisor de eventos Socket.IO (default: room `tenant:{id}`). */
-  emitEvent?: (
-    tenantId: string,
-    event: string,
-    payload: Record<string, unknown>,
-  ) => void;
+  /**
+   * Ejecutor de transiciones de estado (default: `transitionTransmission`).
+   * Valida la FSM y emite `transmission:status`/`transmission:updated` por
+   * rooms tras el commit — es la única vía de cambio de estado (PD-04).
+   */
+  transitionRun?: TransitionRunner;
 }
 
 interface ResolvedDeps {
@@ -243,7 +258,7 @@ interface ResolvedDeps {
   ) => Promise<DispatchGateResult>;
   consumeQuota: NonNullable<TransmissionSchedulerDeps['consumeQuota']>;
   releaseQuota: NonNullable<TransmissionSchedulerDeps['releaseQuota']>;
-  emitEvent: NonNullable<TransmissionSchedulerDeps['emitEvent']>;
+  transitionRun: TransitionRunner;
 }
 
 // ─── Implementación drizzle del store ───────────────────────────────────────
@@ -416,7 +431,6 @@ async function checkDispatchableSubscription(
 
 // ─── Estado del proceso ─────────────────────────────────────────────────────
 
-let ioRef: Server | null = null;
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 let loopRunning = false;
 let storedOpts: TransmissionSchedulerOptions = {};
@@ -435,13 +449,11 @@ function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
     checkDispatchable: d.checkDispatchable ?? checkDispatchableSubscription,
     consumeQuota: d.consumeQuota ?? consumeTransmission,
     releaseQuota: d.releaseQuota ?? releaseTransmission,
-    emitEvent:
-      d.emitEvent ??
-      ((tenantId, event, payload) => {
-        // TODO (D5): cuando exista el helper canónico de eventos de
-        // transmisión, usarlo acá en lugar del emit crudo al room.
-        ioRef?.to(`tenant:${tenantId}`).emit(event, payload);
-      }),
+    // El reloj inyectado del scheduler también gobierna los timestamps que
+    // fija la transición (started_at, ended_at, waiting_since...).
+    transitionRun:
+      d.transitionRun ??
+      ((o) => transitionTransmission(o, { now: opts.now })),
   };
 }
 
@@ -510,9 +522,10 @@ async function dispatchScheduled(
   const runId = inserted.id;
 
   const fail = async (reason: string): Promise<null> => {
-    await store.updateRun(scheduled.tenantId, runId, {
-      status: 'error',
-      endedAt: now,
+    await deps.transitionRun({
+      tenantId: scheduled.tenantId,
+      transmissionId: runId,
+      to: 'error',
       errorMessage: reason,
     });
     await store.advanceScheduled(scheduled.tenantId, scheduled.id, {
@@ -598,9 +611,10 @@ async function attemptRun(
   const windowMs = opts.waitingWindowMinutes * 60_000;
 
   if (elapsedMs >= windowMs) {
-    await store.updateRun(run.tenantId, run.id, {
-      status: 'error',
-      endedAt: now,
+    await deps.transitionRun({
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      to: 'error',
       errorMessage: `No se detectó live en la ventana de espera de ${opts.waitingWindowMinutes} minutos (stream: ${run.streamUrl ?? 'sin URL'})`,
     });
     lastAttemptAt.delete(run.id);
@@ -628,11 +642,17 @@ async function attemptRun(
   if (inFlight >= opts.maxConcurrent) {
     // Concurrencia llena: queda waiting sin consumir intento ni anclar
     // ventana nueva (el ancla es la original). Nunca se descarta.
-    if (run.status !== 'waiting' || !run.waitingSince) {
-      await store.updateRun(run.tenantId, run.id, {
-        status: 'waiting',
-        waitingSince: run.waitingSince ?? anchor,
+    if (run.status !== 'waiting') {
+      await deps.transitionRun({
+        tenantId: run.tenantId,
+        transmissionId: run.id,
+        to: 'waiting',
+        patch: { waitingSince: run.waitingSince ?? anchor },
       });
+    } else if (!run.waitingSince) {
+      // Ya está waiting pero sin ancla: es un parche de columna, no una
+      // transición (waiting→waiting no es arista de la FSM).
+      await store.updateRun(run.tenantId, run.id, { waitingSince: anchor });
     }
     return 0;
   }
@@ -652,25 +672,35 @@ async function attemptRun(
   }
 
   if (result?.found) {
-    await store.updateRun(run.tenantId, run.id, {
-      status: 'live',
-      startedAt: now,
+    const transitioned = await deps.transitionRun({
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      to: 'live',
+      patch: { startedAt: now },
     });
+    if (!transitioned.ok) {
+      // La FSM rechazó (p.ej. la corrida cambió de estado entre el scan y
+      // el intento): no se arranca la grabación sobre un estado inválido.
+      console.error(
+        `[TransmissionScheduler] ${run.id}: no se pudo pasar a live: ${transitioned.reason}`,
+      );
+      return 0;
+    }
     lastAttemptAt.delete(run.id);
-    deps.emitEvent(run.tenantId, 'transmission-update', {
-      id: run.id,
-      status: 'live',
-      streamUrl: run.streamUrl,
-      scheduledTransmissionId: run.scheduledTransmissionId,
-    });
     void runRecordingInBackground(run, result.liveUrl ?? run.streamUrl, deps);
     return 1;
   }
 
-  await store.updateRun(run.tenantId, run.id, {
-    status: 'waiting',
-    waitingSince: run.waitingSince ?? anchor,
-  });
+  if (run.status !== 'waiting') {
+    await deps.transitionRun({
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      to: 'waiting',
+      patch: { waitingSince: run.waitingSince ?? anchor },
+    });
+  } else if (!run.waitingSince) {
+    await store.updateRun(run.tenantId, run.id, { waitingSince: anchor });
+  }
   return 0;
 }
 
@@ -694,28 +724,34 @@ function runRecordingInBackground(
         maxDurationMinutes: run.durationMinutes ?? undefined,
       });
       const outcome = await handle.done;
-      await deps.store
-        .updateRun(
-          run.tenantId,
-          run.id,
-          outcome.status === 'completed'
-            ? { status: 'done' }
-            : {
-                status: 'error',
-                errorMessage:
-                  outcome.errorMessage ?? 'La grabación terminó con error',
-              },
-        )
-        .catch((err) =>
+      const res = await deps
+        .transitionRun({
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          to: outcome.status === 'completed' ? 'done' : 'error',
+          errorMessage:
+            outcome.status === 'completed'
+              ? undefined
+              : (outcome.errorMessage ?? 'La grabación terminó con error'),
+        })
+        .catch((err: unknown) => {
           console.error(
-            `[TransmissionScheduler] updateRun final ${run.id} falló:`,
+            `[TransmissionScheduler] transición final ${run.id} falló:`,
             errorMessage(err),
-          ),
+          );
+          return { ok: false as const, reason: errorMessage(err) };
+        });
+      if (res && !res.ok) {
+        console.error(
+          `[TransmissionScheduler] ${run.id}: transición final rechazada: ${res.reason}`,
         );
+      }
     } catch (err) {
-      await deps.store
-        .updateRun(run.tenantId, run.id, {
-          status: 'error',
+      await deps
+        .transitionRun({
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          to: 'error',
           errorMessage: `No se pudo iniciar la grabación: ${errorMessage(err)}`,
         })
         .catch(() => {});
@@ -735,8 +771,11 @@ function runRecordingInBackground(
  * recorder (ffmpeg hijo del proceso) murió con el server. Se cierran sin
  * tocar los segmentos ya grabados:
  *   - `processing` → `done` (la captura ya había finalizado OK).
- *   - `live` con recording `completed` → `done`; sin recording o recording
- *     abierta → `error` "servidor reiniciado durante la transmisión".
+ *   - `live` con recording `completed` → `done`; como `live → done` no es
+ *     arista de la FSM se hace el camino honesto `live → processing → done`
+ *     (la captura había completado: el estado intermedio es real).
+ *   - `live` sin recording o con recording abierta → `error` "servidor
+ *     reiniciado durante la transmisión".
  * Las `waiting|scheduled` no se tocan: el scan las retoma respetando su
  * `waiting_since`/`started_at` original (la ventana no se reinicia).
  */
@@ -744,19 +783,32 @@ export async function reconcileOrphanedRuns(
   opts: TransmissionSchedulerOptions = {},
 ): Promise<void> {
   const deps = resolveDeps(opts);
-  const now = opts.now?.() ?? new Date();
   const stale = await deps.store.listStaleRuns();
   for (const run of stale) {
     try {
       const captured =
         run.status === 'processing' || run.recordingStatus === 'completed';
-      await deps.store.updateRun(run.tenantId, run.id, captured
-        ? { status: 'done' }
-        : {
-            status: 'error',
-            endedAt: now,
-            errorMessage: 'El servidor se reinició durante la transmisión',
+      if (captured) {
+        if (run.status === 'live') {
+          await deps.transitionRun({
+            tenantId: run.tenantId,
+            transmissionId: run.id,
+            to: 'processing',
           });
+        }
+        await deps.transitionRun({
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          to: 'done',
+        });
+      } else {
+        await deps.transitionRun({
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          to: 'error',
+          errorMessage: 'El servidor se reinició durante la transmisión',
+        });
+      }
     } catch (err) {
       console.error(
         `[TransmissionScheduler] reconcile ${run.id} falló:`,
@@ -843,7 +895,10 @@ export function initTransmissionScheduler(
   io: Server,
   opts: TransmissionSchedulerOptions = {},
 ): void {
-  ioRef = io;
+  // `io` no se usa directo: los eventos salen por `transitionTransmission`,
+  // que tiene su propio ioRef (initTransmissionService). Se conserva el
+  // parámetro por compatibilidad de la firma pública.
+  void io;
   storedOpts = opts;
 
   if (schedulerInterval) clearInterval(schedulerInterval);

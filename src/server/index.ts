@@ -49,6 +49,8 @@ import { transmissionsRouter } from "./routes/transmissions.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
+import { initTransmissionService } from "./services/transmissionService.js";
+import { registerTransmissionSocketHandlers } from "./services/transmissionSocketService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
 import { seedPlans } from "./services/planService.js";
@@ -119,31 +121,9 @@ const io = new Server(httpServer, {
   },
 });
 
-// Socket.IO auth middleware — join tenant room
-import jwt from "jsonwebtoken";
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
-
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token as string | undefined;
-  if (!token) {
-    // Allow unauthenticated sockets for backward compatibility (dev mode)
-    socket.data.tenantId = "default";
-    return next();
-  }
-  try {
-    const payload = jwt.verify(token, SOCKET_JWT_SECRET) as { tenantId: string };
-    socket.data.tenantId = payload.tenantId;
-    next();
-  } catch {
-    next(new Error("Socket auth failed"));
-  }
-});
-
-io.on("connection", (socket) => {
-  const tenantId = socket.data.tenantId || "default";
-  socket.join(`tenant:${tenantId}`);
-  console.log(`[Socket.IO] Client connected to tenant:${tenantId}`);
-});
+// Socket.IO: autenticación JWT + membresía viva y rooms por tenant /
+// transmisión (PD-04). Sin token o con membresía caída → conexión rechazada.
+registerTransmissionSocketHandlers(io);
 
 const upload = multer({ dest: path.join(PROJECT_ROOT, "uploads") });
 const PORT = parseInt(process.env.PORT || "3001", 10);
@@ -287,6 +267,7 @@ app.use("/api/transmissions", transmissionsRouter);
 
 // Initialize background services
 initNotificationService(io);
+initTransmissionService(io);
 initJobScheduler(io);
 // TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
 // este scheduler no debe arrancar en el proceso que sólo sirve API.

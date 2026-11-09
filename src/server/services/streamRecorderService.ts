@@ -31,6 +31,15 @@
  * puede parsear, se usa el mtime del archivo (fallback del brief). Se clampea
  * a `>= 0`. `end_ms` queda NULL mientras el segmento escribe y se fija cuando
  * aparece el siguiente (o al cerrar).
+ *
+ * Estados (PD-04): TODO cambio de `transmissions.status` pasa por
+ * `deps.transitionRun` (`transitionTransmission` en prod) — la FSM valida la
+ * arista y los eventos se emiten por rooms tras el commit. El
+ * `updateTransmission` del store queda sólo para parches SIN cambio de
+ * estado: heartbeat, `resolved_stream_url`, y el re-ancla de `started_at`
+ * cuando la corrida ya está `live` (el scheduler la fijó al detectar para
+ * reservar el slot de concurrencia; el recorder re-ancla al instante real
+ * de inicio de la captura).
  */
 import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -47,6 +56,12 @@ import {
   resolveStreamUrl,
   type ResolvedStream,
 } from './streamSourceResolver.js';
+import { canTransition } from '../lib/transmissionStateMachine.js';
+import {
+  transitionTransmission,
+  type TransitionOptions,
+  type TransitionRunner,
+} from './transmissionService.js';
 
 // ─── API pública ────────────────────────────────────────────────────────────
 
@@ -97,8 +112,12 @@ export interface RecorderTransmission {
   durationMinutes: number | null;
 }
 
+/**
+ * Parche SIN cambio de estado sobre `transmissions`. El `status` no está en
+ * este tipo a propósito: todo cambio de estado pasa por `transitionRun`
+ * (FSM + eventos) — PD-04.
+ */
 export interface RecorderTransmissionPatch {
-  status?: TransmissionStatus;
   startedAt?: Date;
   endedAt?: Date;
   resolvedStreamUrl?: string;
@@ -255,6 +274,12 @@ export interface RecorderDeps {
   backoffMs?: (attempt: number) => number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /**
+   * Ejecutor de transiciones de estado (default: `transitionTransmission`
+   * con el reloj inyectado del recorder) — PD-04. Los cambios de
+   * `transmissions.status` no van por el store: van por acá.
+   */
+  transitionRun?: TransitionRunner;
 }
 
 // ─── Funciones puras (exportadas para tests) ────────────────────────────────
@@ -393,6 +418,12 @@ export async function startRecording(
   const backoffMs = deps.backoffMs ?? defaultBackoffMs;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? (() => Date.now());
+  // Los cambios de estado de la corrida van por la FSM (PD-04): el reloj
+  // inyectado gobierna también los timestamps que fija la transición.
+  const transitionRun: TransitionRunner =
+    deps.transitionRun ??
+    ((o: TransitionOptions) =>
+      transitionTransmission(o, { now: () => new Date(now()) }));
 
   const { tenantId, transmissionId } = opts;
   const storagePrefix = opts.storagePrefix ?? `${tenantId}/${transmissionId}`;
@@ -404,6 +435,17 @@ export async function startRecording(
       `Transmisión ${transmissionId} no encontrada para el tenant ${tenantId}`,
     );
   }
+  // La corrida tiene que poder salir al aire: ya `live` (el scheduler la
+  // fijó al detectar) o en un estado con arista a `live`. Una terminal
+  // (done/error/canceled) no se graba: es un dispatch inconsistente.
+  if (
+    tx.status !== 'live' &&
+    !canTransition(tx.status as TransmissionStatus, 'live')
+  ) {
+    throw new Error(
+      `La transmisión ${transmissionId} no puede pasar a live desde '${tx.status}'`,
+    );
+  }
 
   // 1. Resolver la URL UNA vez.
   let resolved: ResolvedStream;
@@ -411,16 +453,16 @@ export async function startRecording(
     resolved = await resolver(opts.streamUrl, { proxyUrls: deps.proxyUrls });
   } catch (err) {
     const msg = `No se pudo resolver la URL del stream: ${errorMessage(err)}`;
-    await store
-      .updateTransmission(tenantId, transmissionId, {
-        status: 'error',
-        errorMessage: msg,
-      })
-      .catch(() => {});
+    await transitionRun({
+      tenantId,
+      transmissionId,
+      to: 'error',
+      errorMessage: msg,
+    }).catch(() => {});
     throw err instanceof Error ? err : new Error(msg);
   }
 
-  // 2. Fila stream_recordings + transmissions → live (startedAt = ancla wall-clock).
+  // 2. Fila stream_recordings + corrida `live` (startedAt = ancla wall-clock).
   const startedAtMs = now();
   const { id: recordingId } = await store.createRecording({
     tenantId,
@@ -428,11 +470,31 @@ export async function startRecording(
     storagePrefix,
     startedAt: new Date(startedAtMs),
   });
-  await store.updateTransmission(tenantId, transmissionId, {
-    status: 'live',
-    startedAt: new Date(startedAtMs),
-    resolvedStreamUrl: resolved.url,
-  });
+  if (tx.status === 'live') {
+    // El scheduler ya la pasó a live al detectar: sólo se re-anclan los
+    // campos al instante real de captura (parche sin cambio de estado).
+    await store.updateTransmission(tenantId, transmissionId, {
+      startedAt: new Date(startedAtMs),
+      resolvedStreamUrl: resolved.url,
+    });
+  } else {
+    // Camino directo (p.ej. disparo manual sin scheduler): la transición a
+    // live va por la FSM y lleva los mismos campos en el mismo paso.
+    const res = await transitionRun({
+      tenantId,
+      transmissionId,
+      to: 'live',
+      patch: {
+        startedAt: new Date(startedAtMs),
+        resolvedStreamUrl: resolved.url,
+      },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `La transmisión ${transmissionId} no pudo pasar a live: ${res.reason}`,
+      );
+    }
+  }
 
   const segDir = storage.publicPath(storagePrefix);
   await fs.mkdir(segDir, { recursive: true });
@@ -665,15 +727,36 @@ export async function startRecording(
       })
       .catch((err) => console.error('[recorder] finalizeRecording falló:', errorMessage(err)));
 
-    await store
-      .updateTransmission(
-        tenantId,
-        transmissionId,
-        status === 'completed'
-          ? { status: 'processing', endedAt, crudoRef: storagePrefix }
-          : { status: 'error', endedAt, errorMessage: errorMsg },
-      )
-      .catch((err) => console.error('[recorder] updateTransmission falló:', errorMessage(err)));
+    // La transición final (live → processing con crudo_ref, o → error) va
+    // por la FSM y emite los eventos tras el commit. Si es rechazada (p.ej.
+    // la corrida fue cancelada externamente) se loguea y `done` se resuelve
+    // igual: la grabación física terminó, el estado es decisión de la FSM.
+    await transitionRun(
+      status === 'completed'
+        ? {
+            tenantId,
+            transmissionId,
+            to: 'processing',
+            patch: { endedAt, crudoRef: storagePrefix },
+          }
+        : {
+            tenantId,
+            transmissionId,
+            to: 'error',
+            errorMessage: errorMsg ?? undefined,
+            patch: { endedAt },
+          },
+    )
+      .then((res) => {
+        if (!res.ok) {
+          console.error(
+            `[recorder] transición final de ${transmissionId} rechazada: ${res.reason}`,
+          );
+        }
+      })
+      .catch((err) =>
+        console.error('[recorder] transitionRun falló:', errorMessage(err)),
+      );
 
     finishResolve({
       status,
