@@ -84,6 +84,43 @@ function computeEffectiveLimit(
 
 const ACTIVE_SUB_STATUSES = ['trialing', 'active', 'past_due'] as const;
 
+// ── getPlanLimits — límites del plan vigente del tenant (null = no definido) ──
+export interface PlanLimits {
+    maxTransmissionsPerMonth: number | null;
+    maxPipelineHoursPerMonth: number | null;
+    maxDurationMinutes: number | null;
+    maxClipsPerTransmission: number | null;
+    maxPersons: number | null;
+    subscriptionActive: boolean;
+}
+
+export async function getPlanLimits(tenantId: string): Promise<PlanLimits> {
+    const [row] = await db
+        .select({
+            subscriptionStatus: subscriptions.status,
+            maxTransmissionsPerMonth: plans.maxTransmissionsPerMonth,
+            maxPipelineHoursPerMonth: plans.maxPipelineHoursPerMonth,
+            maxDurationMinutes: plans.maxDurationMinutes,
+            maxClipsPerTransmission: plans.maxClipsPerTransmission,
+            maxPersons: plans.maxPersons,
+        })
+        .from(tenants)
+        .leftJoin(subscriptions, eq(subscriptions.tenantId, tenants.id))
+        .leftJoin(plans, eq(subscriptions.planId, plans.id))
+        .where(eq(tenants.id, tenantId))
+        .limit(1);
+
+    return {
+        maxTransmissionsPerMonth: row?.maxTransmissionsPerMonth ?? null,
+        maxPipelineHoursPerMonth: row?.maxPipelineHoursPerMonth ?? null,
+        maxDurationMinutes: row?.maxDurationMinutes ?? null,
+        maxClipsPerTransmission: row?.maxClipsPerTransmission ?? null,
+        maxPersons: row?.maxPersons ?? null,
+        subscriptionActive: !!row?.subscriptionStatus
+            && (ACTIVE_SUB_STATUSES as readonly string[]).includes(row.subscriptionStatus),
+    };
+}
+
 // ── consume ───────────────────────────────────────────────────────────────────
 export async function consume(
     tenantId: string,

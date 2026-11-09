@@ -154,17 +154,17 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
 
 ## Fase 3 — T1 core diferencial (batch B-E/B-F)
 
-- [ ] **T-20 · PROCESS_ROLE split + engine.ts** — `go-live-ops` · M · deps: T-14 · épicas: PI-01, PD-04
+- [x] **T-20 · PROCESS_ROLE split + engine.ts** — `go-live-ops` · M · deps: T-14 · épicas: PI-01, PD-04
   Files: `src/server/index.ts`, `src/server/engine.ts`
   Pasos: `PROCESS_ROLE=api|engine` guard (api no inicia loops); engine init scheduler+workers+recorder+purge+dunning+`/internal/*`; reconciliación de `transmissions` live/waiting huérfanas al boot.
   ✔ `tsc` + `PROCESS_ROLE=api` arranca sin scheduler (log); engine arranca workers y reconcilia.
 
-- [ ] **T-21 · transmissionService (FSM + eventos)** — `stream-recording`, `live-room` · L · deps: T-09 · épicas: PD-04
+- [x] **T-21 · transmissionService (FSM + eventos)** — `stream-recording`, `live-room` · L · deps: T-09 · épicas: PD-04
   Files: `src/server/services/transmissionService.ts`, `src/server/services/notificationService.ts` (eventos `transmission:*`)
   Pasos: CRUD + FSM scheduled→waiting→live→processing→done/error/canceled; `startedAt` ancla; heartbeat; socket emits por transición.
   ✔ `tsc` + transición manual emite `transmission:live` por Socket.IO observable en cliente test.
 
-- [ ] **T-22 · streamRecorderService (supervisor ffmpeg)** — `stream-recording` · L · deps: T-20, T-21 · épicas: PD-01, PD-02, PI-04
+- [x] **T-22 · streamRecorderService (supervisor ffmpeg)** — `stream-recording` · L · deps: T-20, T-21 · épicas: PD-01, PD-02, PI-04
   Files: `src/server/services/streamRecorderService.ts`
   Pasos: liveDetect ventana 15×2min → `yt-dlp -g` una vez → `ffmpeg -c copy -f segment -segment_time 60 -strftime 1` en `/data/media/{tenant}/{tx}/`; al caer stream re-resuelve; registra `stream_recordings`+`recording_segments` (startMs por strftime−startedAt); heartbeat; stop limpio; maxDurationMinutes → stop suave.
   ✔ `tsc` + grabación real de stream de prueba produce segmentos MP4 + filas `recording_segments` con ms coherentes.
@@ -189,22 +189,22 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
   Pasos: fusión wall-clock speaker_label × appearances en ventana → persona dominante → `person_appearances(source='fusion', confidence)`; mapa speakerLabel→personId por transmisión; corrección manual `POST /live/:tx/correct` aplica forward+backward sobre emitidas (source='manual'); ambiguo → baja confianza, nunca inventa.
   ✔ `tsc` + corrección manual re-etiqueta timeline y persiste appearances 'manual'.
 
-- [ ] **T-27 · Módulo Personas (rutas + servicio)** — `people-directory` · M · deps: T-09, T-24 · épicas: PC-03, PC-09
+- [x] **T-27 · Módulo Personas (rutas + servicio)** — `people-directory` · M · deps: T-09, T-24 · épicas: PC-03, PC-09
   Files: `src/server/routes/people.ts` (+ servicio inline o `personService.ts`)
   Pasos: CRUD persons (role/socials/notes/bio/consent_at), fotos multi (dispara T-24), person_program/person_transmission (invitado por fecha), soft-delete, listado por programa.
   ✔ `tsc` + CRUD completo vía API con tenant A no ve persons de tenant B.
 
-- [ ] **T-28 · editorialProfileService** — `editorial-profiles` · M · deps: T-09 · épicas: PC-05
+- [x] **T-28 · editorialProfileService** — `editorial-profiles` · M · deps: T-09 · épicas: PC-05
   Files: `src/server/services/editorialProfileService.ts`
   Pasos: perfil efectivo programa(`editorial_overrides`)→tenant→default; update crea `editorial_profile_versions` append-only (snapshot+version+1).
   ✔ `tsc` + override programa gana; editar perfil → versión N+1 con snapshot.
 
-- [ ] **T-29 · promptBuilderService (choke point)** — `editorial-profiles` · M · deps: T-28 · épicas: PC-06
+- [x] **T-29 · promptBuilderService (choke point)** — `editorial-profiles` · M · deps: T-28 · épicas: PC-06
   Files: `src/server/services/promptBuilderService.ts`
   Pasos: `build({tenantId,programId,kind,context})` → {system,user,profileVersion}; refactor de TODO prompt de generación (nota/copy/moments/titulo/edit) para pasar por acá.
   ✔ `tsc` + generación de nota incluye tono/reglas del perfil efectivo (verificar prompt en log).
 
-- [ ] **T-30 · Pipeline wall-clock + moment→enqueue render_clip** — `live-room`, `stream-recording`, `face-attribution` · L · deps: T-14, T-18, T-29, T-21 · épicas: PE-02, PE-04, PE-06, PE-07
+- [x] **T-30 · Pipeline wall-clock + moment→enqueue render_clip** — `live-room`, `stream-recording`, `face-attribution` · L · deps: T-14, T-18, T-29, T-21 · épicas: PE-02, PE-04, PE-06, PE-07
   Files: `src/server/services/pipelineService.ts`, `src/server/services/transcriptionService.ts`
   Pasos: utterances con `wallMs` (offset de chunk acumulado) anclado a `startedAt`; topics/moments → `transmission_segments` con speakers jsonb; moment detection → `jobs_queue.enqueue('render_clip')` respetando `maxClipsPerTransmission`; prompts vía T-29; metering vía T-18; vincula corrida a `transmissionId`.
   ✔ `tsc` + segmento de prueba genera `transmission_segments` con wallMs coherentes con `recording_segments`.
@@ -219,17 +219,17 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
   Pasos: resolver segmentos que cubren [startMs,endMs] → concat/cut `-ss/-t`; crop 9:16 centro=bbox ponderado del speaker dominante por tramo (split en speaker-change, fallback centrado); ASS subs de utterances ventana (nombres resueltos, fuente tenant); una pasada ffmpeg crop→scale 1080x1920→subs→overlay webm → `assets(type='clip',source='footage')` + thumb + `asset_persons`; versionado de re-cortes.
   ✔ `tsc` + render_clip job produce MP4 1080x1920 con subs y overlay; asset en `ready`.
 
-- [ ] **T-33 · Scheduler: cuota pre-dispatch + transmission** — `scheduler-fix`, `usage-quota` · M · deps: T-05, T-15, T-21 · épicas: PD-03, PB-02
+- [x] **T-33 · Scheduler: cuota pre-dispatch + transmission** — `scheduler-fix`, `usage-quota` · M · deps: T-05, T-15, T-21 · épicas: PD-03, PB-02
   Files: `src/server/services/jobSchedulerService.ts`
   Pasos: `quotaService.consume(opId=schedjob:{jobId}:{jobLocalDate})`; sin cuota → `job_executions(status='skipped_quota')` + notificación paywall + audit; con cuota → `transmissionService.create(status='waiting', operationId)` + `job_executions.transmission_id`; release si captura < MIN_CAPTURE_MS.
   ✔ `tsc` + tenant sin cuota → skipped_quota sin captura; retry mismo opId no duplica consumo.
 
-- [ ] **T-34 · Rutas transmissions + live room API** — `live-room`, `stream-recording`, `scheduler-fix` · M · deps: T-21, T-26, T-15 · épicas: PD-05, PD-07
+- [x] **T-34 · Rutas transmissions + live room API** — `live-room`, `stream-recording`, `scheduler-fix` · M · deps: T-21, T-26, T-15 · épicas: PD-05, PD-07
   Files: `src/server/routes/transmissions.ts`, `src/server/routes/live.ts`, `src/server/routes/capture.ts`, `src/server/routes/pipeline.ts`
   Pasos: `GET /api/transmissions` (agenda/historial), `GET /live/:tx/timeline` (segments+speakers+appearances), `POST /live/:tx/mark` (ventana → enqueue render_clip), `POST /live/:tx/correct`; start manual crea transmission + consume cuota.
   ✔ `tsc` + mark manual encola render_clip; timeline devuelve speakers resueltos.
 
-- [ ] **T-35 · Fallback VOD upload** — `stream-recording` · M · deps: T-21, T-14 · épicas: PD-07
+- [x] **T-35 · Fallback VOD upload** — `stream-recording` · M · deps: T-21, T-14 · épicas: PD-07
   Files: `src/server/services/transmissionService.ts` (vod_ingest), `routes/transmissions.ts`
   Pasos: upload de video → `transmission(source='vod_upload')` → job `vod_ingest` lo segmenta en `recording_segments` (startedAt=inicio archivo) → mismo pipeline.
   ✔ `tsc` + upload MP4 produce segmentos y entra a pipeline normal.

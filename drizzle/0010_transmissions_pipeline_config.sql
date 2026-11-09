@@ -1,0 +1,1 @@
+ALTER TABLE "transmissions" ADD COLUMN "pipeline_config" jsonb DEFAULT '{}'::jsonb NOT NULL;

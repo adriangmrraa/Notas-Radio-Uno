@@ -30,7 +30,6 @@ import { registerAlertRoutes } from "./routes/alerts.js";
 import { registerClipRoutes } from "./routes/clips.js";
 import { registerPublicRoutes } from "./routes/public.js";
 import { registerPublicPageRoutes } from "./routes/publicPages.js";
-import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { connectionsRouter } from "./routes/connections.js";
@@ -38,10 +37,24 @@ import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
 import { assetsRouter } from "./routes/assets.js";
 import { internalMediaRouter } from "./routes/internalMedia.js";
-import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
+import { registerPeopleRoutes } from "./routes/people.js";
+import { registerTransmissionRoutes } from "./routes/transmissions.js";
+import { initEngine, createInternalEmitRouter } from "./engine.js";
+
+// ---------------------------------------------------------------------------
+// PROCESS_ROLE — split api|engine|combined (T-20 / D1)
+//   api      → HTTP + Socket.IO solamente. NUNCA loops/scheduler/workers.
+//   engine   → SOLO loops + workers + recorder + scheduler + /internal/*
+//              (escucha en ENGINE_PORT, expone /internal/media y /internal/emit)
+//   combined → ambos en un proceso (default dev, comportamiento histórico).
+// ---------------------------------------------------------------------------
+const PROCESS_ROLE = (process.env.PROCESS_ROLE || 'combined').toLowerCase();
+const IS_ENGINE = PROCESS_ROLE === 'engine';
+const IS_API = PROCESS_ROLE === 'api';
+const IS_COMBINED = !IS_ENGINE && !IS_API;
 
 // ---------------------------------------------------------------------------
 // __dirname / __filename (ESM compat)
@@ -128,7 +141,7 @@ io.on("connection", (socket) => {
 });
 
 const upload = multer({ dest: path.join(PROJECT_ROOT, "uploads") });
-const PORT = parseInt(process.env.PORT || "3001", 10);
+const PORT = parseInt(IS_ENGINE ? (process.env.ENGINE_PORT || process.env.PORT || "3002") : (process.env.PORT || "3001"), 10);
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -160,10 +173,20 @@ app.use("/output", express.static(OUTPUT_DIR));
 app.use("/fonts", express.static(path.join(PROJECT_ROOT, "fonts")));
 
 // ---------------------------------------------------------------------------
-// Public routes (NO auth) — must be registered BEFORE auth-protected routes
+// Internal routes — SIEMPRE montadas (api recibe el relay del engine; engine
+// sirve /internal/media desde su volumen MEDIA_ROOT).
 // ---------------------------------------------------------------------------
-registerPublicRoutes(app);
-registerPublicPageRoutes(app);
+app.use(createInternalEmitRouter(io));
+app.use("/internal/media", internalMediaRouter);
+
+// ---------------------------------------------------------------------------
+// Public routes (NO auth) — must be registered BEFORE auth-protected routes
+// (solo api|combined — el engine no expone rutas públicas)
+// ---------------------------------------------------------------------------
+if (!IS_ENGINE) {
+  registerPublicRoutes(app);
+  registerPublicPageRoutes(app);
+}
 
 // ---------------------------------------------------------------------------
 // Health check endpoint
@@ -185,45 +208,47 @@ app.get("/api/get-transcriptions", (_req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Auth routes
-// ---------------------------------------------------------------------------
-app.use("/api/auth", authRouter);
-app.use("/api/billing", billingRouter);
-app.use("/api/connections", connectionsRouter);
-app.use("/api/jobs", jobsRouter);
-app.use("/api/images", imageEditRouter);
-app.use("/api/assets", assetsRouter);
+if (!IS_ENGINE) {
+  // ---------------------------------------------------------------------------
+  // Auth routes
+  // ---------------------------------------------------------------------------
+  app.use("/api/auth", authRouter);
+  app.use("/api/billing", billingRouter);
+  app.use("/api/connections", connectionsRouter);
+  app.use("/api/jobs", jobsRouter);
+  app.use("/api/images", imageEditRouter);
+  app.use("/api/assets", assetsRouter);
 
-// Internal media (engine, D13) — auth propia via token firmado (?t=), sin JWT.
-app.use("/internal/media", internalMediaRouter);
+  // Socket.IO real solo en api|combined — en engine, emitToTenant reenvía por
+  // HTTP al /internal/emit de la API (relay interno, D1). NO llamar a
+  // initNotificationService en engine: ioRef debe quedar null para que el
+  // relay se active.
+  initNotificationService(io);
 
-// Initialize background services
-initNotificationService(io);
-initJobScheduler(io);
-initDossierScheduler();
-
-// ---------------------------------------------------------------------------
-// Register route modules
-// ---------------------------------------------------------------------------
-registerPipelineRoutes(app, io);
-registerMetaRoutes(app);
-registerHistoryRoutes(app, io);
-registerSettingsRoutes(app);
-registerGenerateRoutes(app, io, upload);
-registerCaptureRoutes(app, io, {
-  transcriptionFile: TRANSCRIPTION_FILE,
-  projectRoot: PROJECT_ROOT,
-});
-registerAgentRoutes(app);
-registerPipelineConfigRoutes(app);
-registerBrandingRoutes(app);
-registerProgramRoutes(app);
-registerConductorRoutes(app);
-registerGuestRoutes(app);
-registerReviewRoutes(app);
-registerAlertRoutes(app);
-registerClipRoutes(app);
+  // ---------------------------------------------------------------------------
+  // Register route modules
+  // ---------------------------------------------------------------------------
+  registerPipelineRoutes(app, io);
+  registerMetaRoutes(app);
+  registerHistoryRoutes(app, io);
+  registerSettingsRoutes(app);
+  registerGenerateRoutes(app, io, upload);
+  registerCaptureRoutes(app, io, {
+    transcriptionFile: TRANSCRIPTION_FILE,
+    projectRoot: PROJECT_ROOT,
+  });
+  registerAgentRoutes(app);
+  registerPipelineConfigRoutes(app);
+  registerBrandingRoutes(app);
+  registerProgramRoutes(app);
+  registerConductorRoutes(app);
+  registerGuestRoutes(app);
+  registerReviewRoutes(app);
+  registerAlertRoutes(app);
+  registerClipRoutes(app);
+  registerPeopleRoutes(app);
+  registerTransmissionRoutes(app);
+}
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
@@ -246,17 +271,19 @@ process.on("SIGTERM", gracefulShutdown);
 process.on("SIGINT", gracefulShutdown);
 
 // ---------------------------------------------------------------------------
-// SPA catch-all for client-side routing
+// SPA catch-all for client-side routing (solo api|combined)
 // ---------------------------------------------------------------------------
-app.get("*", (_req, res) => {
-  const indexPath = path.join(PROJECT_ROOT, "dist", "client", "index.html");
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    // In dev mode, Vite handles this
-    res.status(404).send("Not found");
-  }
-});
+if (!IS_ENGINE) {
+  app.get("*", (_req, res) => {
+    const indexPath = path.join(PROJECT_ROOT, "dist", "client", "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      // In dev mode, Vite handles this
+      res.status(404).send("Not found");
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Start listening (after running DB migrations)
@@ -272,6 +299,16 @@ app.get("*", (_req, res) => {
   // Register all fonts from /fonts directory
   registerAllFonts(PROJECT_ROOT);
 
+  // Engine loops — solo cuando el rol lo permite (engine|combined; NUNCA api)
+  if (!IS_API) {
+    try {
+      await initEngine({ io: IS_COMBINED ? io : null });
+    } catch (err) {
+      console.error('[Server] initEngine falló:', err);
+      process.exit(1);
+    }
+  }
+
   // Diarization provider status
   if (process.env.ASSEMBLYAI_API_KEY) {
     console.log('[Diarization] AssemblyAI configured — speaker diarization enabled');
@@ -280,7 +317,7 @@ app.get("*", (_req, res) => {
   }
 
   httpServer.listen(PORT, () => {
-    console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`[Server] Servidor corriendo en http://localhost:${PORT} (PROCESS_ROLE=${PROCESS_ROLE})`);
   });
 })();
 

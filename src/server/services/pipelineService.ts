@@ -25,6 +25,9 @@ import { dirname } from "path";
 import { db } from "../db/index.js";
 import { conductors, conductorPhotos } from "../db/schema/conductors.js";
 import { guests, guestPhotos } from "../db/schema/guests.js";
+import { transmissionSegments } from "../db/schema/transmissions.js";
+import { enqueue } from "./jobsQueueService.js";
+import { recordAiCost } from "./aiCostMeter.js";
 import { eq, and, sql } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
@@ -99,6 +102,14 @@ class AutoPipeline {
   // Clip generation: accumulated utterances and retained audio file for the last topic
   private recentUtterances: Utterance[];
   private lastAudioFilePath: string | null;
+  // T-30: vínculo con la transmisión (wall-clock anchor + segmentos + cuota)
+  public transmissionId: string | null;
+  /** epoch ms de transmissions.started_at — ancla wall-clock de la sesión. */
+  private startedAtMs: number | null;
+  /** epoch ms en que arrancó la captura del chunk en curso (para alinear utterances). */
+  private currentChunkCaptureStartMs: number;
+  /** render_clip ya encolados en esta sesión (cuota maxClipsPerTransmission). */
+  private clipsEnqueued: number;
 
   constructor(io: Server, tenantId: string = 'default') {
     this.io = io;
@@ -141,6 +152,20 @@ class AutoPipeline {
     // Clip generation state
     this.recentUtterances = [];
     this.lastAudioFilePath = null;
+    this.transmissionId = null;
+    this.startedAtMs = null;
+    this.currentChunkCaptureStartMs = 0;
+    this.clipsEnqueued = 0;
+  }
+
+  /**
+   * T-30: vincula la corrida del pipeline con una transmission.
+   * `startedAt` es el ancla wall-clock: utterance offset + captureStart − startedAt.
+   */
+  setTransmissionContext(ctx: { transmissionId: string; startedAt: Date; programId?: string | null }): void {
+    this.transmissionId = ctx.transmissionId;
+    this.startedAtMs = ctx.startedAt.getTime();
+    if (ctx.programId) this.config.programId = ctx.programId;
   }
 
   private emit(event: string, data: Record<string, unknown>): void {
@@ -230,7 +255,9 @@ class AutoPipeline {
           icon: "mic",
         });
 
-        // Capture audio for this chunk
+        // Capture audio for this chunk — marcar el wall-clock de inicio de captura
+        // (T-30: ancla para convertir utterance offsets a ms relativos a startedAt)
+        this.currentChunkCaptureStartMs = Date.now();
         const { filePath } = await captureAudioSegment(
           this.config.url,
           this.config.segmentDuration,
@@ -269,10 +296,34 @@ class AutoPipeline {
 
         const currentFilePath = filePath;
         const currentChunkNumber = chunkNumber;
+        const chunkCaptureStartMs = this.currentChunkCaptureStartMs;
         pendingTranscription = transcribeAudio(currentFilePath).then((result): TranscriptionChunk => {
           // Store utterances for clip generation (accumulate, keep last 200)
           if (result.utterances && result.utterances.length > 0) {
-            this.recentUtterances = [...this.recentUtterances, ...result.utterances].slice(-200);
+            // T-30: convertir offsets del archivo a ms wall-clock relativos a
+            // transmissions.started_at (ancla). Sin tx → se conservan los
+            // offsets crudos (comportamiento legacy).
+            const base = this.startedAtMs != null
+              ? Math.max(0, chunkCaptureStartMs - this.startedAtMs)
+              : 0;
+            const aligned = this.startedAtMs != null
+              ? result.utterances.map((u) => ({ ...u, start: u.start + base, end: u.end + base }))
+              : result.utterances;
+            this.recentUtterances = [...this.recentUtterances, ...aligned].slice(-200);
+          }
+          // Metering T-30: minutos de audio transcritos por chunk
+          if (this.transmissionId) {
+            void recordAiCost({
+              tenantId: this.tenantId,
+              transmissionId: this.transmissionId,
+              provider: result.provider,
+              kind: 'transcription',
+              units: this.config.segmentDuration / 60,
+              unit: 'minutes',
+              costEstimateUsd: result.provider === 'assemblyai'
+                ? this.config.segmentDuration * 0.00025
+                : 0.006 * (this.config.segmentDuration / 60),
+            }).catch(() => undefined);
           }
           // Keep audio file path for clip generation; old file will be cleaned after next chunk
           const prevAudio = this.lastAudioFilePath;
@@ -767,6 +818,35 @@ class AutoPipeline {
     const segmentText = extractSegmentText(this.fullTranscription, segment);
     const transcriptionForNote = segmentText || segment.summary;
 
+    // T-30: persistir el tema como transmission_segment(kind='topic') cuando la
+    // corrida está vinculada a una transmission (ancla wall-clock via utterances)
+    if (this.transmissionId) {
+      try {
+        const utts = this.recentUtterances;
+        const startMs = utts.length ? Math.min(...utts.map((u) => u.start)) : null;
+        const endMs = utts.length ? Math.max(...utts.map((u) => u.end)) : null;
+        const speakers = Array.from(new Set(utts.map((u) => u.speaker)));
+        await db.insert(transmissionSegments).values({
+          transmissionId: this.transmissionId,
+          tenantId: this.tenantId,
+          kind: 'topic',
+          title: segment.topic,
+          summary: segment.summary,
+          startMs,
+          endMs,
+          speakers,
+          score: segment.confidence === 'high' ? '1' : segment.confidence === 'medium' ? '0.6' : '0.3',
+          payload: {
+            status: segment.status,
+            newsworthy: segment.newsworthy,
+            suggestedNotes: segment.suggestedNotes,
+          },
+        });
+      } catch (segErr) {
+        console.warn('[Pipeline] transmission_segment(topic) insert warn:', (segErr as Error).message);
+      }
+    }
+
     // Use diarized text for insights if available — enables proper speaker attribution
     const diarizedSegmentText = this.fullDiarizedTranscription
       ? extractSegmentText(this.fullDiarizedTranscription, segment) || this.fullDiarizedTranscription
@@ -856,7 +936,18 @@ class AutoPipeline {
       structure: this.config.structure,
       webContext,
       insights: `Resumen: ${enrichedInsights.summary}\nDatos clave: ${enrichedInsights.keyFacts.join(", ")}`,
+      tenantId: this.tenantId,
+      programId: this.config.programId ?? null,
     });
+    if (this.transmissionId) {
+      void recordAiCost({
+        tenantId: this.tenantId, transmissionId: this.transmissionId,
+        provider: 'deepseek', kind: 'text',
+        units: Math.round((transcriptionForNote.length + webContext.length) / 4),
+        unit: 'tokens',
+        costEstimateUsd: ((transcriptionForNote.length + webContext.length) / 4) * 0.00000014,
+      }).catch(() => undefined);
+    }
     this.io.emit("pipeline-node-status", { nodeId: "generate_news", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after news generation
@@ -872,7 +963,10 @@ class AutoPipeline {
       icon: "brain",
     });
 
-    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary);
+    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary, {
+      tenantId: this.tenantId,
+      programId: this.config.programId ?? null,
+    });
     this.io.emit("pipeline-node-status", { nodeId: "generate_title", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after title generation
@@ -923,14 +1017,68 @@ class AutoPipeline {
     if (this.recentUtterances.length > 0 && this.lastAudioFilePath && fs.existsSync(this.lastAudioFilePath)) {
       try {
         const branding = await loadTenantBranding(this.tenantId);
-        const highlights = await detectHighlights(transcriptionForNote, this.recentUtterances);
+        const highlights = await detectHighlights(transcriptionForNote, this.recentUtterances, {
+          tenantId: this.tenantId,
+          programId: this.config.programId ?? null,
+        });
         this.emit("detail", {
           step: "creating_flyer", sub: "clips_detected",
           message: `${highlights.length} clip(s) detectado(s) en el segmento`,
           icon: "film",
         });
+        if (this.transmissionId) {
+          void recordAiCost({
+            tenantId: this.tenantId, transmissionId: this.transmissionId,
+            provider: 'gemini', kind: 'text',
+            units: Math.round(transcriptionForNote.length / 4), unit: 'tokens',
+            costEstimateUsd: (transcriptionForNote.length / 4) * 0.0000001,
+          }).catch(() => undefined);
+        }
 
-        for (const highlight of highlights.slice(0, 2)) {
+        // T-30: cuando la corrida está vinculada a una transmission, los momentos
+        // se persisten como transmission_segments(kind='moment') y el render va
+        // por la cola (render_clip). Sin tx → comportamiento legacy inline.
+        if (this.transmissionId) {
+          const { getPlanLimits } = await import('./quotaService.js');
+          const maxClips = (await getPlanLimits(this.tenantId)).maxClipsPerTransmission ?? 3;
+          for (const highlight of highlights) {
+            try {
+              const speakers = Array.from(new Set(this.recentUtterances.map((u) => u.speaker)));
+              const [momentRow] = await db.insert(transmissionSegments).values({
+                transmissionId: this.transmissionId,
+                tenantId: this.tenantId,
+                kind: 'moment',
+                title: highlight.hookText,
+                summary: highlight.reason,
+                startMs: Math.round(highlight.startMs),
+                endMs: Math.round(highlight.endMs),
+                speakers,
+                payload: { reason: highlight.reason },
+              }).returning();
+
+              if (this.clipsEnqueued >= maxClips) {
+                console.log(`[Pipeline] clip quota (${this.clipsEnqueued}/${maxClips}) — momento sin render`);
+                continue;
+              }
+              await enqueue('render_clip', {
+                transmissionId: this.transmissionId,
+                tenantId: this.tenantId,
+                transmissionSegmentId: momentRow.id,
+                startMs: Math.round(highlight.startMs),
+                endMs: Math.round(highlight.endMs),
+                hookText: highlight.hookText,
+              }, { tenantId: this.tenantId, dedupKey: `renderclip:${this.transmissionId}:${momentRow.id}` });
+              this.clipsEnqueued++;
+              this.emit('clip_queued', {
+                hookText: highlight.hookText,
+                startMs: Math.round(highlight.startMs),
+                endMs: Math.round(highlight.endMs),
+              });
+            } catch (clipErr) {
+              console.error('[Pipeline] Error persistiendo momento:', (clipErr as Error).message);
+            }
+          }
+        } else for (const highlight of highlights.slice(0, 2)) {
           try {
             this.emit("detail", {
               step: "creating_flyer", sub: "clip_generating",
@@ -1072,7 +1220,10 @@ class AutoPipeline {
       });
       let contentVariants = null;
       try {
-        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone);
+        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone, {
+          tenantId: this.tenantId,
+          programId: this.config.programId ?? null,
+        });
         this.emit("detail", {
           step: "pending_review", sub: "multiplier_done",
           message: `Variantes generadas: ${contentVariants.twitterThread.length} tweets, ${contentVariants.instagramCarousel.length} slides`,

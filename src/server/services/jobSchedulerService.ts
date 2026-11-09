@@ -1,30 +1,43 @@
 import type { Server } from 'socket.io';
 import { db } from '../db/index.js';
-import { detectLiveStream } from './liveDetectorService.js';
-import { AutoPipeline } from './pipelineService.js';
-import { jobNotify } from './notificationService.js';
+import { notify } from './notificationService.js';
 import { trackPipelineMinutes, trackPublication } from './usageTracker.js';
 import { scheduledJobs, jobExecutions } from '../db/schema/index.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
+import { consume as consumeQuota } from './quotaService.js';
+import { create as createTransmission, requestStop } from './transmissionService.js';
+import { audit } from './auditService.js';
 
-const MAX_RETRY_ATTEMPTS = 15; // 15 x 2min = 30 min window
-const RETRY_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+// ---------------------------------------------------------------------------
+// jobSchedulerService — despacho cuota-aware de scheduled_jobs (T-33)
+//
+// Al disparar un job:
+//   1. operationId = `schedjob:{jobId}:{jobLocalDate}` → quotaService.consume
+//   2. SIN cuota → job_executions(status='skipped_quota') + notify paywall
+//      + audit. NO se crea transmission.
+//   3. CON cuota → transmission(status='waiting', source='live_capture') +
+//      job_executions(transmission_id). El recorder del engine (T-22) la
+//      recoge: detecta el live, graba, y al cerrar libera cuota si la
+//      captura real fue < MIN_CAPTURE_MS.
+//
+// Este loop corre SOLO en PROCESS_ROLE=engine|combined (T-20/D1).
+// ---------------------------------------------------------------------------
+
 const MAX_CONCURRENT_JOBS = 5;
 
-// Active job pipelines — separate from manual pipeline instances
-const activeJobs: Map<string, { pipeline: AutoPipeline; executionId: string; startTime: Date; timeoutHandle: ReturnType<typeof setTimeout> }> = new Map();
+/** Despachos activos de este proceso: jobId → {executionId, transmissionId}. */
+const dispatchedJobs: Map<string, { executionId: string; transmissionId: string }> = new Map();
 
-// Retry state per job
-const retryState: Map<string, { attempts: number; handle: ReturnType<typeof setTimeout> }> = new Map();
-
-let ioRef: Server;
+let ioRef: Server | null = null;
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Initialize the job scheduler. Checks every 60 seconds for jobs to run.
+ * Engine-only: llamado desde initEngine (o combined dev). `io` es opcional —
+ * las notificaciones pasan por emitToTenant (relay interno si no hay socket).
  */
-export function initJobScheduler(io: Server) {
-    ioRef = io;
+export function initJobScheduler(io?: Server | null) {
+    ioRef = io ?? null;
 
     if (schedulerInterval) clearInterval(schedulerInterval);
 
@@ -78,7 +91,7 @@ interface JobLocalParts {
  * Decomposes `date` into day-of-week, 'HH:MM' and 'YYYY-MM-DD' **in `timeZone`**.
  * Used both for the trigger check (against `now`) and for dedup (against
  * `lastRunAt` — a job "already ran today" iff lastRunAt's job-local date equals
- * today's job-local date).
+ * today's job-local date). The same `date` feeds the quota operationId.
  */
 function getJobLocalParts(date: Date, timeZone: string): JobLocalParts {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -101,22 +114,20 @@ function getJobLocalParts(date: Date, timeZone: string): JobLocalParts {
 }
 
 /**
- * Main loop: find jobs that should run NOW and start them.
+ * Main loop: find jobs that should run NOW and dispatch them.
  * Day / startTime / dedup are all evaluated in `job.timezone`.
  */
 async function checkAndRunJobs() {
     const now = new Date();
 
-    // Get active jobs that match current time and day
     const jobs = await db.select().from(scheduledJobs)
         .where(eq(scheduledJobs.isActive, true));
 
     for (const job of jobs) {
-        // Skip if already running or retrying
-        if (activeJobs.has(job.id) || retryState.has(job.id)) continue;
+        // Skip if already dispatched in this process
+        if (dispatchedJobs.has(job.id)) continue;
 
-        // Skip if max concurrent reached
-        if (activeJobs.size >= MAX_CONCURRENT_JOBS) {
+        if (dispatchedJobs.size >= MAX_CONCURRENT_JOBS) {
             console.log(`[JobScheduler] Max concurrent jobs (${MAX_CONCURRENT_JOBS}) reached, skipping ${job.name}`);
             break;
         }
@@ -125,249 +136,180 @@ async function checkAndRunJobs() {
         const local = getJobLocalParts(now, jobTz);
 
         if (job.scheduleType === 'one_time') {
-            // one_time: fires only on its scheduledDate (job-local date)
             if (!job.scheduledDate) continue;
-            if (local.date < job.scheduledDate) continue; // not yet
+            if (local.date < job.scheduledDate) continue;
             if (local.date > job.scheduledDate) {
-                // Past date that never ran — mark expired so it stops evaluating
                 console.log(`[JobScheduler] one_time job '${job.name}' expired (scheduledDate ${job.scheduledDate} < ${local.date} ${jobTz})`);
                 await db.update(scheduledJobs)
                     .set({ isActive: false, lastRunStatus: 'expired' })
                     .where(eq(scheduledJobs.id, job.id));
                 continue;
             }
-            if (job.lastRunAt) continue; // already ran — one_time never repeats
+            if (job.lastRunAt) continue;
         } else {
-            // recurring: check day-of-week in the job's timezone
             const daysOfWeek = (job.daysOfWeek as number[]) || [];
             if (daysOfWeek.length > 0 && !daysOfWeek.includes(local.day)) continue;
         }
 
-        // Check time match (exact minute, in the job's timezone)
         if (job.startTime !== local.time) continue;
 
-        // Dedup: "already ran today" = lastRunAt's job-local date == today's job-local date
         if (job.lastRunAt && job.scheduleType === 'recurring') {
             const lastRunLocalDate = getJobLocalParts(new Date(job.lastRunAt), jobTz).date;
-            if (lastRunLocalDate === local.date) {
-                continue; // Already ran today (job-local date)
-            }
+            if (lastRunLocalDate === local.date) continue;
         }
 
-        console.log(`[JobScheduler] Triggering job: ${job.name} (${job.id}) @ ${local.time} ${jobTz}`);
-        startJobDetection(job);
+        console.log(`[JobScheduler] Dispatching job: ${job.name} (${job.id}) @ ${local.time} ${jobTz}`);
+        await dispatchJob(job, local.date, now);
     }
 }
 
-/**
- * Start the live detection + retry loop for a job.
- */
-async function startJobDetection(job: any) {
+// ---------------------------------------------------------------------------
+// T-33: dispatch cuota-aware.
+// operationId = schedjob:{jobId}:{jobLocalDate} — idempotente por día de job.
+// ---------------------------------------------------------------------------
+async function dispatchJob(
+    job: typeof scheduledJobs.$inferSelect,
+    jobLocalDate: string,
+    now: Date,
+): Promise<void> {
     const tenantId = job.tenantId;
+    const operationId = `schedjob:${job.id}:${jobLocalDate}`;
 
-    await jobNotify.detecting(tenantId, job.id, job.name);
+    // ── 1. Reserva de cuota ANTES de crear nada ────────────────────────────
+    const quota = await consumeQuota(tenantId, operationId, 'transmission');
 
-    // Create execution record
+    if (!quota.allowed) {
+        // skipped_quota: ejecución registrada + notificación paywall + audit.
+        const [execution] = await db.insert(jobExecutions).values({
+            jobId: job.id,
+            tenantId,
+            status: 'skipped_quota',
+            scheduledFor: now,
+            startedAt: now,
+            finishedAt: now,
+            errorMessage: `Cuota de transmisiones agotada (${quota.count}/${quota.effectiveLimit} en ${quota.period})`,
+        }).returning();
+
+        await db.update(scheduledJobs)
+            .set({ lastRunAt: now, lastRunStatus: 'skipped_quota' })
+            .where(eq(scheduledJobs.id, job.id));
+
+        await notify({
+            tenantId,
+            jobId: job.id,
+            type: 'quota_exceeded',
+            title: `Sin cuota: "${job.name}" no se ejecutó`,
+            message: `Límite del plan alcanzado (${quota.count}/${quota.effectiveLimit} transmisiones en ${quota.period}). Mejorá tu plan para seguir transmitiendo.`,
+            icon: '🔒',
+            metadata: { paywall: true, executionId: execution.id, operationId, limit: quota.effectiveLimit, count: quota.count, period: quota.period },
+        });
+
+        void audit({
+            tenantId,
+            action: 'scheduler.skipped_quota',
+            metadata: { jobId: job.id, jobName: job.name, executionId: execution.id, operationId, count: quota.count, limit: quota.effectiveLimit, period: quota.period },
+        });
+        console.log(`[JobScheduler] '${job.name}' skipped_quota (${quota.count}/${quota.effectiveLimit})`);
+        return;
+    }
+
+    // ── 2. Cuota reservada → transmission waiting + ejecución vinculada ────
+    const tx = await createTransmission({
+        tenantId,
+        source: 'live_capture',
+        programId: job.programId ?? null,
+        scheduledJobId: job.id,
+        streamUrl: job.streamUrl,
+        durationMinutes: job.durationMinutes,
+        operationId,
+        pipelineConfig: (job.pipelineConfig as Record<string, unknown>) ?? {},
+        initialStatus: 'waiting',
+    });
+
     const [execution] = await db.insert(jobExecutions).values({
         jobId: job.id,
         tenantId,
-        status: 'pending',
-        scheduledFor: new Date(),
+        status: 'running',
+        scheduledFor: now,
+        startedAt: now,
+        transmissionId: tx.id,
     }).returning();
 
-    attemptDetection(job, execution.id, 1);
-}
+    await db.update(scheduledJobs)
+        .set({ lastRunAt: now, lastRunStatus: 'running' })
+        .where(eq(scheduledJobs.id, job.id));
 
-/**
- * Attempt to detect a live stream. Retry if not found.
- */
-async function attemptDetection(job: any, executionId: string, attempt: number) {
-    const tenantId = job.tenantId;
+    dispatchedJobs.set(job.id, { executionId: execution.id, transmissionId: tx.id });
 
-    try {
-        const result = await detectLiveStream(job.streamUrl);
-
-        if (result.found && result.liveUrl) {
-            // Live found! Clear retry state and start pipeline
-            retryState.delete(job.id);
-
-            await jobNotify.started(tenantId, job.id, job.name, result.title || undefined);
-
-            await db.update(jobExecutions)
-                .set({ status: 'running', startedAt: new Date() })
-                .where(eq(jobExecutions.id, executionId));
-
-            await db.update(scheduledJobs)
-                .set({ lastRunAt: new Date(), lastRunStatus: 'running' })
-                .where(eq(scheduledJobs.id, job.id));
-
-            startJobPipeline(job, executionId, result.liveUrl);
-        } else if (attempt < MAX_RETRY_ATTEMPTS) {
-            // Not found — retry
-            await jobNotify.retrying(tenantId, job.id, attempt, MAX_RETRY_ATTEMPTS);
-
-            const retryHandle = setTimeout(() => {
-                attemptDetection(job, executionId, attempt + 1);
-            }, RETRY_INTERVAL_MS);
-
-            retryState.set(job.id, { attempts: attempt, handle: retryHandle });
-        } else {
-            // Exhausted retries
-            retryState.delete(job.id);
-            await jobNotify.noLiveFound(tenantId, job.id, job.name);
-
-            await db.update(jobExecutions)
-                .set({
-                    status: 'failed',
-                    finishedAt: new Date(),
-                    errorMessage: 'No se encontro live despues de 30 minutos de reintentos',
-                })
-                .where(eq(jobExecutions.id, executionId));
-
-            await db.update(scheduledJobs)
-                .set({ lastRunStatus: 'failed' })
-                .where(eq(scheduledJobs.id, job.id));
-        }
-    } catch (err) {
-        console.error(`[JobScheduler] Detection error for ${job.name}:`, err);
-        if (attempt < MAX_RETRY_ATTEMPTS) {
-            const retryHandle = setTimeout(() => attemptDetection(job, executionId, attempt + 1), RETRY_INTERVAL_MS);
-            retryState.set(job.id, { attempts: attempt, handle: retryHandle });
-        }
-    }
-}
-
-/**
- * Start the AutoPipeline for a job in background.
- * The manual pipeline (Dashboard) is unaffected — this creates a separate instance.
- */
-function startJobPipeline(job: any, executionId: string, liveUrl: string) {
-    const tenantId = job.tenantId;
-    const pipelineConfig = (job.pipelineConfig as Record<string, unknown>) || {};
-
-    // Create a SEPARATE pipeline instance for the job (does NOT interfere with manual pipeline)
-    const pipeline = new AutoPipeline(ioRef, tenantId);
-
-    // Auto-stop timeout based on job duration
-    const durationMs = (job.durationMinutes || 120) * 60 * 1000;
-    const timeoutHandle = setTimeout(async () => {
-        await stopJobPipeline(job.id, 'duration_limit');
-    }, durationMs);
-
-    activeJobs.set(job.id, { pipeline, executionId, startTime: new Date(), timeoutHandle });
-
-    // Intercept ALL pipeline events to generate notifications.
-    // Every visual canvas step becomes a notification — the user sees the full
-    // pipeline progress in their NotificationBell even for background jobs.
-    const originalEmit = (pipeline as any).emit.bind(pipeline);
-    (pipeline as any).emit = (event: string, data: Record<string, unknown>) => {
-        // Call original emit (sends to tenant Socket room — does NOT affect manual pipeline
-        // because this is a separate AutoPipeline instance with its own tenantId room events)
-        originalEmit(event, data);
-
-        // Map EVERY pipeline event to a notification
-        const handler: (() => Promise<unknown>) | undefined = ({
-            'step':          () => jobNotify.pipelineStep(tenantId, job.id, data),
-            'detail':        () => jobNotify.pipelineDetail(tenantId, job.id, data),
-            'transcription': () => jobNotify.pipelineTranscription(tenantId, job.id, data),
-            'note':          () => jobNotify.pipelineNote(tenantId, job.id, data),
-            'flyer':         () => jobNotify.pipelineFlyer(tenantId, job.id, data),
-            'published':     () => jobNotify.pipelinePublished(tenantId, job.id, data),
-            'error':         () => jobNotify.pipelineError(tenantId, job.id, data),
-        } as Record<string, () => Promise<unknown>>)[event];
-
-        if (handler) handler().catch(() => {});
-    };
-
-    // Start the pipeline
-    pipeline.start({
-        url: liveUrl,
-        tone: (pipelineConfig.tone as string) || 'formal',
-        structure: (pipelineConfig.structure as string) || 'completa',
-        imageModel: (pipelineConfig.imageModel as string) || 'gemini',
-        segmentDuration: (pipelineConfig.segmentDuration as number) || 120,
-        autoPublish: pipelineConfig.autoPublish !== false,
-    }).catch(async (err) => {
-        console.error(`[JobScheduler] Pipeline error for job ${job.name}:`, err);
-        await stopJobPipeline(job.id, 'error', err instanceof Error ? err.message : String(err));
+    await notify({
+        tenantId,
+        jobId: job.id,
+        type: 'job_started',
+        title: `Job "${job.name}" despachado`,
+        message: 'Transmisión en espera — el recorder busca el live',
+        icon: '🚀',
+        metadata: { transmissionId: tx.id, executionId: execution.id, operationId },
+    });
+    void audit({
+        tenantId,
+        action: 'scheduler.dispatched',
+        metadata: { jobId: job.id, transmissionId: tx.id, executionId: execution.id, operationId },
     });
 }
 
-/**
- * Stop a running job pipeline and record results.
- */
-async function stopJobPipeline(jobId: string, reason: 'duration_limit' | 'manual' | 'error' | 'live_ended', errorMsg?: string) {
-    const active = activeJobs.get(jobId);
-    if (!active) return;
+// ---------------------------------------------------------------------------
+// stop / estado — usado por routes/jobs.ts
+// ---------------------------------------------------------------------------
 
-    const { pipeline, executionId, startTime, timeoutHandle } = active;
-    clearTimeout(timeoutHandle);
-
-    pipeline.stop();
-    activeJobs.delete(jobId);
-
-    const durationMin = Math.round((Date.now() - startTime.getTime()) / 60000);
-    const publications = pipeline.publishedNotes.length;
-    const status = reason === 'error' ? 'failed' : 'completed';
-
-    // Get job info for notification
-    const [job] = await db.select().from(scheduledJobs)
-        .where(eq(scheduledJobs.id, jobId))
-        .limit(1);
-    const tenantId = job?.tenantId || '';
-
-    await db.update(jobExecutions)
-        .set({
-            status,
-            finishedAt: new Date(),
-            publicationsGenerated: publications,
-            transcriptionMinutes: String(durationMin),
-            errorMessage: errorMsg,
-        })
-        .where(eq(jobExecutions.id, executionId));
-
-    await db.update(scheduledJobs)
-        .set({ lastRunStatus: status })
-        .where(eq(scheduledJobs.id, jobId));
-
-    // Track usage
-    if (tenantId) {
-        await trackPipelineMinutes(tenantId, durationMin);
-        for (let i = 0; i < publications; i++) {
-            await trackPublication(tenantId);
-        }
-    }
-
-    // Final notification
-    if (job && tenantId) {
-        if (status === 'completed') {
-            await jobNotify.completed(tenantId, jobId, job.name, { publications, durationMin });
-        } else {
-            await jobNotify.failed(tenantId, jobId, job.name, errorMsg || 'Error desconocido');
-        }
-    }
-}
-
-/**
- * Manually stop a job (called from API).
- */
+/** Cancela la transmisión despachada por este job (si sigue viva). */
 export async function stopJob(jobId: string) {
-    await stopJobPipeline(jobId, 'manual');
-    // Also cancel retries
-    const retry = retryState.get(jobId);
-    if (retry) {
-        clearTimeout(retry.handle);
-        retryState.delete(jobId);
+    const active = dispatchedJobs.get(jobId);
+    if (active) {
+        try {
+            const [exec] = await db.select({ tenantId: jobExecutions.tenantId })
+                .from(jobExecutions).where(eq(jobExecutions.id, active.executionId)).limit(1);
+            if (exec) await requestStop(exec.tenantId, active.transmissionId);
+        } catch (err) {
+            console.warn(`[JobScheduler] stopJob ${jobId}:`, err instanceof Error ? err.message : err);
+        }
+        dispatchedJobs.delete(jobId);
+        return;
+    }
+
+    // Proceso reiniciado: buscar la ejecución running del job y cancelar su tx.
+    const [execution] = await db.select().from(jobExecutions)
+        .where(and(eq(jobExecutions.jobId, jobId), inArray(jobExecutions.status, ['pending', 'running'])))
+        .orderBy(desc(jobExecutions.createdAt))
+        .limit(1);
+    if (execution?.transmissionId) {
+        try {
+            await requestStop(execution.tenantId, execution.transmissionId);
+        } catch (err) {
+            console.warn(`[JobScheduler] stopJob ${jobId} (db):`, err instanceof Error ? err.message : err);
+        }
+    } else if (execution) {
+        await db.update(jobExecutions)
+            .set({ status: 'failed', finishedAt: new Date(), errorMessage: 'Detenido manualmente' })
+            .where(eq(jobExecutions.id, execution.id));
     }
 }
 
-/**
- * Get status of active jobs.
- */
+/** IDs de jobs con despacho activo EN ESTE proceso. */
 export function getActiveJobIds(): string[] {
-    return Array.from(activeJobs.keys());
+    return Array.from(dispatchedJobs.keys());
 }
 
 export function isJobRunning(jobId: string): boolean {
-    return activeJobs.has(jobId) || retryState.has(jobId);
+    return dispatchedJobs.has(jobId);
+}
+
+// ---------------------------------------------------------------------------
+// Utilidad de tracking usada históricamente al cerrar pipelines (se conserva
+// para callers existentes de routes/jobs.ts; el cierre real lo hace la tx).
+// ---------------------------------------------------------------------------
+export async function trackJobCompletion(tenantId: string, durationMin: number, publications: number): Promise<void> {
+    await trackPipelineMinutes(tenantId, durationMin);
+    for (let i = 0; i < publications; i++) {
+        await trackPublication(tenantId);
+    }
 }

@@ -22,6 +22,7 @@ import {
 } from "../services/databaseService.js";
 import { publishToChannels } from "../services/publishService.js";
 import { chatCompletion } from "../services/aiSdkService.js";
+import { build as buildPrompt } from "../services/promptBuilderService.js";
 import { processImage } from "../services/imageService.js";
 import { loadTenantBranding } from "../services/brandingService.js";
 import { generateContentVariants, regenerateVariant } from "../services/contentMultiplierService.js";
@@ -64,7 +65,7 @@ export function registerReviewRoutes(app: Express): void {
   // ────────────────────────────────────────────────────────────────────────────
   app.get("/api/review/:id", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
 
     const pub = await getReviewPublicationById(id, tenantId);
     if (!pub) {
@@ -79,7 +80,7 @@ export function registerReviewRoutes(app: Express): void {
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/approve", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
 
     const pub = await getReviewPublicationById(id, tenantId);
     if (!pub) {
@@ -120,7 +121,7 @@ export function registerReviewRoutes(app: Express): void {
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/reject", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
 
     const pub = await getReviewPublicationById(id, tenantId);
     if (!pub) {
@@ -145,7 +146,7 @@ export function registerReviewRoutes(app: Express): void {
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/edit-text", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const { prompt } = req.body as { prompt?: string };
 
     if (!prompt?.trim()) {
@@ -164,17 +165,20 @@ export function registerReviewRoutes(app: Express): void {
     let newContent = pub.content ?? "";
 
     try {
-      const aiPrompt = `Sos un editor periodístico. Tenés esta nota:
-
-Título: ${pub.title ?? ""}
-Contenido: ${pub.content ?? ""}
-
-El usuario pidió: "${prompt}"
-
-Devolvé el título y contenido modificados en formato JSON: { "title": "...", "content": "..." }`;
+      // Prompt via promptBuilder choke-point (kind='edit', perfil editorial efectivo)
+      const { system, user } = await buildPrompt({
+        tenantId,
+        kind: "edit",
+        context: {
+          title: pub.title ?? "",
+          content: pub.content ?? "",
+          instruction: prompt,
+        },
+      });
 
       const { text } = await chatCompletion({
-        userPrompt: aiPrompt,
+        systemPrompt: system,
+        userPrompt: user,
         temperature: 0.5,
         maxTokens: 1500,
         jsonMode: true,
@@ -211,7 +215,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/edit-image", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const { prompt, templateId, fontFamily } = req.body as {
       prompt?: string;
       templateId?: TemplateId;
@@ -263,7 +267,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
   // ────────────────────────────────────────────────────────────────────────────
   app.get("/api/review/:id/variants", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
 
     const pub = await getReviewPublicationById(id, tenantId);
     if (!pub) {
@@ -284,7 +288,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/regenerate-variant", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const { variant, prompt: customPrompt } = req.body as {
       variant?: keyof ContentVariants;
       prompt?: string;
@@ -313,7 +317,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
     }
 
     try {
-      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt);
+      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt, { tenantId });
 
       // Actualizar la variante en DB manteniendo las demás intactas
       const currentVariants: ContentVariants = pub.contentVariants ?? {
@@ -346,7 +350,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/generate-variants", requireAuth, async (req: Request, res: Response): Promise<void> => {
     const tenantId = req.auth!.tenantId;
-    const id = req.params.id;
+    const id = String(req.params.id);
 
     const pub = await getReviewPublicationById(id, tenantId);
     if (!pub) {
@@ -360,7 +364,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
     }
 
     try {
-      const variants = await generateContentVariants(pub.title, pub.content, "formal");
+      const variants = await generateContentVariants(pub.title, pub.content, "formal", { tenantId });
       await updatePublicationContent(id, tenantId, { contentVariants: variants });
       res.json({ success: true, variants });
     } catch (err) {

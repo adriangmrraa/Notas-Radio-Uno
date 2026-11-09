@@ -55,6 +55,8 @@ export const transmissions = pgTable(
     lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }),
     errorMessage: text('error_message'),
     operationId: varchar('operation_id', { length: 120 }),
+    /** Config del audio-tap/pipeline para esta corrida (tono, estructura, autoPublish, segmentDuration…). Heredada del scheduled_job o del request manual. */
+    pipelineConfig: jsonb('pipeline_config').notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),
   },

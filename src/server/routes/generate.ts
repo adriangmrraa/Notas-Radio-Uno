@@ -413,10 +413,15 @@ export function registerGenerateRoutes(
     }
 
     try {
-      const generatedCopy = await generateNewsCopy(
-        context || "",
-        transcription || "",
-      );
+      const generatedCopy = await generateNewsCopy({
+        context: context || "",
+        transcription: transcription || "",
+        tone: "formal",
+        structure: "completa",
+        webContext: "",
+        insights: "",
+        tenantId: req.auth!.tenantId,
+      });
       res.setHeader("Content-Type", "application/json");
       res.json({ generatedCopy });
     } catch (error) {

@@ -29,6 +29,7 @@ import { db } from '../db/index.js';
 import { clips } from '../db/schema/clips.js';
 import { eq, and, desc } from 'drizzle-orm';
 import type { ClipCandidate, Clip, Utterance, BrandingConfig } from '../../shared/types.js';
+import { build as buildPrompt } from './promptBuilderService.js';
 
 const execAsync = promisify(exec);
 
@@ -72,9 +73,17 @@ interface CreateClipInput {
  * Cada candidato tiene: startMs, endMs, hookText (frase gancho), reason.
  * Los clips deben durar entre 15 y 60 segundos.
  */
+export interface HighlightsProfileContext {
+  tenantId?: string | null;
+  programId?: string | null;
+  persons?: string | null;
+  programName?: string | null;
+}
+
 export async function detectHighlights(
   text: string,
   utterances: Utterance[],
+  profileCtx?: HighlightsProfileContext,
 ): Promise<ClipCandidate[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY no configurada');
@@ -84,33 +93,23 @@ export async function detectHighlights(
     `[${Math.round(u.start / 1000)}s - ${Math.round(u.end / 1000)}s] ${u.speaker}: ${u.text}`
   ).join('\n');
 
-  const prompt = `Sos un productor de contenido viral experto en redes sociales.
-Analizá esta transcripción de un programa de radio/TV y encontrá los 1-3 momentos más impactantes, virales o compartibles.
-
-TRANSCRIPCIÓN:
-${text.slice(0, 3000)}
-
-LÍNEA DE TIEMPO (utterances con timestamps en ms):
-${timeline}
-
-Para cada momento identificá:
-- startMs: tiempo de inicio en milisegundos
-- endMs: tiempo de fin en milisegundos (el clip debe durar entre 15.000ms y 60.000ms)
-- hookText: frase gancho corta y poderosa para usar como título del clip (máximo 80 caracteres)
-- reason: por qué este momento es viral o impactante (1 oración)
-
-IMPORTANTE: Los timestamps deben venir de la línea de tiempo de utterances proporcionada. Si no hay utterances, estimá basándote en el texto (promediá ~150 palabras por minuto).
-
-Respondé SOLO con JSON válido en este formato:
-{
-  "clips": [
-    { "startMs": 0, "endMs": 30000, "hookText": "...", "reason": "..." }
-  ]
-}`;
+  // Prompt via promptBuilder choke-point (kind='moments', perfil editorial efectivo)
+  const { system, user } = await buildPrompt({
+    tenantId: profileCtx?.tenantId,
+    programId: profileCtx?.programId,
+    kind: 'moments',
+    context: {
+      transcription: text,
+      timeline,
+      persons: profileCtx?.persons,
+      programName: profileCtx?.programName,
+    },
+  });
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const body = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: 'user', parts: [{ text: user }] }],
     generationConfig: { responseMimeType: 'application/json', temperature: 0.4 },
   };
 

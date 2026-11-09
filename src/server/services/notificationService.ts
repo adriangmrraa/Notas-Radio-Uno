@@ -8,6 +8,60 @@ export function initNotificationService(io: Server) {
     ioRef = io;
 }
 
+// ---------------------------------------------------------------------------
+// emitToTenant — emisión Socket.IO con relay interno (PROCESS_ROLE split, D1)
+// En el proceso `api` (o combinado) ioRef existe y emite directo. En `engine`
+// no hay Socket.IO: el evento se reenvía por HTTP al endpoint /internal/emit
+// del api (API_INTERNAL_URL) autenticado con el secreto interno.
+// ---------------------------------------------------------------------------
+
+const API_INTERNAL_URL = (process.env.API_INTERNAL_URL || '').replace(/\/$/, '');
+export const INTERNAL_EMIT_SECRET =
+    process.env.INTERNAL_API_SECRET ||
+    process.env.MEDIA_SIGNING_SECRET ||
+    process.env.JWT_SECRET ||
+    'dev-secret-change-in-production';
+
+export function emitToTenant(tenantId: string, event: string, payload: Record<string, unknown>): void {
+    if (ioRef) {
+        ioRef.to(`tenant:${tenantId}`).emit(event, payload);
+        return;
+    }
+    if (API_INTERNAL_URL) {
+        // Best-effort relay al api — nunca bloquea ni tira el proceso engine.
+        void fetch(`${API_INTERNAL_URL}/internal/emit`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-internal-token': INTERNAL_EMIT_SECRET,
+            },
+            body: JSON.stringify({ tenantId, event, payload }),
+        }).catch((err) => {
+            console.warn(`[Notify] relay /internal/emit failed for '${event}':`, err instanceof Error ? err.message : err);
+        });
+    }
+}
+
+/**
+ * Evento de transmisión por Socket.IO (sala en vivo, T-21/T-34).
+ * Emite `transmission:{status}` puntual + `transmission:update` genérico.
+ */
+export function emitTransmissionEvent(
+    tenantId: string,
+    transmissionId: string,
+    status: string,
+    extra: Record<string, unknown> = {},
+): void {
+    const payload = {
+        transmissionId,
+        status,
+        at: new Date().toISOString(),
+        ...extra,
+    };
+    emitToTenant(tenantId, `transmission:${status}`, payload);
+    emitToTenant(tenantId, 'transmission:update', payload);
+}
+
 interface NotifyParams {
     tenantId: string;
     jobId?: string;
@@ -35,19 +89,18 @@ export async function notify(params: NotifyParams) {
         metadata: (metadata || {}) as any,
     }).returning();
 
-    // Push real-time to tenant room
-    if (ioRef) {
-        ioRef.to(`tenant:${tenantId}`).emit('notification', {
-            id: notification.id,
-            type,
-            title,
-            message,
-            icon,
-            jobId,
-            metadata,
-            createdAt: notification.createdAt,
-        });
-    }
+    // Push real-time to tenant room — directo si hay io, relay /internal/emit
+    // en el engine (emitToTenant decide).
+    emitToTenant(tenantId, 'notification', {
+        id: notification.id,
+        type,
+        title,
+        message,
+        icon,
+        jobId,
+        metadata,
+        createdAt: notification.createdAt,
+    });
 
     return notification;
 }
