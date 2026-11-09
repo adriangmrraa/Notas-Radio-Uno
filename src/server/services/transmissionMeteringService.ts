@@ -27,6 +27,7 @@ import {
   usageCycles,
 } from '../db/schema/index.js';
 import { AppError } from '../lib/errors.js';
+import { computeRemaining, computePercentUsed } from '../lib/quotaMath.js';
 
 /** Ventana en la que una reserva puede liberarse como "arranque fallido". */
 export const RELEASE_WINDOW_MINUTES = 5;
@@ -219,10 +220,16 @@ export async function getQuotaStatus(tenantId: string): Promise<QuotaStatus> {
   const extra = extraTransmissions(tenant?.config);
   const unlimited = isUnlimited(subscription, plan);
 
-  const total = cycle.includedTransmissions + cycle.addonTransmissions + extra;
+  const pool = {
+    included: cycle.includedTransmissions,
+    addon: cycle.addonTransmissions,
+    extra,
+    used: cycle.transmissionsUsed,
+    unlimited,
+  };
   const used = cycle.transmissionsUsed;
-  const remaining = unlimited ? Number.MAX_SAFE_INTEGER : Math.max(0, total - used);
-  const percentUsed = unlimited ? 0 : total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 100;
+  const remaining = computeRemaining(pool);
+  const percentUsed = computePercentUsed(pool);
 
   return {
     planName: plan?.name ?? null,
