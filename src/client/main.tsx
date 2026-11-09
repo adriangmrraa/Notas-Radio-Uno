@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { PipelineProvider } from './hooks/usePipelineState';
 import { AuthProvider } from './contexts/AuthContext';
 import { PrivateRoute } from './components/PrivateRoute';
+import { OnboardingGuard } from './components/OnboardingGuard';
 import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
@@ -18,6 +19,7 @@ import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
 import { AgendaPage } from './pages/AgendaPage';
 import { ProgramsPage } from './pages/ProgramsPage';
 import { PersonsPage } from './pages/PersonsPage';
+import { OnboardingPage } from './pages/OnboardingPage';
 import { EditorialPage } from './pages/EditorialPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ClipsPage } from './pages/ClipsPage';
@@ -45,10 +47,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route
               element={
                 <PrivateRoute>
-                  <Layout />
+                  <OnboardingGuard>
+                    <Layout />
+                  </OnboardingGuard>
                 </PrivateRoute>
               }
             >
+              <Route path="/onboarding" element={<OnboardingPage />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/review" element={<ReviewPage />} />
               <Route path="/clips" element={<ClipsPage />} />

@@ -43,6 +43,7 @@ import { connectionsRouter } from "./routes/connections.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
 import { personsRouter } from "./routes/persons.js";
+import { onboardingRouter } from "./routes/onboarding.js";
 import { editorialRouter } from "./routes/editorial.js";
 import { transmissionsRouter } from "./routes/transmissions.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
@@ -279,6 +280,7 @@ app.use("/api/connections", connectionsRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/images", imageEditRouter);
 app.use("/api/persons", personsRouter);
+app.use("/api/onboarding", onboardingRouter);
 app.use("/api/editorial", editorialRouter);
 app.use("/api/transmissions", transmissionsRouter);
 

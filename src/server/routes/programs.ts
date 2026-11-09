@@ -3,94 +3,18 @@ import { eq, and } from "drizzle-orm";
 
 import { requireAuth } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { programs, programUrls, programUrlTypeValues } from "../db/schema/programs.js";
+import { programs, programUrls } from "../db/schema/programs.js";
 import { conductors } from "../db/schema/conductors.js";
 import type { PlatformType } from "../../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Slug generation
-// ---------------------------------------------------------------------------
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
-    .replace(/[^a-z0-9\s-]/g, "")
-    .trim()
-    .replace(/[\s]+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 100);
-}
-
-async function ensureUniqueSlug(base: string, excludeId?: string): Promise<string> {
-  let candidate = base;
-  let attempt = 0;
-
-  while (true) {
-    const query = db
-      .select({ id: programs.id })
-      .from(programs)
-      .where(eq(programs.slug, candidate))
-      .limit(1);
-
-    const [existing] = await query;
-
-    if (!existing || (excludeId && existing.id === excludeId)) {
-      return candidate;
-    }
-
-    attempt++;
-    candidate = `${base}-${attempt}`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function isValidUrl(str: string): boolean {
-  try {
-    new URL(str);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const VALID_URL_TYPES: readonly string[] = programUrlTypeValues;
-
-// ---------------------------------------------------------------------------
-// Query helpers
-// ---------------------------------------------------------------------------
-async function fetchProgramWithUrls(programId: string, tenantId: string) {
-  const [program] = await db
-    .select()
-    .from(programs)
-    .where(and(eq(programs.id, programId), eq(programs.tenantId, tenantId)))
-    .limit(1);
-
-  if (!program) return null;
-
-  const [urls, programConductors] = await Promise.all([
-    db
-      .select()
-      .from(programUrls)
-      .where(eq(programUrls.programId, programId)),
-    db
-      .select({
-        id: conductors.id,
-        name: conductors.name,
-        role: conductors.role,
-        bio: conductors.bio,
-        isActive: conductors.isActive,
-        programId: conductors.programId,
-        createdAt: conductors.createdAt,
-      })
-      .from(conductors)
-      .where(and(eq(conductors.programId, programId), eq(conductors.isActive, true))),
-  ]);
-
-  return { ...program, urls, conductors: programConductors };
-}
+import { AppError } from "../lib/errors.js";
+import {
+  createProgramWithUrls,
+  ensureUniqueProgramSlug,
+  fetchProgramWithUrls,
+  isValidProgramUrl,
+  slugifyProgram,
+  VALID_PROGRAM_URL_TYPES as VALID_URL_TYPES,
+} from "../services/programService.js";
 
 // ---------------------------------------------------------------------------
 // Route registration
@@ -141,65 +65,21 @@ export function registerProgramRoutes(app: Express): void {
         urls?: Array<{ type: string; url: string; label?: string }>;
       };
 
-      if (!name || name.trim() === "") {
-        res.status(400).json({ error: "El nombre del programa es requerido" });
-        return;
-      }
-
-      // Validate urls if provided
-      if (urls && Array.isArray(urls)) {
-        for (const urlItem of urls) {
-          if (!VALID_URL_TYPES.includes(urlItem.type)) {
-            res.status(400).json({
-              error: `Tipo de URL inválido: ${urlItem.type}. Valores permitidos: ${VALID_URL_TYPES.join(", ")}`,
-            });
-            return;
-          }
-          if (!isValidUrl(urlItem.url)) {
-            res.status(400).json({ error: `URL inválida: ${urlItem.url}` });
-            return;
-          }
-        }
-      }
-
-      // Generate slug from name if not provided
-      const slugBase = rawSlug ? slugify(rawSlug) : slugify(name.trim());
-      const finalSlug = await ensureUniqueSlug(slugBase);
-
-      // Transaction: insert program + urls atomically
-      const result = await db.transaction(async (tx) => {
-        const [newProgram] = await tx
-          .insert(programs)
-          .values({
-            tenantId,
-            name: name.trim(),
-            description: description ?? null,
-            schedule: schedule ?? null,
-            slug: finalSlug,
-            isPublic: isPublic ?? false,
-          })
-          .returning();
-
-        let insertedUrls: typeof programUrls.$inferSelect[] = [];
-        if (urls && Array.isArray(urls) && urls.length > 0) {
-          insertedUrls = await tx
-            .insert(programUrls)
-            .values(
-              urls.map((u) => ({
-                programId: newProgram.id,
-                type: u.type,
-                url: u.url,
-                label: u.label ?? null,
-              })),
-            )
-            .returning();
-        }
-
-        return { ...newProgram, urls: insertedUrls };
+      const result = await createProgramWithUrls(tenantId, {
+        name: name ?? "",
+        description,
+        schedule,
+        slug: rawSlug,
+        isPublic,
+        urls,
       });
 
       res.status(201).json({ success: true, program: result });
     } catch (error) {
+      if (error instanceof AppError) {
+        res.status(error.statusCode).json({ error: error.message });
+        return;
+      }
       console.error("[Programs] Error al crear programa:", error);
       res.status(500).json({ error: "Error al crear el programa" });
     }
@@ -264,7 +144,7 @@ export function registerProgramRoutes(app: Express): void {
             });
             return;
           }
-          if (!isValidUrl(urlItem.url)) {
+          if (!isValidProgramUrl(urlItem.url)) {
             res.status(400).json({ error: `URL inválida: ${urlItem.url}` });
             return;
           }
@@ -278,8 +158,8 @@ export function registerProgramRoutes(app: Express): void {
       if (isActive !== undefined) updateData.isActive = isActive;
       if (isPublic !== undefined) updateData.isPublic = isPublic;
       if (rawSlug !== undefined) {
-        const slugBase = slugify(rawSlug);
-        updateData.slug = await ensureUniqueSlug(slugBase, id);
+        const slugBase = slugifyProgram(rawSlug);
+        updateData.slug = await ensureUniqueProgramSlug(slugBase, id);
       }
 
       const result = await db.transaction(async (tx) => {
@@ -388,7 +268,7 @@ export function registerProgramRoutes(app: Express): void {
       }
 
       // Validate url
-      if (!url || !isValidUrl(url)) {
+      if (!url || !isValidProgramUrl(url)) {
         res.status(400).json({ error: "URL inválida o requerida" });
         return;
       }
