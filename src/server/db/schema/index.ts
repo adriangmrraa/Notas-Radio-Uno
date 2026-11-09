@@ -22,6 +22,7 @@ export * from './features.js';
 export * from './persons.js';
 export * from './editorialProfiles.js';
 export * from './transmissions.js';
+export * from './recordings.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -53,6 +54,7 @@ import { tenantFeatures, impersonationSessions } from './features.js';
 import { persons, personPhotos, faceEmbeddings, personProgram } from './persons.js';
 import { editorialProfiles } from './editorialProfiles.js';
 import { transmissions, scheduledTransmissions } from './transmissions.js';
+import { streamRecordings, recordingSegments } from './recordings.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -94,6 +96,8 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   editorialProfiles: many(editorialProfiles),
   transmissions: many(transmissions),
   scheduledTransmissions: many(scheduledTransmissions),
+  streamRecordings: many(streamRecordings),
+  recordingSegments: many(recordingSegments),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -353,6 +357,8 @@ export const transmissionsRelations = relations(transmissions, ({ one }) => ({
     references: [scheduledTransmissions.id],
     relationName: 'ScheduledTransmissionRuns',
   }),
+  // 1-a-1: stream_recordings.transmission_id es UNIQUE.
+  recording: one(streamRecordings),
 }));
 
 export const scheduledTransmissionsRelations = relations(scheduledTransmissions, ({ one, many }) => ({
@@ -364,4 +370,22 @@ export const scheduledTransmissionsRelations = relations(scheduledTransmissions,
     relationName: 'ScheduledTransmissionLastRun',
   }),
   transmissions: many(transmissions, { relationName: 'ScheduledTransmissionRuns' }),
+}));
+
+// ── recordings relations (PD-01: crudo de video) ──────────────────────────────
+export const streamRecordingsRelations = relations(streamRecordings, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [streamRecordings.tenantId], references: [tenants.id] }),
+  transmission: one(transmissions, {
+    fields: [streamRecordings.transmissionId],
+    references: [transmissions.id],
+  }),
+  segments: many(recordingSegments),
+}));
+
+export const recordingSegmentsRelations = relations(recordingSegments, ({ one }) => ({
+  tenant: one(tenants, { fields: [recordingSegments.tenantId], references: [tenants.id] }),
+  recording: one(streamRecordings, {
+    fields: [recordingSegments.recordingId],
+    references: [streamRecordings.id],
+  }),
 }));

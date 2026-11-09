@@ -1,11 +1,11 @@
 /**
  * verify-migration-pglite.mjs — Verificación de migraciones sobre PGlite en
- * memoria (Épica B gate 3, extendido a Épica C PC-01).
+ * memoria (Épica B gate 3, extendido a Épica C PC-01, PC-07, PC-09 y PD-01).
  *
  *   - Levanta @electric-sql/pglite en memoria.
  *   - Aplica en orden TODOS los drizzle/*.sql.
- *   - Aplica 0005, 0006, 0008 y 0009 DOS VECES (prueba de idempotencia).
- *   - Imprime OK + tablas/columnas nuevas de Épica B, Épica C y PC-07.
+ *   - Aplica 0005, 0006, 0008, 0009, 0010 y 0011 DOS VECES (prueba de idempotencia).
+ *   - Imprime OK + tablas/columnas nuevas de Épica B, Épica C, PC-07, PC-09 y PD-01.
  *
  * Limitación documentada: PGlite (WASM) no trae pgvector. Se omiten los
  * statements CREATE EXTENSION vector y los índices USING hnsw, y el tipo
@@ -156,9 +156,9 @@ if (pc02Migration) {
 }
 
 // 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
-//    0009 (membresías N:M) y la 0010 (PC-09 dossier↔emisión) se
-//    aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010']) {
+//    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión) y la 0011
+//    (PD-01 crudo de video) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -377,6 +377,125 @@ if (pc09Idx.length !== 1) {
   process.exit(1);
 }
 
+// 11) PD-01: stream_recordings y recording_segments existen.
+const { rows: pd01Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public'
+    AND tablename IN ('stream_recordings', 'recording_segments')
+  ORDER BY tablename
+`);
+if (pd01Tables.length !== 2) {
+  console.error(`PD-01: faltan tablas del crudo (encontradas: ${pd01Tables.map((r) => r.tablename).join(', ') || 'ninguna'})`);
+  process.exit(1);
+}
+
+// 12) PD-01: columnas clave con tipo, nullabilidad y presencia de DEFAULT.
+const { rows: pd01Cols } = await db.query(`
+  SELECT table_name, column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name IN ('stream_recordings', 'recording_segments')
+`);
+const colInfo = new Map(pd01Cols.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const checkCol = (fqcol, dataType, nullable, needsDefault) => {
+  const c = colInfo.get(fqcol);
+  if (!c) return `falta ${fqcol}`;
+  if (c.data_type !== dataType) return `${fqcol} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `${fqcol} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `${fqcol} sin DEFAULT`;
+  return null;
+};
+const pd01ColErrors = [
+  // stream_recordings
+  ['stream_recordings.id', 'uuid', 'NO', true],
+  ['stream_recordings.tenant_id', 'uuid', 'NO', false],
+  ['stream_recordings.transmission_id', 'uuid', 'NO', false],
+  ['stream_recordings.storage_prefix', 'text', 'NO', false],
+  ['stream_recordings.status', 'character varying', 'NO', true],
+  ['stream_recordings.total_bytes', 'bigint', 'NO', true],
+  ['stream_recordings.started_at', 'timestamp with time zone', 'NO', true],
+  ['stream_recordings.ended_at', 'timestamp with time zone', 'YES', false],
+  ['stream_recordings.created_at', 'timestamp with time zone', 'NO', true],
+  ['stream_recordings.updated_at', 'timestamp with time zone', 'NO', true],
+  // recording_segments
+  ['recording_segments.id', 'uuid', 'NO', true],
+  ['recording_segments.tenant_id', 'uuid', 'NO', false],
+  ['recording_segments.recording_id', 'uuid', 'NO', false],
+  ['recording_segments.sequence', 'integer', 'NO', false],
+  ['recording_segments.start_ms', 'bigint', 'NO', false],
+  ['recording_segments.end_ms', 'bigint', 'YES', false],
+  ['recording_segments.file_ref', 'text', 'NO', false],
+  ['recording_segments.bytes', 'bigint', 'NO', true],
+  ['recording_segments.status', 'character varying', 'NO', true],
+  ['recording_segments.created_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkCol(c, t, n, d)).filter(Boolean);
+if (pd01ColErrors.length > 0) {
+  console.error(`PD-01 columnas incorrectas:\n  ${pd01ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const recStatusDef = colInfo.get('stream_recordings.status')?.column_default ?? '';
+const segStatusDef = colInfo.get('recording_segments.status')?.column_default ?? '';
+if (!recStatusDef.includes("'recording'") || !segStatusDef.includes("'active'")) {
+  console.error(`PD-01: defaults de status incorrectos (stream_recordings=${recStatusDef}, recording_segments=${segStatusDef})`);
+  process.exit(1);
+}
+
+// 13) PD-01: las 4 FKs apuntan a la tabla correcta y borran en cascada.
+const { rows: pd01Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f'
+    AND con.conrelid::regclass::text IN ('stream_recordings', 'recording_segments')
+`);
+const pd01FkMap = new Map(pd01Fks.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const expectedPd01Fks = [
+  'stream_recordings.tenant_id->tenants',
+  'stream_recordings.transmission_id->transmissions',
+  'recording_segments.tenant_id->tenants',
+  'recording_segments.recording_id->stream_recordings',
+];
+const badPd01Fks = expectedPd01Fks.filter((fk) => {
+  const [col, target] = fk.split('->');
+  const row = pd01FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== 'c';
+});
+if (badPd01Fks.length > 0) {
+  console.error(`PD-01: faltan FKs, apuntan mal o no son ON DELETE CASCADE: ${badPd01Fks.join(', ')}`);
+  process.exit(1);
+}
+
+// 14) PD-01: los índices del crudo existen y la unicidad es efectiva.
+const { rows: pd01Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND tablename IN ('stream_recordings', 'recording_segments')
+`);
+const idxByName = new Map(pd01Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPd01Idx = [
+  'stream_recordings_tenant_id_idx',
+  'stream_recordings_transmission_id_idx',
+  'recording_segments_tenant_id_idx',
+  'recording_segments_recording_id_idx',
+  'recording_segments_recording_id_start_ms_idx',
+  'recording_segments_recording_id_sequence_unique',
+];
+const missingPd01Idx = expectedPd01Idx.filter((name) => !idxByName.has(name));
+if (missingPd01Idx.length > 0) {
+  console.error(`PD-01: faltan índices: ${missingPd01Idx.join(', ')}`);
+  process.exit(1);
+}
+const txIdx = idxByName.get('stream_recordings_transmission_id_idx') ?? '';
+const seqIdx = idxByName.get('recording_segments_recording_id_sequence_unique') ?? '';
+if (!/CREATE UNIQUE INDEX/i.test(txIdx) || !/UNIQUE INDEX/i.test(seqIdx)) {
+  console.error('PD-01: transmission_id y/o (recording_id, sequence) no tienen índice UNIQUE');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -385,5 +504,8 @@ console.log('columnas PC-07:', expectedTCols.join(', '));
 console.log('enums PC-07:', Object.entries(expectedEnums).map(([k, v]) => `${k}(${v.join('|')})`).join(', '));
 console.log('fks PC-07:', expectedFks.join(', '));
 console.log('PC-09: guest_dossiers.scheduled_transmission_id (nullable) + FK->scheduled_transmissions + idx');
+console.log('tablas PD-01:', pd01Tables.map((r) => r.tablename).join(', '));
+console.log('fks PD-01 (cascade):', expectedPd01Fks.join(', '));
+console.log('índices PD-01:', expectedPd01Idx.join(', '));
 await db.close();
 process.exit(0);
