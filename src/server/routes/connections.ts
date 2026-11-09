@@ -4,6 +4,8 @@ import { requireAuth } from '../middleware/auth.js';
 import crypto from 'crypto';
 import { socialPortfolios, businessAssets, subscriptions, plans, credentials } from '../db/schema/index.js';
 import { eq, and, sql } from 'drizzle-orm';
+import { encrypt } from '../services/encryptionService.js';
+import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
 
 const router = Router();
 
@@ -182,22 +184,28 @@ router.post('/portfolios/:id/meta', requireAuth, async (req: Request, res: Respo
         await db.insert(credentials).values({
             tenantId,
             name: `META_TOKEN_${portfolioId}`,
-            value: longLivedToken,
+            value: encrypt(longLivedToken),
             category: 'meta',
             isValid: true,
         }).onConflictDoUpdate({
             target: [credentials.tenantId, credentials.name],
-            set: { value: longLivedToken, isValid: true },
+            set: { value: encrypt(longLivedToken), isValid: true },
+        });
+
+        void auditFromRequest(req, AUDIT_ACTIONS.CREDENTIAL_UPDATED, {
+            entityType: 'credential',
+            entityId: `META_TOKEN_${portfolioId}`,
+            metadata: { provider: 'meta', encrypted: true },
         });
 
         await db.insert(credentials).values({
             tenantId,
             name: `META_EXPIRES_${portfolioId}`,
-            value: new Date(Date.now() + expiresIn * 1000).toISOString(),
+            value: encrypt(new Date(Date.now() + expiresIn * 1000).toISOString()),
             category: 'meta',
         }).onConflictDoUpdate({
             target: [credentials.tenantId, credentials.name],
-            set: { value: new Date(Date.now() + expiresIn * 1000).toISOString() },
+            set: { value: encrypt(new Date(Date.now() + expiresIn * 1000).toISOString()) },
         });
 
         // Discover pages
@@ -318,23 +326,29 @@ router.post('/portfolios/:id/twitter', requireAuth, async (req: Request, res: Re
         await db.insert(credentials).values({
             tenantId,
             name: `TWITTER_TOKEN_${portfolioId}`,
-            value: tokenData.access_token,
+            value: encrypt(tokenData.access_token),
             category: 'twitter',
             isValid: true,
         }).onConflictDoUpdate({
             target: [credentials.tenantId, credentials.name],
-            set: { value: tokenData.access_token, isValid: true },
+            set: { value: encrypt(tokenData.access_token), isValid: true },
+        });
+
+        void auditFromRequest(req, AUDIT_ACTIONS.CREDENTIAL_UPDATED, {
+            entityType: 'credential',
+            entityId: `TWITTER_TOKEN_${portfolioId}`,
+            metadata: { provider: 'twitter', encrypted: true, hasRefresh: Boolean(tokenData.refresh_token) },
         });
 
         if (tokenData.refresh_token) {
             await db.insert(credentials).values({
                 tenantId,
                 name: `TWITTER_REFRESH_${portfolioId}`,
-                value: tokenData.refresh_token,
+                value: encrypt(tokenData.refresh_token),
                 category: 'twitter',
             }).onConflictDoUpdate({
                 target: [credentials.tenantId, credentials.name],
-                set: { value: tokenData.refresh_token },
+                set: { value: encrypt(tokenData.refresh_token) },
             });
         }
 

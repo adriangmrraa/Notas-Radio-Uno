@@ -17,12 +17,13 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatures } from '../hooks/useFeature';
 
 const NAV_MAIN = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
-  { to: '/clips', icon: Film, label: 'Clips' },
-  { to: '/editor', icon: Workflow, label: 'Pipeline Editor' },
+  { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
+  { to: '/editor', icon: Workflow, label: 'Pipeline Editor', feature: 'pipeline_editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
   { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
@@ -41,7 +42,14 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { user, logout } = useAuth();
+  const { features } = useFeatures();
   const [pendingCount, setPendingCount] = useState(0);
+
+  // Un flag apagado oculta la entrada del menú (la API igual valida del lado server).
+  const navMain = NAV_MAIN.filter((item) => {
+    const feature = (item as { feature?: string }).feature;
+    return !feature || features[feature]?.enabled !== false;
+  });
 
   useEffect(() => {
     fetch('/api/review?status=pending_review&limit=1', { credentials: 'include' })
@@ -83,7 +91,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       {/* Main nav */}
       <nav className="sidebar-nav">
         <div className="sidebar-nav-label">Menu</div>
-        {NAV_MAIN.map(({ to, icon: Icon, label }) => (
+        {navMain.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}

@@ -2,6 +2,8 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import * as dotenv from "dotenv";
 import multer from "multer";
@@ -97,7 +99,14 @@ app.set("trust proxy", 1);
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || true,
+    // Mismo criterio que la API: orígenes explícitos en producción.
+    origin: process.env.FRONTEND_URL
+      ? [process.env.FRONTEND_URL, ...(process.env.ALLOWED_ORIGINS ?? "").split(",")]
+          .map((o) => o?.trim())
+          .filter((o): o is string => Boolean(o))
+      : process.env.NODE_ENV === "production"
+        ? false
+        : true,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -135,10 +144,73 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
-const CORS_ORIGIN = process.env.FRONTEND_URL || true;
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
-app.use(express.json());
+// ---------------------------------------------------------------------------
+// Hardening: headers de seguridad, CORS estricto y rate limit global
+// ---------------------------------------------------------------------------
+
+// CSP queda a cargo del hosting del bundle; el resto de los headers de helmet
+// se aplican tal cual (HSTS, nosniff, frameguard, referrer-policy, etc.).
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // imágenes/íconos servidos a la landing
+}));
+
+/**
+ * CORS estricto: sólo los orígenes declarados.
+ *   FRONTEND_URL  → origen principal (obligatorio en producción)
+ *   ALLOWED_ORIGINS → lista extra separada por comas
+ * En desarrollo, sin env, se permite localhost para no romper `npm run dev`.
+ */
+function buildAllowedOrigins(): string[] {
+  const configured = [process.env.FRONTEND_URL, ...(process.env.ALLOWED_ORIGINS ?? "").split(",")]
+    .map((origin) => origin?.trim())
+    .filter((origin): origin is string => Boolean(origin));
+
+  if (configured.length > 0) return configured;
+
+  if (process.env.NODE_ENV === "production") {
+    console.warn("[CORS] FRONTEND_URL no configurada: se rechazan todos los orígenes cruzados.");
+    return [];
+  }
+
+  return [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://localhost:3001",
+  ];
+}
+
+const ALLOWED_ORIGINS = buildAllowedOrigins();
+
+app.use(cors({
+  origin(origin, callback) {
+    // Sin Origin = requests server-to-server, curl o mismo origen.
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    console.warn(`[CORS] Origen rechazado: ${origin}`);
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  maxAge: 600,
+}));
+
+app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
+
+/** Límite base para toda la API (los endpoints sensibles tienen el suyo). */
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === "/api/health",
+  message: { error: "Demasiadas solicitudes. Esperá un minuto." },
+});
+app.use("/api", apiLimiter);
 
 // ---------------------------------------------------------------------------
 // Autorización global de /api

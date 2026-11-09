@@ -63,6 +63,9 @@ export const AUDIT_ACTIONS = {
   ADMIN_TENANT_SUSPENDED: 'admin.tenant_suspended',
   ADMIN_TENANT_REACTIVATED: 'admin.tenant_reactivated',
   ADMIN_FEATURE_OVERRIDE: 'admin.feature_override',
+  CREDENTIAL_UPDATED: 'credentials.updated',
+  CREDENTIAL_DELETED: 'credentials.deleted',
+
   ADMIN_IMPERSONATION_START: 'admin.impersonation_start',
   ADMIN_IMPERSONATION_END: 'admin.impersonation_end',
 } as const;

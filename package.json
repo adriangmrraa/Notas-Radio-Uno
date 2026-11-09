@@ -57,6 +57,7 @@
     "express-rate-limit": "^8.3.1",
     "form-data": "^4.0.0",
     "googleapis": "^144.0.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.7.0",
     "mercadopago": "^2.12.0",

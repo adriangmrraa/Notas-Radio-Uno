@@ -10,7 +10,18 @@ const router = Router();
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
     message: { error: 'Demasiados intentos. Intenta de nuevo en 15 minutos.' },
+});
+
+/** Operaciones sobre tokens (reset, verify): mucho más acotadas. */
+const tokenLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Demasiados intentos con tokens. Espera 15 minutos.' },
 });
 
 const registerSchema = z.object({
@@ -75,7 +86,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response) => {
 });
 
 // GET /api/auth/verify-email?token=xxx
-router.get('/verify-email', async (req: Request, res: Response) => {
+router.get('/verify-email', tokenLimiter, async (req: Request, res: Response) => {
     try {
         const token = req.query.token as string;
         if (!token) {
@@ -111,7 +122,7 @@ router.post('/forgot-password', authLimiter, async (req: Request, res: Response)
 });
 
 // POST /api/auth/reset-password
-router.post('/reset-password', async (req: Request, res: Response) => {
+router.post('/reset-password', tokenLimiter, async (req: Request, res: Response) => {
     try {
         const { token, password } = req.body;
         if (!token || !password) {

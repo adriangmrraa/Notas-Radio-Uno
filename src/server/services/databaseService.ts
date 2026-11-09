@@ -229,8 +229,10 @@ export async function getCredential(name: string, tenantId?: string): Promise<st
     return decrypt(rows[0].value);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[DB] Error desencriptando credencial ${name}:`, message);
-    return null;
+    // Credenciales escritas antes de cifrar (legacy): se devuelven tal cual para
+    // no romper integraciones y se avisa para migrarlas.
+    console.warn(`[DB] Credencial ${name} no está cifrada o no se pudo desencriptar: ${message}`);
+    return rows[0].value;
   }
 }
 
