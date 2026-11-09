@@ -44,6 +44,8 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const WRITE_GUARD_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/billing\/webhooks\//,
+  // Aceptar una invitación es público: la prueba de identidad es el token.
+  /^\/api\/team\/invite\//,
 ];
 
 function isExemptFromWriteGuard(originalUrl: string): boolean {

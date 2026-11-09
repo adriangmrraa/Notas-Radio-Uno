@@ -34,6 +34,7 @@ import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { optionalAuth, viewerWriteGuard } from "./middleware/authz.js";
 import { billingRouter } from "./routes/billing.js";
+import { teamRouter } from "./routes/team.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
@@ -188,6 +189,7 @@ app.get("/api/get-transcriptions", (_req, res) => {
 // ---------------------------------------------------------------------------
 app.use("/api/auth", authRouter);
 app.use("/api/billing", billingRouter);
+app.use("/api/team", teamRouter);
 app.use("/api/connections", connectionsRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/images", imageEditRouter);

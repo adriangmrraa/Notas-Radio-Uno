@@ -81,3 +81,37 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
         </div>
     `);
 }
+
+/**
+ * Invitación a sumarse al equipo de un tenant.
+ * El token viaja en el link: es la única prueba de identidad necesaria para
+ * aceptar (el mail ya validó el email del invitado).
+ */
+export async function sendTeamInviteEmail(
+    email: string,
+    opts: {
+        tenantName: string;
+        inviterName: string;
+        role: string;
+        token: string;
+        expiresInHours: number;
+    },
+): Promise<void> {
+    const url = `${FRONTEND_URL}/accept-invite?token=${opts.token}`;
+    const roleLabel = opts.role === 'viewer' ? 'lector (solo lectura)' : 'editor';
+
+    await sendEmail(email, `Te invitaron a ${opts.tenantName} - PeriodistApp`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Hola!</h2>
+            <p><strong>${opts.inviterName}</strong> te invitó a sumarte al equipo de
+            <strong>${opts.tenantName}</strong> en PeriodistApp como <strong>${roleLabel}</strong>.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${url}" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Aceptar invitación
+                </a>
+            </p>
+            <p style="color: #666; font-size: 14px;">Este enlace expira en ${opts.expiresInHours} horas.</p>
+            <p style="color: #666; font-size: 14px;">Si no esperabas esta invitación, ignorá este email.</p>
+        </div>
+    `);
+}
