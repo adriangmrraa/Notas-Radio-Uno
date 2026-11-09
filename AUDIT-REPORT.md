@@ -9,7 +9,7 @@ Audited the read-only kanban export against `docs/PRODUCT-VISION.md` and all SDD
 | Finding | Evidence | Correction |
 |---|---|---|
 | B-1 and B-2 were still described as blocking questions and B-1 mitigation still promised YouTube "best-effort". | `proposal.md` former Open Questions and R-1; owner decision in kanban B-1/B-2 cards | Replaced questions with binding resolved decisions: YouTube FULL via VPS/proxies from T1, and N:M memberships plus active tenant from v1. |
-| The proposal deferred multi-brand users despite B-6. | `proposal.md` former OUT scope multi-brand item | Removed the contradictory OUT item and documented the plan limits for brands. |
+| The proposal deferred multi-brand users despite B-2. | `proposal.md` former OUT scope multi-brand item | Removed the contradictory OUT item and documented the plan limits for brands. |
 | Product backlog names diverged from the SDD data model. | `PRODUCT-VISION.md` PA-01/PB-01/PC-01/PC-02/PE-03/PF-09 | Updated the tickets to `user_tenants`, `tenant_quotas`/`quota_operations`, and `persons` vocabulary. |
 | Schema violated its own tenant-domain convention for `person_transmission`; plan limits used by invites/Zernio were absent. | `design/schema.md` lines 3, 56-58, 137 | Added `tenant_id`, tenant indexes and same-tenant validation to `person_transmission`; added `max_team_members`, `max_tenants`, and `max_connected_platforms` to plans. |
 | The original SDD had 21 specs, but two kanban capabilities had no explicit spec/task. | `design.md` line 3; `tasks.md` former T-60 and PE mapping | Added `analysis-provider-registry` (PE-01) and `platform-ux` (PH) specs, corrected the count to 23, and added T-63 through T-67. |
@@ -25,10 +25,10 @@ The kanban export still has every checklist item unchecked, while `tasks.md` now
 
 1. After validating the gates for T-01..T-05, reflect their verified sub-item progress in the kanban; keep unrelated items open.
 2. Replace B-1 and B-2 "question" card bodies with immutable decision records, or archive them. Their status is `done` but their copy still asks for a decision.
-2. Update PA-01 to the final N:M/auth schema and PB-01 to `tenant_quotas` + `quota_operations`; do not create the obsolete `admin_users` or `usage_cycles` merely to satisfy old card text.
-3. Add explicit checklist items: PA security hardening, PB billing page, PC editorial-profile UI, PE provider registry, PF content factory, and PI request/transmission observability. They correspond to T-64, T-65, T-66, T-63, T-67, and T-68.
-4. Keep A -> I as the product order, but permit GATE-1 before PC and GATE-2 before PG. These are risk decisions, not epic delivery reordering.
-5. Amend PD-07 wording: YouTube is a v1 production requirement through dedicated VPS/proxy infrastructure; upload is a continuity fallback, not a substitute.
+3. Update PA-01 to the final N:M/auth schema and PB-01 to `tenant_quotas` + `quota_operations`; do not create the obsolete `admin_users` or `usage_cycles` merely to satisfy old card text.
+4. Add explicit checklist items: PA security hardening, PB billing page, PC editorial-profile UI, PE provider registry, PF content factory, and PI request/transmission observability. They correspond to T-64, T-65, T-66, T-63, T-67, and T-68.
+5. Keep A -> I as the product order, but permit GATE-1 before PC and GATE-2 before PG. These are risk decisions, not epic delivery reordering.
+6. Amend PD-07 wording: YouTube is a v1 production requirement through dedicated VPS/proxy infrastructure; upload is a continuity fallback, not a substitute.
 
 ## Final recommended execution order
 
