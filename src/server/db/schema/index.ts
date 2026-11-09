@@ -25,7 +25,17 @@ import { users } from './users.js';
 import { credentials } from './credentials.js';
 import { publications, transcriptions } from './publications.js';
 import { customAgents, pipelineConfigs } from './agents.js';
-import { plans, subscriptions, usageRecords, invoices } from './billing.js';
+import {
+  plans,
+  subscriptions,
+  usageRecords,
+  invoices,
+  usageCycles,
+  quotaOperations,
+  planAddons,
+  addonPurchases,
+  billingEvents,
+} from './billing.js';
 import { scheduledJobs, jobExecutions } from './jobs.js';
 import { socialPortfolios, businessAssets } from './social.js';
 import { settings, notifications, auditLog, dailyMetrics, teamInvitations, refreshTokens } from './misc.js';
@@ -64,6 +74,10 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   guestDossiers: many(guestDossiers),
   clips: many(clips),
   features: many(tenantFeatures),
+  usageCycles: many(usageCycles),
+  quotaOperations: many(quotaOperations),
+  addonPurchases: many(addonPurchases),
+  billingEvents: many(billingEvents),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -102,6 +116,31 @@ export const pipelineConfigsRelations = relations(pipelineConfigs, ({ one }) => 
 // ── billing relations ─────────────────────────────────────────────────────────
 export const plansRelations = relations(plans, ({ many }) => ({
   subscriptions: many(subscriptions),
+}));
+
+export const usageCyclesRelations = relations(usageCycles, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [usageCycles.tenantId], references: [tenants.id] }),
+  quotaOperations: many(quotaOperations),
+  addonPurchases: many(addonPurchases),
+}));
+
+export const quotaOperationsRelations = relations(quotaOperations, ({ one }) => ({
+  tenant: one(tenants, { fields: [quotaOperations.tenantId], references: [tenants.id] }),
+  usageCycle: one(usageCycles, { fields: [quotaOperations.usageCycleId], references: [usageCycles.id] }),
+}));
+
+export const planAddonsRelations = relations(planAddons, ({ many }) => ({
+  purchases: many(addonPurchases),
+}));
+
+export const addonPurchasesRelations = relations(addonPurchases, ({ one }) => ({
+  tenant: one(tenants, { fields: [addonPurchases.tenantId], references: [tenants.id] }),
+  usageCycle: one(usageCycles, { fields: [addonPurchases.usageCycleId], references: [usageCycles.id] }),
+  addon: one(planAddons, { fields: [addonPurchases.addonId], references: [planAddons.id] }),
+}));
+
+export const billingEventsRelations = relations(billingEvents, ({ one }) => ({
+  tenant: one(tenants, { fields: [billingEvents.tenantId], references: [tenants.id] }),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one, many }) => ({

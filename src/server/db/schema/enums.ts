@@ -85,6 +85,30 @@ export const PublicationStatus = {
 } as const;
 export type PublicationStatus = (typeof PublicationStatus)[keyof typeof PublicationStatus];
 
+// ── UsageCycleStatus ──────────────────────────────────────────────────────────
+export const usageCycleStatusEnum = pgEnum('UsageCycleStatus', ['open', 'closed']);
+export const UsageCycleStatus = { open: 'open', closed: 'closed' } as const;
+export type UsageCycleStatus = (typeof UsageCycleStatus)[keyof typeof UsageCycleStatus];
+
+// ── QuotaOperationStatus ──────────────────────────────────────────────────────
+export const quotaOperationStatusEnum = pgEnum('QuotaOperationStatus', ['reserved', 'consumed', 'released']);
+export const QuotaOperationStatus = {
+  reserved: 'reserved',
+  consumed: 'consumed',
+  released: 'released',
+} as const;
+export type QuotaOperationStatus = (typeof QuotaOperationStatus)[keyof typeof QuotaOperationStatus];
+
+// ── AddonPurchaseStatus ───────────────────────────────────────────────────────
+export const addonPurchaseStatusEnum = pgEnum('AddonPurchaseStatus', ['pending', 'paid', 'failed', 'refunded']);
+export const AddonPurchaseStatus = {
+  pending: 'pending',
+  paid: 'paid',
+  failed: 'failed',
+  refunded: 'refunded',
+} as const;
+export type AddonPurchaseStatus = (typeof AddonPurchaseStatus)[keyof typeof AddonPurchaseStatus];
+
 // ── FeatureSource ─────────────────────────────────────────────────────────────
 // Origen del valor efectivo de un feature flag de tenant:
 //   plan     → valor heredado del plan contratado
