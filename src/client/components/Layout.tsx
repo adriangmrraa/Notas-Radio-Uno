@@ -9,6 +9,7 @@ import { ImpersonationBanner } from './ImpersonationBanner';
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/persons': 'Personas',
+  '/editorial': 'Línea editorial',
   '/editor': 'Pipeline Editor',
   '/connections': 'Conexiones',
   '/scheduled': 'Programados',
@@ -20,6 +21,7 @@ const PAGE_TITLES: Record<string, string> = {
 const PAGE_DESCRIPTIONS: Record<string, string> = {
   '/dashboard': 'Centro de control de tu newsroom',
   '/persons': 'Biblioteca de personas del canal',
+  '/editorial': 'Tono, reglas y formatos del canal y por programa',
   '/editor': 'Disena el flujo de tu pipeline',
   '/connections': 'Gestiona tus plataformas',
   '/scheduled': 'Automatiza tus capturas',

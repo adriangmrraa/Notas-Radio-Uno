@@ -17,6 +17,7 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
 import { ProgramsPage } from './pages/ProgramsPage';
 import { PersonsPage } from './pages/PersonsPage';
+import { EditorialPage } from './pages/EditorialPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ClipsPage } from './pages/ClipsPage';
 import PipelineEditor from './editor/PipelineEditor';
@@ -53,6 +54,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/editor" element={<PipelineEditor />} />
               <Route path="/programs" element={<ProgramsPage />} />
               <Route path="/persons" element={<PersonsPage />} />
+              <Route path="/editorial" element={<EditorialPage />} />
               <Route path="/connections/*" element={<ConnectionsPage />} />
               <Route path="/scheduled" element={<ScheduledJobsPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />

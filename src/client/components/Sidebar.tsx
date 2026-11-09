@@ -16,6 +16,7 @@ import {
   Film,
   ShieldCheck,
   Users,
+  PenLine,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatures } from '../hooks/useFeature';
@@ -27,6 +28,7 @@ const NAV_MAIN = [
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor', feature: 'pipeline_editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },
   { to: '/persons', icon: Users, label: 'Personas' },
+  { to: '/editorial', icon: PenLine, label: 'Línea editorial' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
   { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },
