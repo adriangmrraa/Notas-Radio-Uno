@@ -5,11 +5,16 @@ import { AutoPipeline } from './pipelineService.js';
 import { jobNotify } from './notificationService.js';
 import { trackPipelineMinutes, trackPublication } from './usageTracker.js';
 import { scheduledJobs, jobExecutions } from '../db/schema/index.js';
+import { releaseStaleOperations } from './transmissionMeteringService.js';
 import { eq } from 'drizzle-orm';
 
 const MAX_RETRY_ATTEMPTS = 15; // 15 x 2min = 30 min window
 const RETRY_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_CONCURRENT_JOBS = 5;
+
+/** Mantenimiento de billing cada N ticks (~15 min con tick de 60s). */
+const MAINTENANCE_EVERY_N_TICKS = 15;
+let maintenanceCounter = MAINTENANCE_EVERY_N_TICKS - 1; // primer tick ya corre mantenimiento
 
 // Active job pipelines — separate from manual pipeline instances
 const activeJobs: Map<string, { pipeline: AutoPipeline; executionId: string; startTime: Date; timeoutHandle: ReturnType<typeof setTimeout> }> = new Map();
@@ -41,6 +46,19 @@ export function initJobScheduler(io: Server) {
  * Main loop: find jobs that should run NOW and start them.
  */
 async function checkAndRunJobs() {
+    // Mantenimiento de cuota (~cada 15 min). Envuelto en try/catch: una falla
+    // de cuota NUNCA tumba el scheduler. Importante: sólo libera reservas
+    // stale — ninguna transmisión activa se corta ni se descuenta acá.
+    maintenanceCounter++;
+    if (maintenanceCounter >= MAINTENANCE_EVERY_N_TICKS) {
+        maintenanceCounter = 0;
+        try {
+            await releaseStaleOperations();
+        } catch (err) {
+            console.error('[JobScheduler] Error liberando reservas de cuota stale:', err);
+        }
+    }
+
     const now = new Date();
     const currentDay = now.getDay(); // 0=Sunday
     const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;

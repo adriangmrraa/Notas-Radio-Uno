@@ -1,10 +1,17 @@
 import type { Express, Request, Response } from "express";
 import type { Server } from "socket.io";
 import type { PipelineConfig, PipelineStatus } from "../../shared/types.js";
+import { randomUUID } from "crypto";
 
 import { AutoPipeline } from "../services/pipelineService.js";
 import { TONE_PROMPTS, STRUCTURE_PROMPTS } from "../services/newsService.js";
 import { requireAuth, requireActiveSubscription } from "../middleware/auth.js";
+import {
+  consumeTransmission,
+  releaseTransmission,
+  registerActiveTransmissionChecker,
+  RELEASE_WINDOW_MINUTES,
+} from "../services/transmissionMeteringService.js";
 import { db } from "../db/index.js";
 import { programs } from "../db/schema/programs.js";
 import { eq, and } from "drizzle-orm";
@@ -13,6 +20,11 @@ import { eq, and } from "drizzle-orm";
 const pipelines: Map<string, AutoPipeline> = new Map();
 
 export function registerPipelineRoutes(app: Express, io: Server): void {
+  // El liberador de reservas stale consulta este mapa para saber qué
+  // transmisiones siguen vivas. Se usa SÓLO para no liberar cuota de algo que
+  // corre — jamás para detener un pipeline por cuota.
+  registerActiveTransmissionChecker((tenantId) => Boolean(pipelines.get(tenantId)?.running));
+
   // ------------------------------------------------------------------
   // POST /api/pipeline/start
   // ------------------------------------------------------------------
@@ -56,23 +68,60 @@ export function registerPipelineRoutes(app: Express, io: Server): void {
         return;
       }
 
+      // ── Medición de cuota (Épica B) ──────────────────────────────────────
+      // Guarda de regresión: el early return de arriba garantiza que el
+      // medidor NUNCA se consulta con un pipeline activo — una transmisión
+      // en curso jamás se corta ni se re-cobra por cuota. No agregar chequeos
+      // de cuota en /stop, en el loop del pipeline ni en el scheduler.
+      const operationId = randomUUID();
+      const consumption = await consumeTransmission({
+        tenantId,
+        operationId,
+        transmissionRef: url,
+      });
+
+      if (!consumption.allowed) {
+        res.status(402).json({
+          error: "No te quedan transmisiones en este ciclo",
+          code: "QUOTA_EXCEEDED",
+          quota: consumption.quota,
+          upsell: { canBuyAddons: true, canUpgrade: true },
+        });
+        return;
+      }
+
       const pipeline = new AutoPipeline(io, tenantId);
       pipelines.set(tenantId, pipeline);
 
-      await pipeline.start({
-        url,
-        tone: tone || "formal",
-        structure: structure || "completa",
-        imageModel: imageModel || "gemini",
-        segmentDuration: segmentDuration || 120,
-        autoPublish: autoPublish !== false,
-        ...(programId ? { programId } : {}),
-      });
+      const startedAt = Date.now();
+      try {
+        await pipeline.start({
+          url,
+          tone: tone || "formal",
+          structure: structure || "completa",
+          imageModel: imageModel || "gemini",
+          segmentDuration: segmentDuration || 120,
+          autoPublish: autoPublish !== false,
+          ...(programId ? { programId } : {}),
+        });
+      } catch (startError) {
+        // Si el arranque falla dentro de la ventana la transmisión no se cobra:
+        // nunca se cobra una transmisión que no llegó a iniciar. Pasada la
+        // ventana, la reserva queda consumida (y si queda stale la libera el
+        // scheduler cuando el pipeline ya no esté activo).
+        if (Date.now() - startedAt < RELEASE_WINDOW_MINUTES * 60_000) {
+          await releaseTransmission({ tenantId, operationId, reason: "start_failed" }).catch((releaseErr) => {
+            console.error(`[Pipeline][${tenantId}] No se pudo liberar la reserva de cuota:`, releaseErr);
+          });
+        }
+        throw startError;
+      }
 
       res.json({
         success: true,
         message: "Pipeline autonomo iniciado.",
         config: pipeline.config,
+        usage: { operationId, remaining: consumption.quota.remaining },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

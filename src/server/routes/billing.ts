@@ -5,6 +5,7 @@ import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireOwner } from '../middleware/authz.js';
 import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
+import { getQuotaStatus } from '../services/transmissionMeteringService.js';
 import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc } from 'drizzle-orm';
@@ -137,6 +138,18 @@ router.get('/usage', requireAuth, async (req: Request, res: Response) => {
     } catch (err) {
         console.error('[Billing] Error fetching usage:', err);
         res.status(500).json({ error: 'Error al obtener uso' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/billing/quota — Estado de transmisiones del ciclo vigente
+// ---------------------------------------------------------------------------
+router.get('/quota', requireAuth, async (req: Request, res: Response) => {
+    try {
+        res.json(await getQuotaStatus(req.auth!.tenantId));
+    } catch (err) {
+        console.error('[Billing] Error fetching quota:', err);
+        res.status(500).json({ error: 'Error al obtener cuota de transmisiones' });
     }
 });
 
