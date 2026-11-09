@@ -24,6 +24,7 @@ import { AUDIT_ACTIONS } from '../services/auditService.js';
 import { recordAuditEvent } from '../services/auditService.js';
 import type { UserRole } from '../db/schema/enums.js';
 import type { AuthPayload } from './auth.js';
+import { getActiveMembership } from '../services/membershipService.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
@@ -75,11 +76,12 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   }
 
   // En métodos que mutan validamos rol/estado contra la DB: el JWT es un claim,
-  // no una fuente de verdad para permisos.
+  // no una fuente de verdad para permisos. El rol efectivo sale SIEMPRE de la
+  // membresía del tenant activo (decisión B-2).
   if (!SAFE_METHODS.has(req.method)) {
     try {
       const [row] = await db
-        .select({ role: users.role, status: users.status, isPlatformAdmin: users.isPlatformAdmin })
+        .select({ status: users.status, isPlatformAdmin: users.isPlatformAdmin })
         .from(users)
         .where(eq(users.id, payload.userId))
         .limit(1);
@@ -89,10 +91,29 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
         next();
         return;
       }
-      payload.role = row.role;
       payload.isPlatformAdmin = row.isPlatformAdmin;
+
+      const activeTenantId = payload.activeTenantId ?? (payload.tenantId || null);
+      if (activeTenantId) {
+        const membership = await getActiveMembership(payload.userId, activeTenantId);
+        if (!membership) {
+          req.authBlocked = 'membership';
+          req.authBlockedDetail = {
+            status: 403,
+            code: 'MEMBERSHIP_REVOKED',
+            error: 'Perdiste el acceso a esta organización',
+          };
+          next();
+          return;
+        }
+        payload.activeTenantId = activeTenantId;
+        payload.tenantId = activeTenantId;
+        payload.role = membership.role;
+      } else {
+        payload.tenantId = '';
+      }
     } catch (err) {
-      console.error('[Authz] No se pudo refrescar rol desde la DB:', err);
+      console.error('[Authz] No se pudo refrescar la membresía desde la DB:', err);
     }
   }
 

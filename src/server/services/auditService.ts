@@ -37,6 +37,7 @@ export const AUDIT_ACTIONS = {
   EMAIL_VERIFIED: 'auth.email_verified',
   PASSWORD_RESET_REQUEST: 'auth.password_reset_request',
   PASSWORD_RESET: 'auth.password_reset',
+  TENANT_SWITCHED: 'auth.tenant_switched',
   AUTHZ_DENIED: 'authz.denied',
 
   INVITE_CREATED: 'team.invite_created',
