@@ -52,7 +52,7 @@ function toDateString(date: Date, timeZone: string = DEFAULT_TIMEZONE): string {
 }
 
 /** Email + nombre del owner del tenant (tenants.ownerId, fallback role='owner'). */
-async function resolveOwnerContact(tenantId: string): Promise<{ email: string; name: string } | null> {
+export async function resolveOwnerContact(tenantId: string): Promise<{ email: string; name: string } | null> {
   const [tenant] = await db.select({ ownerId: tenants.ownerId }).from(tenants)
     .where(eq(tenants.id, tenantId)).limit(1);
 

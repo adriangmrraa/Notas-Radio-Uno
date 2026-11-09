@@ -26,6 +26,8 @@ import {
 import { AppError } from '../lib/errors.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { getOrCreateUsageCycle } from './transmissionMeteringService.js';
+import { resolveOwnerContact } from './subscriptionLifecycleService.js';
+import { sendAddonPurchasedEmail } from './emailService.js';
 import { getStripe, getMercadoPago } from './billingProviders.js';
 
 // ── Catálogo ──────────────────────────────────────────────────────────────────
@@ -210,6 +212,13 @@ export async function applyAddonPurchase(input: {
     entityId: purchase.id,
     metadata: { provider: input.provider, transmissions: purchase.transmissionsGranted, externalId: input.externalId },
   });
+
+  // Email de add-on acreditado (PB-09): best-effort, nunca rompe la compra.
+  const owner = await resolveOwnerContact(purchase.tenantId);
+  if (owner) {
+    await sendAddonPurchasedEmail(owner.email, owner.name, purchase.transmissionsGranted, expiresAt)
+      .catch((err) => console.error('[Addons] Error enviando email de add-on:', err));
+  }
 
   return { applied: true, transmissionsGranted: purchase.transmissionsGranted };
 }

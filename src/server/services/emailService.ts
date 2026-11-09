@@ -193,6 +193,27 @@ export async function sendPaymentFailedEmail(
     `);
 }
 
+export async function sendAddonPurchasedEmail(
+    email: string,
+    name: string,
+    transmissions: number,
+    expiresAt: Date,
+): Promise<void> {
+    const date = expiresAt.toLocaleDateString('es-AR');
+    await sendEmail(email, `+${transmissions} transmisiones acreditadas - PeriodistApp`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Listo ${name}!</h2>
+            <p>Acreditamos <strong>${transmissions} transmisiones</strong> adicionales a tu ciclo vigente.</p>
+            <p>Están disponibles hasta el <strong>${date}</strong> (fin del ciclo actual) y no se acumulan al siguiente período.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Ver mi uso
+                </a>
+            </p>
+        </div>
+    `);
+}
+
 export async function sendSubscriptionSuspendedEmail(email: string, name: string): Promise<void> {
     await sendEmail(email, 'Tu suscripción fue suspendida - PeriodistApp', `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
