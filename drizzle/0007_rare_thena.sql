@@ -74,7 +74,7 @@ SELECT
   c."tenant_id",
   c."person_id",
   c."program_id",
-  NULLIF(BTRIM(c."role"), ''),
+  NULLIF(LEFT(BTRIM(c."role"), 80), ''),
   true
 FROM "conductors" c
 INNER JOIN "programs" p
@@ -91,7 +91,7 @@ SELECT
   g."tenant_id",
   g."person_id",
   g."program_id",
-  NULLIF(BTRIM(g."role"), ''),
+  NULLIF(LEFT(BTRIM(g."role"), 80), ''),
   false
 FROM "guests" g
 INNER JOIN "programs" p
