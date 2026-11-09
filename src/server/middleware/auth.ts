@@ -101,6 +101,26 @@ export async function requireActiveSubscription(req: Request, res: Response, nex
         return;
     }
 
+    // past_due DENTRO de la gracia: el servicio sigue (el dunning no corta el
+    // día 1). Se informan los días restantes en header para que el cliente
+    // pueda avisar. Fuera de gracia → 402 PAYMENT_OVERDUE.
+    if (subscription.status === 'past_due') {
+        const now = new Date();
+        if (subscription.graceEndsAt && subscription.graceEndsAt > now) {
+            const daysLeft = Math.ceil((subscription.graceEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+            res.setHeader('X-Grace-Days-Remaining', String(daysLeft));
+            next();
+            return;
+        }
+        res.status(402).json({
+            error: 'Pago vencido: actualizá tu medio de pago para seguir usando el servicio',
+            code: 'PAYMENT_OVERDUE',
+            status: 'past_due',
+            graceDaysRemaining: 0,
+        });
+        return;
+    }
+
     const activeStatuses = ['trialing', 'active'];
     if (!activeStatuses.includes(subscription.status)) {
         res.status(402).json({

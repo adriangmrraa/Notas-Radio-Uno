@@ -6,6 +6,7 @@ import { jobNotify } from './notificationService.js';
 import { trackPipelineMinutes, trackPublication } from './usageTracker.js';
 import { scheduledJobs, jobExecutions } from '../db/schema/index.js';
 import { releaseStaleOperations } from './transmissionMeteringService.js';
+import { evaluateTransitions } from './subscriptionLifecycleService.js';
 import { eq } from 'drizzle-orm';
 
 const MAX_RETRY_ATTEMPTS = 15; // 15 x 2min = 30 min window
@@ -33,6 +34,12 @@ export function initJobScheduler(io: Server) {
 
     if (schedulerInterval) clearInterval(schedulerInterval);
 
+    // Barrido de ciclo de vida de suscripciones al arrancar (try/catch: una
+    // falla nunca tumba el scheduler ni el boot del server).
+    evaluateTransitions().catch((err) => {
+        console.error('[JobScheduler] Error en evaluateTransitions (startup):', err);
+    });
+
     schedulerInterval = setInterval(() => {
         checkAndRunJobs().catch((err) => {
             console.error('[JobScheduler] Error in check loop:', err);
@@ -56,6 +63,14 @@ async function checkAndRunJobs() {
             await releaseStaleOperations();
         } catch (err) {
             console.error('[JobScheduler] Error liberando reservas de cuota stale:', err);
+        }
+        // Ciclo de vida de suscripciones: trials vencidos, gracia agotada,
+        // cancelaciones a fin de período y pendingPlan de MP. Todo en
+        // try/catch: nunca tumba el scheduler ni toca pipelines activos.
+        try {
+            await evaluateTransitions();
+        } catch (err) {
+            console.error('[JobScheduler] Error en evaluateTransitions:', err);
         }
     }
 

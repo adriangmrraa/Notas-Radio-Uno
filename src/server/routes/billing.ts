@@ -16,6 +16,7 @@ import {
     reactivateSubscription,
 } from '../services/billingService.js';
 import { listAddons, createAddonCheckout, applyAddonPurchase } from '../services/addonService.js';
+import { handlePaymentSucceeded, handlePaymentFailed } from '../services/subscriptionLifecycleService.js';
 import { AppError } from '../lib/errors.js';
 import { plans, subscriptions, usageRecords, invoices, addonPurchases } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
@@ -577,24 +578,18 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     billingPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
                 });
 
-                // Pago exitoso: la suscripción vuelve a activa y se resetea dunning.
-                await db.update(subscriptions)
-                    .set({
-                        status: 'active',
-                        currentPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : undefined,
-                        currentPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
-                        ...paymentRecoveryFields(),
-                    })
-                    .where(eq(subscriptions.id, subscription.id));
+                // Pago exitoso: lifecycle reactiva, resetea dunning, reabre ciclo
+                // de uso y envía el email de confirmación.
+                await handlePaymentSucceeded({
+                    tenantId: subscription.tenantId,
+                    provider: 'stripe',
+                    amount: (stripeInvoice.amount_paid || 0) / 100,
+                    currency: stripeInvoice.currency?.toUpperCase() || 'USD',
+                    periodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
+                    periodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+                });
 
                 await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
-                void recordAuditEvent({
-                    action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
-                    tenantId: subscription.tenantId,
-                    entityType: 'invoice',
-                    entityId: stripeInvoice.id,
-                    metadata: { provider: 'stripe', event: 'invoice.paid' },
-                });
                 break;
             }
 
@@ -607,26 +602,10 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     .limit(1);
                 if (!subscription) break;
 
-                // Marca past_due y arranca la gracia si todavía no arrancó.
-                // La lógica completa de dunning (reintentos, emails, suspensión)
-                // la ejecuta el lifecycle service.
-                const now = new Date();
-                await db.update(subscriptions)
-                    .set({
-                        status: 'past_due',
-                        pastDueSince: subscription.pastDueSince ?? now,
-                        graceEndsAt: subscription.graceEndsAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-                    })
-                    .where(eq(subscriptions.id, subscription.id));
+                // Dunning completo: intentos, gracia, email y suspensión al 3°.
+                await handlePaymentFailed(subscription.tenantId, 'stripe');
 
                 await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
-                void recordAuditEvent({
-                    action: AUDIT_ACTIONS.BILLING_PAYMENT_FAILED,
-                    tenantId: subscription.tenantId,
-                    entityType: 'invoice',
-                    entityId: failedInvoice.id,
-                    metadata: { provider: 'stripe', event: 'invoice.payment_failed' },
-                });
                 break;
             }
 
@@ -733,6 +712,10 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             const mpStatus = result.status;
 
             if (mpStatus === 'authorized') {
+                // MP no devuelve fin de período en el preapproval: se infiere del
+                // billingPeriod (30d mensual / 365d anual) para el ciclo de uso.
+                const periodEnd = new Date(Date.now() + (billingPeriod === 'yearly' ? 365 : 30) * 24 * 60 * 60 * 1000);
+
                 await db.insert(subscriptions).values({
                     tenantId,
                     planId: plan.id,
@@ -741,6 +724,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                     billingPeriod,
                     externalSubscriptionId: String(data.id),
                     currentPeriodStart: new Date(),
+                    currentPeriodEnd: periodEnd,
                     trialEndsAt: null,
                     cancelAtPeriodEnd: false,
                     canceledAt: null,
@@ -754,6 +738,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                         billingPeriod,
                         externalSubscriptionId: String(data.id),
                         currentPeriodStart: new Date(),
+                        currentPeriodEnd: periodEnd,
                         trialEndsAt: null,
                         cancelAtPeriodEnd: false,
                         canceledAt: null,
@@ -829,46 +814,28 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                             paidAt: new Date(),
                         });
 
-                        // Renovación cobrada: reactiva y resetea dunning.
-                        await db.update(subscriptions)
-                            .set({ status: 'active', ...paymentRecoveryFields() })
-                            .where(eq(subscriptions.id, sub.id));
+                        // Renovación cobrada: lifecycle reactiva, resetea dunning,
+                        // reabre el ciclo de uso y envía el email de confirmación.
+                        const days = sub.billingPeriod === 'yearly' ? 365 : 30;
+                        await handlePaymentSucceeded({
+                            tenantId,
+                            provider: 'mercadopago',
+                            amount: paymentData.transaction_amount ?? undefined,
+                            currency: 'ARS',
+                            periodStart: new Date(),
+                            periodEnd: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+                        });
 
                         await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
-                        void recordAuditEvent({
-                            action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
-                            tenantId,
-                            entityType: 'invoice',
-                            entityId: String(data.id),
-                            metadata: { provider: 'mercadopago', event: 'payment.approved' },
-                        });
                     }
                 }
             } else if (paymentData.status === 'rejected' && paymentData.external_reference) {
                 const match = paymentData.external_reference.match(/^tenant_(.+?)_/);
                 if (match) {
                     const tenantId = match[1];
-                    const [sub] = await db.select().from(subscriptions)
-                        .where(eq(subscriptions.tenantId, tenantId))
-                        .limit(1);
-                    if (sub) {
-                        const now = new Date();
-                        await db.update(subscriptions)
-                            .set({
-                                status: 'past_due',
-                                pastDueSince: sub.pastDueSince ?? now,
-                                graceEndsAt: sub.graceEndsAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-                            })
-                            .where(eq(subscriptions.id, sub.id));
-                        await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
-                        void recordAuditEvent({
-                            action: AUDIT_ACTIONS.BILLING_PAYMENT_FAILED,
-                            tenantId,
-                            entityType: 'invoice',
-                            entityId: String(data.id),
-                            metadata: { provider: 'mercadopago', event: 'payment.rejected' },
-                        });
-                    }
+                    // Dunning completo: intentos, gracia, email y suspensión al 3°.
+                    await handlePaymentFailed(tenantId, 'mercadopago');
+                    await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
                 }
             }
         }

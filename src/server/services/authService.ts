@@ -9,6 +9,7 @@ import { UserRole, UserStatus } from '../db/schema/enums.js';
 import { users, tenants, subscriptions, plans, refreshTokens, tenantFeatures } from '../db/schema/index.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { buildFeatureRowsForPlan } from './tenantFeaturesService.js';
+import { startTrial } from './subscriptionLifecycleService.js';
 import { eq, and, isNull } from 'drizzle-orm';
 
 const BCRYPT_ROUNDS = 12;
@@ -72,19 +73,16 @@ export async function register(input: {
             .where(eq(tenants.id, tenant.id));
 
         const [trialPlan] = await tx.select().from(plans).where(eq(plans.name, 'trial')).limit(1);
-        if (trialPlan) {
-            await tx.insert(subscriptions).values({
-                tenantId: tenant.id,
-                planId: trialPlan.id,
-                status: 'trialing',
-                trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            });
-        }
 
         // Feature flags: el tenant nace con los defaults del plan (trial o fallback).
         await tx.insert(tenantFeatures).values(buildFeatureRowsForPlan(tenant.id, trialPlan ?? null));
 
         return { userId: user.id, tenantId: tenant.id, verificationToken };
+    });
+
+    // Suscripción trial (Épica B): si falta el plan 'trial' el registro no rompe.
+    await startTrial(result.tenantId).catch((err) => {
+        console.error('[Auth] No se pudo iniciar el trial:', err);
     });
 
     sendVerificationEmail(normalizedEmail, fullName, result.verificationToken).catch(console.error);
