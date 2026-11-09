@@ -1,30 +1,34 @@
 import { Router, Request, Response } from 'express';
 import Stripe from 'stripe';
-import { MercadoPagoConfig, PreApproval, Payment } from 'mercadopago';
+import { PreApproval, Payment } from 'mercadopago';
 import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireOwner } from '../middleware/authz.js';
-import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
+import { auditFromRequest, recordAuditEvent, AUDIT_ACTIONS } from '../services/auditService.js';
 import { getQuotaStatus } from '../services/transmissionMeteringService.js';
+import { getStripe, getMercadoPago } from '../services/billingProviders.js';
+import {
+    dedupeBillingEvent,
+    tagBillingEventTenant,
+    paymentRecoveryFields,
+    changePlan,
+    reactivateSubscription,
+} from '../services/billingService.js';
+import { AppError } from '../lib/errors.js';
 import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc } from 'drizzle-orm';
 
 const router = Router();
 
-// ---------------------------------------------------------------------------
-// Stripe & MercadoPago clients (lazy init)
-// ---------------------------------------------------------------------------
-function getStripe(): Stripe | null {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) return null;
-    return new Stripe(key);
-}
-
-function getMercadoPago() {
-    const token = process.env.MP_ACCESS_TOKEN;
-    if (!token) return null;
-    return new MercadoPagoConfig({ accessToken: token });
+/** Mapea AppError a respuesta HTTP; el resto son 500 genéricos. */
+function respondError(res: Response, err: unknown, fallback: string): void {
+    if (err instanceof AppError) {
+        res.status(err.statusCode).json({ error: err.message, code: err.code });
+        return;
+    }
+    console.error('[Billing]', fallback, err);
+    res.status(500).json({ error: fallback });
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +305,22 @@ router.post('/cancel', requireAuth, requireOwner, async (req: Request, res: Resp
             }
         }
 
+        // MercadoPago: el preapproval se cancela en el provider; la suscripción
+        // local queda activa hasta fin de ciclo y el lifecycle la cierra.
+        if (subscription.paymentProvider === 'mercadopago' && subscription.externalSubscriptionId) {
+            const mpConfig = getMercadoPago();
+            if (mpConfig) {
+                try {
+                    await new PreApproval(mpConfig).update({
+                        id: subscription.externalSubscriptionId,
+                        body: { status: 'cancelled' },
+                    });
+                } catch (err) {
+                    console.error('[MercadoPago] No se pudo cancelar el preapproval:', err);
+                }
+            }
+        }
+
         void auditFromRequest(req, AUDIT_ACTIONS.BILLING_PLAN_CHANGED, {
             entityType: 'subscription',
             entityId: subscription.id,
@@ -315,7 +335,51 @@ router.post('/cancel', requireAuth, requireOwner, async (req: Request, res: Resp
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/billing/change-plan — Owner: cambia el plan de la suscripción
+// ---------------------------------------------------------------------------
+router.post('/change-plan', requireAuth, requireOwner, async (req: Request, res: Response) => {
+    try {
+        const { planName, billingPeriod = 'monthly' } = req.body ?? {};
+        if (typeof planName !== 'string' || !planName) {
+            res.status(400).json({ error: 'planName requerido' });
+            return;
+        }
+        if (billingPeriod !== 'monthly' && billingPeriod !== 'yearly') {
+            res.status(400).json({ error: 'billingPeriod inválido' });
+            return;
+        }
+
+        const result = await changePlan({
+            tenantId: req.auth!.tenantId,
+            planName,
+            billingPeriod,
+            actorUserId: req.auth!.userId,
+        });
+        res.json(result);
+    } catch (err) {
+        respondError(res, err, 'Error al cambiar de plan');
+    }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/billing/reactivate — Owner: deshace la cancelación a fin de ciclo
+// ---------------------------------------------------------------------------
+router.post('/reactivate', requireAuth, requireOwner, async (req: Request, res: Response) => {
+    try {
+        const result = await reactivateSubscription({
+            tenantId: req.auth!.tenantId,
+            actorUserId: req.auth!.userId,
+        });
+        res.json(result);
+    } catch (err) {
+        respondError(res, err, 'Error al reactivar la suscripción');
+    }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/billing/webhook/stripe — No auth (Stripe signs it)
+//   El raw body llega como Buffer: express.raw() se monta en index.ts ANTES de
+//   express.json() para este path. Sin raw body la firma jamás valida.
 // ---------------------------------------------------------------------------
 router.post('/webhook/stripe', async (req: Request, res: Response) => {
     const stripe = getStripe();
@@ -325,15 +389,29 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     if (!webhookSecret) { res.sendStatus(503); return; }
+    if (!Buffer.isBuffer(req.body)) {
+        res.status(400).send('Webhook requires raw body');
+        return;
+    }
 
     let event: Stripe.Event;
     try {
-        // For raw body, we need express.raw() on this route
-        const rawBody = JSON.stringify(req.body);
-        event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+        event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     } catch (err) {
         console.error('[Stripe Webhook] Signature verification failed:', err);
         res.status(400).send('Webhook signature verification failed');
+        return;
+    }
+
+    // Dedupe: Stripe reintenta eventos; (provider, external_event_id) es único.
+    const isNew = await dedupeBillingEvent({
+        provider: 'stripe',
+        externalEventId: event.id,
+        type: event.type,
+        payload: { livemode: event.livemode },
+    });
+    if (!isNew) {
+        res.json({ received: true, deduped: true });
         return;
     }
 
@@ -349,6 +427,18 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     .limit(1);
                 if (!plan) break;
 
+                // El período real vive en la suscripción de Stripe (en items con
+                // la API nueva); si no se puede leer, se deja NULL y el
+                // lifecycle lo infiere por ciclo calendario.
+                let periodEnd: Date | null = null;
+                try {
+                    const stripeSub = await stripe.subscriptions.retrieve(session.subscription as string);
+                    const itemEnd = (stripeSub.items.data[0] as unknown as { current_period_end?: number })?.current_period_end;
+                    if (itemEnd) periodEnd = new Date(itemEnd * 1000);
+                } catch (err) {
+                    console.error('[Stripe Webhook] No se pudo leer la suscripción para el período:', err);
+                }
+
                 await db.insert(subscriptions).values({
                     tenantId,
                     planId: plan.id,
@@ -358,9 +448,11 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     externalSubscriptionId: session.subscription as string,
                     externalCustomerId: session.customer as string,
                     currentPeriodStart: new Date(),
+                    currentPeriodEnd: periodEnd,
                     trialEndsAt: null,
                     cancelAtPeriodEnd: false,
                     canceledAt: null,
+                    ...paymentRecoveryFields(),
                 }).onConflictDoUpdate({
                     target: subscriptions.tenantId,
                     set: {
@@ -371,10 +463,19 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                         externalSubscriptionId: session.subscription as string,
                         externalCustomerId: session.customer as string,
                         currentPeriodStart: new Date(),
+                        currentPeriodEnd: periodEnd,
                         trialEndsAt: null,
                         cancelAtPeriodEnd: false,
                         canceledAt: null,
+                        ...paymentRecoveryFields(),
                     },
+                });
+                await tagBillingEventTenant('stripe', event.id, tenantId);
+                void recordAuditEvent({
+                    action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
+                    tenantId,
+                    entityType: 'subscription',
+                    metadata: { provider: 'stripe', event: 'checkout.session.completed', planName },
                 });
                 console.log(`[Stripe] Subscription activated for tenant ${tenantId}, plan ${planName}`);
                 break;
@@ -401,6 +502,25 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     billingPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : undefined,
                     billingPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
                 });
+
+                // Pago exitoso: la suscripción vuelve a activa y se resetea dunning.
+                await db.update(subscriptions)
+                    .set({
+                        status: 'active',
+                        currentPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : undefined,
+                        currentPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
+                        ...paymentRecoveryFields(),
+                    })
+                    .where(eq(subscriptions.id, subscription.id));
+
+                await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
+                void recordAuditEvent({
+                    action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
+                    tenantId: subscription.tenantId,
+                    entityType: 'invoice',
+                    entityId: stripeInvoice.id,
+                    metadata: { provider: 'stripe', event: 'invoice.paid' },
+                });
                 break;
             }
 
@@ -408,17 +528,45 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                 const failedInvoice = event.data.object as Stripe.Invoice;
                 const custId = failedInvoice.customer as string;
 
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalCustomerId, custId))
+                    .limit(1);
+                if (!subscription) break;
+
+                // Marca past_due y arranca la gracia si todavía no arrancó.
+                // La lógica completa de dunning (reintentos, emails, suspensión)
+                // la ejecuta el lifecycle service.
+                const now = new Date();
                 await db.update(subscriptions)
-                    .set({ status: 'past_due' })
-                    .where(eq(subscriptions.externalCustomerId, custId));
+                    .set({
+                        status: 'past_due',
+                        pastDueSince: subscription.pastDueSince ?? now,
+                        graceEndsAt: subscription.graceEndsAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+                    })
+                    .where(eq(subscriptions.id, subscription.id));
+
+                await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
+                void recordAuditEvent({
+                    action: AUDIT_ACTIONS.BILLING_PAYMENT_FAILED,
+                    tenantId: subscription.tenantId,
+                    entityType: 'invoice',
+                    entityId: failedInvoice.id,
+                    metadata: { provider: 'stripe', event: 'invoice.payment_failed' },
+                });
                 break;
             }
 
             case 'customer.subscription.deleted': {
                 const deletedSub = event.data.object as Stripe.Subscription;
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalSubscriptionId, deletedSub.id))
+                    .limit(1);
+
                 await db.update(subscriptions)
                     .set({ status: 'canceled', canceledAt: new Date() })
                     .where(eq(subscriptions.externalSubscriptionId, deletedSub.id));
+
+                if (subscription) await tagBillingEventTenant('stripe', event.id, subscription.tenantId);
                 break;
             }
         }
@@ -435,7 +583,24 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
     try {
-        const { type, data } = req.body;
+        const { id: notificationId, action, type, data } = req.body ?? {};
+
+        // Dedupe por id de notificación de MP (único por envío). Si no viene,
+        // cae al recurso + acción — suficiente para absorber reintentos.
+        const externalEventId = notificationId != null
+            ? `mp:${notificationId}`
+            : `mp:${type ?? 'unknown'}:${data?.id ?? 'noid'}:${action ?? 'noaction'}`;
+
+        const isNew = await dedupeBillingEvent({
+            provider: 'mercadopago',
+            externalEventId,
+            type: String(type ?? 'unknown'),
+            payload: { action: action ?? null },
+        });
+        if (!isNew) {
+            res.json({ received: true, deduped: true });
+            return;
+        }
 
         if (type === 'subscription_preapproval' && data?.id) {
             const mpConfig = getMercadoPago();
@@ -468,6 +633,7 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                     trialEndsAt: null,
                     cancelAtPeriodEnd: false,
                     canceledAt: null,
+                    ...paymentRecoveryFields(),
                 }).onConflictDoUpdate({
                     target: subscriptions.tenantId,
                     set: {
@@ -480,13 +646,28 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                         trialEndsAt: null,
                         cancelAtPeriodEnd: false,
                         canceledAt: null,
+                        ...paymentRecoveryFields(),
                     },
+                });
+                await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
+                void recordAuditEvent({
+                    action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
+                    tenantId,
+                    entityType: 'subscription',
+                    metadata: { provider: 'mercadopago', event: 'preapproval.authorized', planName },
                 });
                 console.log(`[MercadoPago] Subscription activated for tenant ${tenantId}`);
             } else if (mpStatus === 'paused' || mpStatus === 'cancelled') {
                 await db.update(subscriptions)
                     .set({ status: 'canceled', canceledAt: new Date() })
                     .where(eq(subscriptions.tenantId, tenantId));
+                await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
+                void recordAuditEvent({
+                    action: AUDIT_ACTIONS.BILLING_PLAN_CHANGED,
+                    tenantId,
+                    entityType: 'subscription',
+                    metadata: { provider: 'mercadopago', event: `preapproval.${mpStatus}` },
+                });
             }
         }
 
@@ -514,6 +695,46 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                             paymentProvider: 'mercadopago',
                             externalPaymentId: String(data.id),
                             paidAt: new Date(),
+                        });
+
+                        // Renovación cobrada: reactiva y resetea dunning.
+                        await db.update(subscriptions)
+                            .set({ status: 'active', ...paymentRecoveryFields() })
+                            .where(eq(subscriptions.id, sub.id));
+
+                        await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
+                        void recordAuditEvent({
+                            action: AUDIT_ACTIONS.BILLING_PAYMENT_OK,
+                            tenantId,
+                            entityType: 'invoice',
+                            entityId: String(data.id),
+                            metadata: { provider: 'mercadopago', event: 'payment.approved' },
+                        });
+                    }
+                }
+            } else if (paymentData.status === 'rejected' && paymentData.external_reference) {
+                const match = paymentData.external_reference.match(/^tenant_(.+?)_/);
+                if (match) {
+                    const tenantId = match[1];
+                    const [sub] = await db.select().from(subscriptions)
+                        .where(eq(subscriptions.tenantId, tenantId))
+                        .limit(1);
+                    if (sub) {
+                        const now = new Date();
+                        await db.update(subscriptions)
+                            .set({
+                                status: 'past_due',
+                                pastDueSince: sub.pastDueSince ?? now,
+                                graceEndsAt: sub.graceEndsAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+                            })
+                            .where(eq(subscriptions.id, sub.id));
+                        await tagBillingEventTenant('mercadopago', externalEventId, tenantId);
+                        void recordAuditEvent({
+                            action: AUDIT_ACTIONS.BILLING_PAYMENT_FAILED,
+                            tenantId,
+                            entityType: 'invoice',
+                            entityId: String(data.id),
+                            metadata: { provider: 'mercadopago', event: 'payment.rejected' },
                         });
                     }
                 }
