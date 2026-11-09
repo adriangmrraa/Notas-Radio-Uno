@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { detectStreamSource, isExplicitStreamUrl } from '../lib/streamSources.js';
 
 const TOOLS_DIR = process.env.TOOLS_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '', 'tools');
 
@@ -60,15 +61,20 @@ export async function detectLiveStream(channelUrl: string): Promise<LiveDetectio
     }
 }
 
+/**
+ * Plataforma para el detector de live. Delega en el registry de
+ * `lib/streamSources` (única fuente de verdad, PD-07) y conserva las
+ * etiquetas propias del detector: 'facebook' (extra que el registry no
+ * modela), 'direct_stream' (URL con patrón de stream explícito → live
+ * asumido) y 'generic' (cualquier otra URL → se intenta con yt-dlp).
+ */
 function detectPlatform(url: string): string {
-    if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
-    if (url.includes('twitch.tv')) return 'twitch';
-    if (url.includes('kick.com')) return 'kick';
-    if (url.includes('facebook.com')) return 'facebook';
-    if (url.endsWith('.m3u8') || url.endsWith('/stream') || url.endsWith('.mp3') || url.endsWith('.aac') ||
-        url.includes('streamingraddios') || url.includes('radio') || url.includes(':8000') || url.includes(':8080')) {
-        return 'direct_stream';
+    const source = detectStreamSource(url);
+    if (source.kind === 'youtube' || source.kind === 'twitch' || source.kind === 'kick') {
+        return source.kind;
     }
+    if (url.includes('facebook.com')) return 'facebook';
+    if (source.kind === 'hls' && isExplicitStreamUrl(url)) return 'direct_stream';
     return 'generic';
 }
 

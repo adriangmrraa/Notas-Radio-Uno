@@ -27,6 +27,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { findBinary } from '../lib/binaries.js';
+import { detectStreamSource } from '../lib/streamSources.js';
 
 export interface ResolvedStream {
   /** URL directa que ffmpeg puede abrir (HLS/mp4/http). */
@@ -68,11 +69,22 @@ export type YtDlpRunner = (args: string[], timeoutMs: number) => Promise<string>
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/** Plataforma detectada por URL — misma tabla que liveDetectorService. */
+/**
+ * Plataforma detectada por URL. La detección de youtube/twitch/kick delega
+ * en el registry de `lib/streamSources` (única fuente de verdad, PD-07);
+ * facebook/vimeo/dailymotion se conservan como etiquetas extra del resolver
+ * — el registry no las modela porque para la resolución son "cualquier URL
+ * que yt-dlp intenta" igual que el resto.
+ */
 export function detectStreamPlatform(url: string): string {
-  if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
-  if (url.includes('twitch.tv')) return 'twitch';
-  if (url.includes('kick.com')) return 'kick';
+  const source = detectStreamSource(url);
+  if (
+    source.kind === 'youtube' ||
+    source.kind === 'twitch' ||
+    source.kind === 'kick'
+  ) {
+    return source.kind;
+  }
   if (url.includes('facebook.com')) return 'facebook';
   if (url.includes('vimeo.com')) return 'vimeo';
   if (url.includes('dailymotion.com')) return 'dailymotion';

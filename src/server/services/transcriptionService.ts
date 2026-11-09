@@ -7,6 +7,7 @@ import { dirname } from "path";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 import type { DiarizedTranscription, Utterance } from "../../shared/types.js";
+import { detectStreamSource, isExplicitStreamUrl } from "../lib/streamSources.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,12 +68,11 @@ interface TranscriptionResult {
  * Retorna: "youtube", "radio", o "generic"
  */
 function detectSourceType(url: string): SourceType {
-  // Plataformas que necesitan yt-dlp para extraer el stream
+  // Plataformas que necesitan yt-dlp para extraer el stream: las del
+  // registry (`needsResolver`, PD-07) más las extra que también va a buscar
+  // yt-dlp y el registry clasifica como hls/genérica.
   if (
-    url.includes("youtube.com") ||
-    url.includes("youtu.be") ||
-    url.includes("twitch.tv") ||
-    url.includes("kick.com") ||
+    detectStreamSource(url).needsResolver ||
     url.includes("facebook.com/live") ||
     url.includes("dailymotion.com") ||
     url.includes("vimeo.com")
@@ -80,16 +80,7 @@ function detectSourceType(url: string): SourceType {
     return "youtube"; // "youtube" = usa yt-dlp (soporta todas estas plataformas)
   }
   // Streams directos de radio/audio (URLs que ffmpeg puede abrir directo)
-  if (
-    url.includes("streamingraddios") ||
-    url.endsWith("/stream") ||
-    url.endsWith(".m3u8") ||
-    url.endsWith(".mp3") ||
-    url.endsWith(".aac") ||
-    url.includes("/radio") ||
-    url.includes("shoutcast") ||
-    url.includes("icecast")
-  ) {
+  if (isExplicitStreamUrl(url)) {
     return "radio";
   }
   return "generic";
