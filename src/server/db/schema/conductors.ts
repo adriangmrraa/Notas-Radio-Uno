@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants.js';
 import { programs } from './programs.js';
+import { persons } from './persons.js';
 import { bytea } from './customTypes.js';
 
 export const conductors = pgTable(
@@ -11,6 +12,8 @@ export const conductors = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     programId: uuid('program_id').references(() => programs.id, { onDelete: 'cascade' }),
+    /** Puente al modelo unificado: conductor vinculado a una `persons`. */
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
     name: varchar('name', { length: 255 }).notNull(),
     role: varchar('role', { length: 100 }),
     bio: text('bio'),
@@ -21,6 +24,7 @@ export const conductors = pgTable(
   (t) => [
     index('conductors_tenant_id_idx').on(t.tenantId),
     index('conductors_program_id_idx').on(t.programId),
+    index('conductors_person_id_idx').on(t.personId),
   ],
 );
 

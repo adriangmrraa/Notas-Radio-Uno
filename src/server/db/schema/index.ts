@@ -18,6 +18,8 @@ export * from './guests.js';
 export * from './dossiers.js';
 export * from './clips.js';
 export * from './features.js';
+export * from './persons.js';
+export * from './editorialProfiles.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -45,6 +47,8 @@ import { guests, guestPhotos } from './guests.js';
 import { guestDossiers } from './dossiers.js';
 import { clips } from './clips.js';
 import { tenantFeatures, impersonationSessions } from './features.js';
+import { persons, personPhotos, faceEmbeddings, personProgram } from './persons.js';
+import { editorialProfiles } from './editorialProfiles.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -78,6 +82,11 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   quotaOperations: many(quotaOperations),
   addonPurchases: many(addonPurchases),
   billingEvents: many(billingEvents),
+  persons: many(persons),
+  personPhotos: many(personPhotos),
+  faceEmbeddings: many(faceEmbeddings),
+  personPrograms: many(personProgram),
+  editorialProfiles: many(editorialProfiles),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -216,6 +225,8 @@ export const programsRelations = relations(programs, ({ one, many }) => ({
   conductors: many(conductors),
   guests: many(guests),
   guestDossiers: many(guestDossiers),
+  personPrograms: many(personProgram),
+  editorialProfiles: many(editorialProfiles),
 }));
 
 export const programUrlsRelations = relations(programUrls, ({ one }) => ({
@@ -226,6 +237,7 @@ export const programUrlsRelations = relations(programUrls, ({ one }) => ({
 export const conductorsRelations = relations(conductors, ({ one, many }) => ({
   tenant: one(tenants, { fields: [conductors.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [conductors.programId], references: [programs.id] }),
+  person: one(persons, { fields: [conductors.personId], references: [persons.id] }),
   photos: many(conductorPhotos),
 }));
 
@@ -237,6 +249,7 @@ export const conductorPhotosRelations = relations(conductorPhotos, ({ one }) => 
 export const guestsRelations = relations(guests, ({ one, many }) => ({
   tenant: one(tenants, { fields: [guests.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [guests.programId], references: [programs.id] }),
+  person: one(persons, { fields: [guests.personId], references: [persons.id] }),
   photos: many(guestPhotos),
   dossiers: many(guestDossiers),
 }));
@@ -271,4 +284,46 @@ export const impersonationSessionsRelations = relations(impersonationSessions, (
     relationName: 'ImpersonationAdmin',
   }),
   tenant: one(tenants, { fields: [impersonationSessions.tenantId], references: [tenants.id] }),
+}));
+
+// ── persons relations ─────────────────────────────────────────────────────────
+export const personsRelations = relations(persons, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [persons.tenantId], references: [tenants.id] }),
+  photos: many(personPhotos),
+  embeddings: many(faceEmbeddings, { relationName: 'PersonEmbeddings' }),
+  canonicalEmbedding: one(faceEmbeddings, {
+    fields: [persons.embeddingRef],
+    references: [faceEmbeddings.id],
+    relationName: 'PersonCanonicalEmbedding',
+  }),
+  programs: many(personProgram),
+}));
+
+export const personPhotosRelations = relations(personPhotos, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [personPhotos.tenantId], references: [tenants.id] }),
+  person: one(persons, { fields: [personPhotos.personId], references: [persons.id] }),
+  embeddings: many(faceEmbeddings),
+}));
+
+export const faceEmbeddingsRelations = relations(faceEmbeddings, ({ one }) => ({
+  tenant: one(tenants, { fields: [faceEmbeddings.tenantId], references: [tenants.id] }),
+  person: one(persons, {
+    fields: [faceEmbeddings.personId],
+    references: [persons.id],
+    relationName: 'PersonEmbeddings',
+  }),
+  photo: one(personPhotos, { fields: [faceEmbeddings.personPhotoId], references: [personPhotos.id] }),
+}));
+
+export const personProgramRelations = relations(personProgram, ({ one }) => ({
+  tenant: one(tenants, { fields: [personProgram.tenantId], references: [tenants.id] }),
+  person: one(persons, { fields: [personProgram.personId], references: [persons.id] }),
+  program: one(programs, { fields: [personProgram.programId], references: [programs.id] }),
+  createdBy: one(users, { fields: [personProgram.createdByUserId], references: [users.id] }),
+}));
+
+// ── editorial_profiles relations ──────────────────────────────────────────────
+export const editorialProfilesRelations = relations(editorialProfiles, ({ one }) => ({
+  tenant: one(tenants, { fields: [editorialProfiles.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [editorialProfiles.programId], references: [programs.id] }),
 }));

@@ -121,3 +121,37 @@ export const FeatureSource = {
   admin: 'admin',
 } as const;
 export type FeatureSource = (typeof FeatureSource)[keyof typeof FeatureSource];
+
+// ── PersonRole ────────────────────────────────────────────────────────────────
+// Rol de una persona en el canal (biblioteca única: conductores, invitados y
+// columnistas viven en la misma tabla `persons`).
+export const personRoleEnum = pgEnum('PersonRole', [
+  'conductor',
+  'columnista',
+  'productor',
+  'invitado',
+  'colaborador',
+  'otro',
+]);
+export const PersonRole = {
+  conductor: 'conductor',
+  columnista: 'columnista',
+  productor: 'productor',
+  invitado: 'invitado',
+  colaborador: 'colaborador',
+  otro: 'otro',
+} as const;
+export type PersonRole = (typeof PersonRole)[keyof typeof PersonRole];
+
+// ── FaceEnrollmentStatus ──────────────────────────────────────────────────────
+export const faceEnrollmentStatusEnum = pgEnum('FaceEnrollmentStatus', [
+  'pending',
+  'enrolled',
+  'failed',
+]);
+export const FaceEnrollmentStatus = {
+  pending: 'pending',
+  enrolled: 'enrolled',
+  failed: 'failed',
+} as const;
+export type FaceEnrollmentStatus = (typeof FaceEnrollmentStatus)[keyof typeof FaceEnrollmentStatus];

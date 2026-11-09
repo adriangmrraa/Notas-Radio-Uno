@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, boolean, timestamp, date, index } from 'drizzle-orm/pg-core';
 import { tenants } from './tenants.js';
 import { programs } from './programs.js';
+import { persons } from './persons.js';
 import { bytea } from './customTypes.js';
 
 export const guests = pgTable(
@@ -16,6 +17,8 @@ export const guests = pgTable(
     name: varchar('name', { length: 200 }).notNull(),
     role: varchar('role', { length: 100 }).notNull(),
     bio: text('bio'),
+    /** Puente al modelo unificado: invitado vinculado a una `persons`. */
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
     scheduledDate: date('scheduled_date').notNull(),
     scheduledTimeStart: varchar('scheduled_time_start', { length: 5 }),
     scheduledTimeEnd: varchar('scheduled_time_end', { length: 5 }),
@@ -26,6 +29,7 @@ export const guests = pgTable(
   (t) => [
     index('guests_tenant_id_idx').on(t.tenantId),
     index('guests_program_id_idx').on(t.programId),
+    index('guests_person_id_idx').on(t.personId),
     index('guests_tenant_program_date_idx').on(t.tenantId, t.programId, t.scheduledDate),
   ],
 );
