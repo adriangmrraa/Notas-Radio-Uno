@@ -8,6 +8,22 @@ interface FetchOptions {
   skipRedirect?: boolean;
 }
 
+/**
+ * Extrae el mensaje de error del body de una respuesta no-OK.
+ * Pura y exportada para poder testearla: el backend manda
+ * `{ error }` (o `message`/`detail`); si el body no es JSON o no
+ * trae mensaje, se queda `HTTP <status>`.
+ */
+export function parseErrorMessage(text: string, status: number): string {
+  const fallback = `HTTP ${status}`;
+  try {
+    const json = JSON.parse(text);
+    return json.error || json.message || json.detail || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function useApi() {
   const fetchApi = useCallback(async <T = unknown>(endpoint: string, options: FetchOptions = {}): Promise<T> => {
     const isFormData = options.body instanceof FormData;
@@ -64,12 +80,7 @@ export function useApi() {
 
     if (!response.ok) {
       const text = await response.text();
-      try {
-        const json = JSON.parse(text);
-        throw new Error(json.error || json.message || json.detail || `HTTP ${response.status}`);
-      } catch {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      throw new Error(parseErrorMessage(text, response.status));
     }
 
     const contentType = response.headers.get('content-type');

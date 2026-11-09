@@ -20,7 +20,7 @@ export function slugifyProgram(text: string): string {
   return text
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "") // strip diacritics
+    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
     .replace(/[^a-z0-9\s-]/g, "")
     .trim()
     .replace(/[\s]+/g, "-")
@@ -28,19 +28,21 @@ export function slugifyProgram(text: string): string {
     .slice(0, 100);
 }
 
-export async function ensureUniqueProgramSlug(
+/**
+ * Loop puro de candidatos `base`, `base-1`, `base-2`… hasta encontrar uno
+ * libre. `findBySlug` es la fuente inyectable (DB en producción, un Set en
+ * tests). `excludeId` permite re-guardar el programa que ya tiene el slug.
+ */
+export async function pickUniqueSlug(
   base: string,
+  findBySlug: (candidate: string) => Promise<{ id: string } | null | undefined>,
   excludeId?: string,
 ): Promise<string> {
   let candidate = base;
   let attempt = 0;
 
   while (true) {
-    const [existing] = await db
-      .select({ id: programs.id })
-      .from(programs)
-      .where(eq(programs.slug, candidate))
-      .limit(1);
+    const existing = await findBySlug(candidate);
 
     if (!existing || (excludeId && existing.id === excludeId)) {
       return candidate;
@@ -49,6 +51,21 @@ export async function ensureUniqueProgramSlug(
     attempt++;
     candidate = `${base}-${attempt}`;
   }
+}
+
+export function ensureUniqueProgramSlug(base: string, excludeId?: string): Promise<string> {
+  return pickUniqueSlug(
+    base,
+    async (candidate) => {
+      const [existing] = await db
+        .select({ id: programs.id })
+        .from(programs)
+        .where(eq(programs.slug, candidate))
+        .limit(1);
+      return existing;
+    },
+    excludeId,
+  );
 }
 
 // ---------------------------------------------------------------------------

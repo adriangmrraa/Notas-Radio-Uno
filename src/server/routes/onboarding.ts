@@ -21,7 +21,11 @@ import {
   getOnboardingStatus,
   resetOnboarding,
 } from "../services/onboardingService.js";
-import { isOnboardingStepId, missingRequirements } from "../lib/onboardingRules.js";
+import {
+  isOnboardingStepId,
+  missingRequirements,
+  unknownStepIdError,
+} from "../lib/onboardingRules.js";
 
 export const onboardingRouter = Router();
 
@@ -69,9 +73,8 @@ onboardingRouter.post("/step/:stepId", requireAuth, async (req: Request, res: Re
 
   const { stepId } = req.params;
   if (!isOnboardingStepId(stepId)) {
-    res.status(404).json({
-      error: `Paso desconocido: ${stepId}. Válidos: channel, program, persons, channels`,
-    });
+    const err = unknownStepIdError(stepId);
+    res.status(err.status).json({ error: err.error });
     return;
   }
 

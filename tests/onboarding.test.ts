@@ -26,6 +26,7 @@ import {
   missingRequirements,
   normalizeTenantSlug,
   parseOnboardingState,
+  unknownStepIdError,
   EMPTY_FACTS,
   ONBOARDING_STEPS,
   type OnboardingFacts,
@@ -71,6 +72,14 @@ describe('isStepDone', () => {
     const state: OnboardingState = { steps: { persons: { done: true } } };
     expect(isStepDone('persons', EMPTY_FACTS, state)).toBe(true);
     expect(isStepDone('channels', EMPTY_FACTS, state)).toBe(false);
+  });
+
+  it('W4: channel NO se cumple por guardado — exige el canal configurado', () => {
+    // Guardado parcial (p.ej. sólo {slug}) con el tenant aún sin
+    // name/platformName/timezone ⇒ el paso queda pendiente igual.
+    const saved: OnboardingState = { steps: { channel: { done: true } } };
+    expect(isStepDone('channel', EMPTY_FACTS, saved)).toBe(false);
+    expect(isStepDone('channel', { ...EMPTY_FACTS, channelConfigured: true }, saved)).toBe(true);
   });
 
   it('la evidencia de dominio cumple aunque nunca se haya guardado', () => {
@@ -128,7 +137,7 @@ describe('computeOnboardingStatus', () => {
     expect(status.currentStep).toBe(4);
   });
 
-  it('los 4 pasos cumplidos por guardado explícito (sin facts) ⇒ canComplete = true', () => {
+  it('W4: guardado de los 4 sin facts ⇒ canComplete = false (channel pide evidencia)', () => {
     const state: OnboardingState = {
       steps: {
         channel: { done: true },
@@ -142,8 +151,19 @@ describe('computeOnboardingStatus', () => {
       facts: EMPTY_FACTS,
       state,
     });
-    expect(status.canComplete).toBe(true);
-    expect(status.steps.every((s) => s.saved)).toBe(true);
+    expect(status.steps[0].done).toBe(false); // channel: el save solo no alcanza
+    expect(status.steps[0].saved).toBe(true); // el guardado queda registrado igual
+    expect(status.steps[1].done).toBe(true); // program/persons/channels sí valen por save
+    expect(status.canComplete).toBe(false);
+
+    // Con el canal realmente configurado, el mismo estado guardado alcanza.
+    const ok = computeOnboardingStatus({
+      completed: false,
+      facts: { ...EMPTY_FACTS, channelConfigured: true },
+      state,
+    });
+    expect(ok.canComplete).toBe(true);
+    expect(ok.steps.every((s) => s.saved)).toBe(true);
   });
 
   it('onboarding_completed=true ⇒ completed = true aunque falten pasos', () => {
@@ -177,6 +197,17 @@ describe('missingRequirements', () => {
       state: {},
     });
     expect(missingRequirements(status).map((m) => m.id)).toEqual(['persons', 'channels']);
+  });
+});
+
+// ── unknownStepIdError (contrato del 400 de POST /step/:stepId) ──────────────
+describe('unknownStepIdError', () => {
+  it('stepId desconocido ⇒ 400 (input inválido), nunca 404', () => {
+    const err = unknownStepIdError('bogus');
+    expect(err.status).toBe(400);
+    expect(err.error).toContain('bogus');
+    expect(err.error).toContain('channel');
+    expect(err.error).toContain('channels');
   });
 });
 

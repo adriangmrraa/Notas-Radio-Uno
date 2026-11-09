@@ -44,6 +44,18 @@ export function isOnboardingStepId(value: string): value is OnboardingStepId {
   return (ONBOARDING_STEP_IDS as readonly string[]).includes(value);
 }
 
+/**
+ * Error del endpoint POST /step/:stepId cuando el paso no existe.
+ * Exportado para que la ruta y los tests compartan el contrato:
+ * 400 (input inválido), no 404 (eso queda para recursos ajenos).
+ */
+export function unknownStepIdError(stepId: string): { status: number; error: string } {
+  return {
+    status: 400,
+    error: `Paso desconocido: ${stepId}. Válidos: ${ONBOARDING_STEP_IDS.join(', ')}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // onboarding_state (settings.onboarding_state, JSON)
 // ---------------------------------------------------------------------------
@@ -99,13 +111,16 @@ export const EMPTY_FACTS: OnboardingFacts = {
  * Un paso está cumplido si el usuario lo guardó explícitamente vía
  * POST /api/onboarding/step/:id (persistido en onboarding_state) o si la
  * evidencia de dominio ya lo satisface (p.ej. ya existen programas).
+ *
+ * Excepción: `channel` exige el canal realmente configurado — un guardado
+ * parcial (p.ej. sólo el slug) NO cumple el paso aunque quede registrado.
  */
 export function isStepDone(
   stepId: OnboardingStepId,
   facts: OnboardingFacts,
   state: OnboardingState,
 ): boolean {
-  if (state.steps?.[stepId]?.done === true) return true;
+  if (stepId !== 'channel' && state.steps?.[stepId]?.done === true) return true;
   switch (stepId) {
     case 'channel':
       return facts.channelConfigured;
@@ -205,7 +220,7 @@ export function normalizeTenantSlug(raw: string): string {
   return raw
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9\s-]/g, '')
     .trim()
     .replace(/[\s]+/g, '-')
