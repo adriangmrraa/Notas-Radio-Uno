@@ -3,7 +3,8 @@ import type { Server } from 'socket.io';
 
 import { reconcileOrphanedTransmissions, type Transmission } from './services/transmissionService.js';
 import { registerJobHandler, startWorker } from './services/jobsQueueService.js';
-import { startRecorderLoop, setAudioTapHooks } from './services/streamRecorderService.js';
+import { startRecorderLoop, setAudioTapHooks, setMaxDurationHandler, setMaxDurationResolver } from './services/streamRecorderService.js';
+import { getPlanLimits } from './services/quotaService.js';
 import { initJobScheduler } from './services/jobSchedulerService.js';
 import { initDossierScheduler } from './services/dossierService.js';
 import { handlePoststreamAnalysis, type PoststreamPayload } from './services/poststreamAnalysisService.js';
@@ -15,7 +16,7 @@ import { startFrameSamplerLoop } from './services/frameSamplerService.js';
 import { ingestUtterances } from './services/attributionService.js';
 import { AutoPipeline } from './services/pipelineService.js';
 import { emitToTenant, INTERNAL_EMIT_SECRET } from './services/notificationService.js';
-import { jobNotify } from './services/notificationService.js';
+import { jobNotify, notify } from './services/notificationService.js';
 import type { PipelineConfig } from '../shared/types.js';
 
 // ---------------------------------------------------------------------------
@@ -150,6 +151,28 @@ export async function initEngine(opts: { io: Server | null }): Promise<EngineHan
 
     // Audio tap: el recorder levanta el tap al pasar waiting→live (D3).
     setAudioTapHooks({ start: startAudioTap, stop: stopAudioTap });
+
+    // ── T-44: enforcement de maxDurationMinutes del plan ──────────────────
+    // Resolver: tope del plan por tx (el recorder toma min(tx, plan, default)).
+    setMaxDurationResolver(async (tx: Transmission) => {
+        const limits = await getPlanLimits(tx.tenantId);
+        return limits.maxDurationMinutes;
+    });
+    // Handler: al llegar al techo efectivo → aviso al tenant + stop suave
+    // (la captura termina y lo grabado entra al pipeline poststream).
+    setMaxDurationHandler(({ tx, capturedMs, stopCapture }) => {
+        const minutes = Math.round(capturedMs / 60_000);
+        console.log(`[Engine] tx=${tx.id} llegó al tope de duración (${minutes}m) — stop suave`);
+        void notify({
+            tenantId: tx.tenantId,
+            type: 'transmission_max_duration',
+            title: 'Límite de duración alcanzado',
+            message: `La transmisión llegó al máximo de tu plan (${minutes} min). Se procesa lo grabado; mejora tu plan para transmisiones más largas.`,
+            icon: '⏱️',
+            metadata: { transmissionId: tx.id, capturedMinutes: minutes },
+        }).catch((e) => console.warn('[Engine] notify maxDuration:', e));
+        stopCapture();
+    });
 
     // ── Dunning periódico (además de jobs 'dunning_cycle' puntuales) ────────
     const dunningTimer = setInterval(() => {

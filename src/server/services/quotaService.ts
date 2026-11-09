@@ -52,6 +52,7 @@ async function getTenantContext(tenantId: string) {
     const [row] = await db
         .select({
             timezone: tenants.timezone,
+            subscriptionId: subscriptions.id,
             subscriptionStatus: subscriptions.status,
             maxTransmissions: plans.maxTransmissionsPerMonth,
             maxPipelineHours: plans.maxPipelineHoursPerMonth,
@@ -133,7 +134,7 @@ export async function consume(
     const period = periodForDate(new Date(), timezone);
     const col = METRIC_COLUMN[metric];
 
-    return db.transaction(async (tx) => {
+    return db.transaction(async (tx): Promise<ConsumeResult> => {
         // Fila de cuota del período (lazy create)
         await tx.execute(sql`
             INSERT INTO "tenant_quotas" ("tenant_id", "period")
@@ -170,13 +171,14 @@ export async function consume(
                 .limit(1);
             const meta = (existing?.metadata ?? {}) as { allowed?: boolean; count?: number };
             const prevAllowed = meta.allowed === true;
-            return {
+            const retryResult: ConsumeResult = {
                 allowed: prevAllowed,
                 count: Number(meta.count ?? existing?.resultingCount ?? 0),
                 effectiveLimit,
                 period,
                 skipped: prevAllowed ? undefined : true,
             };
+            return retryResult;
         }
 
         // Reserva atómica: una sola query decide — sin carrera entre despachos
@@ -203,7 +205,26 @@ export async function consume(
             WHERE "operation_id" = ${operationId}
         `);
 
-        return { allowed, count, effectiveLimit, period, skipped: allowed ? undefined : true };
+        const result: ConsumeResult = { allowed, count, effectiveLimit, period, skipped: allowed ? undefined : true };
+        return result;
+    }).then((result) => {
+        // Trial eligibility (F5): la 2.ª transmisión consumida agota el trial —
+        // el primer consume rechazado dispara 'trial_quota_exhausted' → expired.
+        if (
+            !result.allowed
+            && metric === 'transmission'
+            && ctx?.subscriptionStatus === 'trialing'
+            && ctx.subscriptionId
+        ) {
+            void import('./subscriptionMachine.js').then(({ applyTransition }) =>
+                applyTransition(ctx.subscriptionId!, 'trial_quota_exhausted', {
+                    provider: 'system',
+                    actor: 'system:quota_consume',
+                    payload: { operationId, period: result.period },
+                }),
+            ).catch((e) => console.warn('[Quota] trial_quota_exhausted transition:', e));
+        }
+        return result;
     });
 }
 

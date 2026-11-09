@@ -81,3 +81,90 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
         </div>
     `);
 }
+
+// ── Team invites (T-38) ───────────────────────────────────────────────────────
+export async function sendTeamInviteEmail(
+    email: string,
+    inviterName: string,
+    tenantName: string,
+    role: string,
+    token: string,
+): Promise<void> {
+    const url = `${FRONTEND_URL}/accept-invite?token=${token}`;
+    await sendEmail(email, `Te invitaron a ${tenantName} - PeriodistApp`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Te invitaron a unirte a ${tenantName}</h2>
+            <p>${inviterName} te invito a colaborar en <strong>${tenantName}</strong> como <strong>${role}</strong>.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${url}" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Aceptar invitacion
+                </a>
+            </p>
+            <p style="color: #666; font-size: 14px;">Este enlace expira en 7 dias.</p>
+            <p style="color: #666; font-size: 14px;">Si no esperabas esta invitacion, ignora este email.</p>
+        </div>
+    `);
+}
+
+// ── Emails transaccionales de billing (T-41 dunning / trial) ──────────────────
+export async function sendPaymentFailedEmail(email: string, name: string, attempt: number, maxAttempts: number): Promise<void> {
+    const last = attempt >= maxAttempts;
+    await sendEmail(email, `${last ? 'Ultimo aviso: ' : ''}No pudimos cobrar tu suscripcion - PeriodistApp`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Hola ${name}</h2>
+            <p>No pudimos procesar el pago de tu suscripcion (intento ${attempt} de ${maxAttempts}).</p>
+            <p>${last
+                ? 'Este es el ultimo aviso antes de que tu cuenta sea <strong>suspendida</strong>. Tus datos permanecen intactos.'
+                : 'Actualiza tu medio de pago para evitar la suspension del servicio.'}</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Actualizar medio de pago
+                </a>
+            </p>
+        </div>
+    `);
+}
+
+export async function sendPaymentOkEmail(email: string, name: string): Promise<void> {
+    await sendEmail(email, 'Pago confirmado - PeriodistApp', `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Hola ${name}</h2>
+            <p>Tu pago fue procesado correctamente. Tu suscripcion esta activa.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${FRONTEND_URL}/dashboard" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Ir al Dashboard
+                </a>
+            </p>
+        </div>
+    `);
+}
+
+export async function sendTrialExpiringEmail(email: string, name: string, daysLeft: number): Promise<void> {
+    await sendEmail(email, `Tu prueba gratuita termina en ${daysLeft} dia${daysLeft === 1 ? '' : 's'} - PeriodistApp`, `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Hola ${name}</h2>
+            <p>Tu periodo de prueba en PeriodistApp termina en <strong>${daysLeft} dia${daysLeft === 1 ? '' : 's'}</strong>.</p>
+            <p>Elegi un plan para seguir transmitiendo sin interrupciones.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Elegir plan
+                </a>
+            </p>
+        </div>
+    `);
+}
+
+export async function sendSubscriptionSuspendedEmail(email: string, name: string): Promise<void> {
+    await sendEmail(email, 'Tu suscripcion fue suspendida - PeriodistApp', `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Hola ${name}</h2>
+            <p>Tu suscripcion fue <strong>suspendida</strong> tras agotarse el periodo de gracia por falta de pago.</p>
+            <p><strong>Tus datos estan intactos</strong> — en cuanto regularices el pago, el servicio se reactiva.</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Regularizar pago
+                </a>
+            </p>
+        </div>
+    `);
+}

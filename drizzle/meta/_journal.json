@@ -78,6 +78,13 @@
       "when": 1794196444829,
       "tag": "0010_transmissions_pipeline_config",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794300000000,
+      "tag": "0011_plans_seed",
+      "breakpoints": true
     }
   ]
 }

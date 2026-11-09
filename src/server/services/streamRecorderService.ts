@@ -71,6 +71,10 @@ const DEFAULT_MAX_DURATION_MIN = Number(process.env.RECORDER_MAX_DURATION_MIN ??
 // Extension point T-44 — qué hacer al llegar al techo de duración.
 // Default: cortar captura → processing → poststream_analysis.
 // T-44 puede reemplazarlo (p.ej. extender, avisar, cobrar extra).
+//
+// El techo EFECTIVO = min(tx.durationMinutes, plan.maxDurationMinutes vía
+// resolver, DEFAULT cap anti-abuso). El resolver se consulta una vez por tx
+// al entrar en supervisión; null/∞ en los tres → aplica el default.
 // ---------------------------------------------------------------------------
 export interface MaxDurationContext {
     tx: Transmission;
@@ -81,6 +85,13 @@ type MaxDurationHandler = (ctx: MaxDurationContext) => void;
 let maxDurationHandler: MaxDurationHandler | null = null;
 export function setMaxDurationHandler(handler: MaxDurationHandler | null): void {
     maxDurationHandler = handler;
+}
+
+/** Resolver del tope del plan (minutos; null = sin tope de plan). */
+export type MaxDurationResolver = (tx: Transmission) => Promise<number | null>;
+let maxDurationResolver: MaxDurationResolver | null = null;
+export function setMaxDurationResolver(resolver: MaxDurationResolver | null): void {
+    maxDurationResolver = resolver;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +326,18 @@ export async function runTransmission(tx0: Transmission): Promise<void> {
         openStartMs: 0,
     };
 
-    const maxDurationMs = (tx.durationMinutes ?? DEFAULT_MAX_DURATION_MIN) * 60_000;
+    // Techo efectivo: min(tx.durationMinutes, plan.maxDurationMinutes [resolver],
+    // cap anti-abuso default). El límite del PLAN es enforcement SaaS (T-44):
+    // una tx que pida más de lo que el plan permite corta en el tope del plan.
+    let planCapMinutes: number | null = null;
+    if (maxDurationResolver) {
+        planCapMinutes = await maxDurationResolver(tx).catch((e) => {
+            console.warn(`[Recorder] maxDurationResolver falló tx=${txId} (sigue cap default):`, e instanceof Error ? e.message : e);
+            return null;
+        });
+    }
+    const effectiveCapMin = Math.min(tx.durationMinutes ?? Infinity, planCapMinutes ?? Infinity);
+    const maxDurationMs = (Number.isFinite(effectiveCapMin) ? effectiveCapMin : DEFAULT_MAX_DURATION_MIN) * 60_000;
 
     // ── 4. Loop de supervisión ffmpeg (con re-resolución de HLS) ────────────
     for (;;) {

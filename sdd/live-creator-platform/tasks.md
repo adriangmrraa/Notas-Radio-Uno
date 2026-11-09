@@ -241,42 +241,42 @@ Convención: una migración drizzle por paso, en `drizzle/`; scripts de data en 
 
 ## Fase 4 — T2 SaaS hardening (batch B-G)
 
-- [ ] **T-37 · Auth multi-tenant (JWT activeTenantId + membresías)** — `multi-tenant-auth`, `super-admin`, `audit-log` · L · deps: T-12, T-16 · épicas: PA-04, B-2
+- [x] **T-37 · Auth multi-tenant (JWT activeTenantId + membresías)** — `multi-tenant-auth`, `super-admin`, `audit-log` · L · deps: T-12, T-16 · épicas: PA-04, B-2
   Files: `src/server/middleware/auth.ts`, `src/server/services/authService.ts`, `src/server/routes/auth.ts`
   Pasos: JWT {userId,activeTenantId,role membresía,isPlatformAdmin,imp?}; `requireAuth` re-verifica `user_tenants` por request (revocación efectiva); `requireRole` sobre rol membresía; `requirePlatformAdmin`; `POST /switch-tenant` (JWT nuevo + last_used_at); login devuelve tenants[]; register→tenant+user_tenants owner; guard anti-destructive si `imp`.
   ✔ `tsc` + suspender membresía → próximo request 403 sin esperar expiración JWT.
 
-- [ ] **T-38 · Invites: inviteService + /api/team** — `team-invites` · M · deps: T-37 · épicas: PA-02, PA-03
+- [x] **T-38 · Invites: inviteService + /api/team** — `team-invites` · M · deps: T-37 · épicas: PA-02, PA-03
   Files: `src/server/services/inviteService.ts`, `src/server/routes/team.ts`
   Pasos: invite→email token→accept (crea/une user + `user_tenants`); revoke/resend; unicidad pending; enforcement `maxTeamMembers` del plan.
   ✔ `tsc` + flujo invite→accept end-to-end crea membresía con rol correcto.
 
-- [ ] **T-39 · subscriptionMachine + billingEventsService** — `subscription-lifecycle` · M · deps: T-10 · épicas: PB-07
+- [x] **T-39 · subscriptionMachine + billingEventsService** — `subscription-lifecycle` · M · deps: T-10 · épicas: PB-07
   Files: `src/server/services/subscriptionMachine.ts`, `src/server/services/billingEventsService.ts`
   Pasos: función pura `transition(status,event,ctx)` con aristas validadas (trial→active→payment_failed→past_due/grace→canceled/suspended); wrapper que aplica + persiste; billing_events append-only + dedup por `external_id` UNIQUE.
   ✔ `tsc` + transición inválida rechazada; mismo external_id → dedup sin doble efecto.
 
-- [ ] **T-40 · Billing routes → máquina + add-ons** — `subscription-lifecycle`, `bug-fixes` · L · deps: T-01, T-02, T-39, T-15 · épicas: PB-04, PB-05
+- [x] **T-40 · Billing routes → máquina + add-ons** — `subscription-lifecycle`, `bug-fixes` · L · deps: T-01, T-02, T-39, T-15 · épicas: PB-04, PB-05
   Files: `src/server/routes/billing.ts`
   Pasos: webhooks Stripe/MP → dedup `billing_events` → `subscriptionMachine.transition`; checkout alta/cambio plan (prorrateo)/cancel (soft, cancel_reason); add-on +5/+15 → `quotaService.grant` (expira con ciclo); trial eligibility 7d/2tx.
   ✔ `tsc` + `invoice.payment_failed` real → past_due + billing_event + enqueue dunning.
 
-- [ ] **T-41 · dunningService** — `subscription-lifecycle` · M · deps: T-40, T-14 · épicas: PB-07, PB-09
+- [x] **T-41 · dunningService** — `subscription-lifecycle` · M · deps: T-40, T-14 · épicas: PB-07, PB-09
   Files: `src/server/services/dunningService.ts`
   Pasos: job `dunning_cycle` diario: reintento cobro provider + email intento N/max; `grace_ends_at` vencido → suspended (paywall, datos intactos); emails trial por vencer/pago ok/fallido.
   ✔ `tsc` + past_due con grace vencido → suspended visible; emails encolados/enviados.
 
-- [ ] **T-42 · adminService + impersonación + métricas + /api/admin** — `super-admin`, `audit-log` · L · deps: T-37, T-16, T-18 · épicas: PA-06…PA-10
+- [x] **T-42 · adminService + impersonación + métricas + /api/admin** — `super-admin`, `audit-log` · L · deps: T-37, T-16, T-18 · épicas: PA-06…PA-10
   Files: `src/server/services/adminService.ts` (+`platformMetricsService` puro), `src/server/routes/admin.ts`
   Pasos: lista/búsqueda tenants (plan,uso,estado), detalle (users,uso,actividad,costo IA), acciones plan/trial/+tx/suspender→billing_event `admin_grant`; impersonación F4 (30min, guard anti-destructive, audit c/metadata.impersonatedBy); panel jobs_queue.
   ✔ `tsc` + impersonar emite JWT imp:true; `/billing` con imp → 403; audit registra inicio/fin.
 
-- [ ] **T-43 · usageTracker → delegación quotaService** — `usage-quota` · S · deps: T-15, T-18 · épicas: PB-02, PI-03
+- [x] **T-43 · usageTracker → delegación quotaService** — `usage-quota` · S · deps: T-15, T-18 · épicas: PB-02, PI-03
   Files: `src/server/services/usageTracker.ts`
   Pasos: `checkUsageLimits` delega en quotaService (o depreca); track* escribe también `ai_cost_records`.
   ✔ `tsc` + llamadores de checkUsageLimits reciben veredicto de cuota real.
 
-- [ ] **T-44 · Plans seed + paywall/usage endpoints + enforcement duración** — `usage-quota`, `subscription-lifecycle` · M · deps: T-10, T-15 · épicas: PB-03, PB-06
+- [x] **T-44 · Plans seed + paywall/usage endpoints + enforcement duración** — `usage-quota`, `subscription-lifecycle` · M · deps: T-10, T-15 · épicas: PB-03, PB-06
   Files: seed `plans`, `src/server/routes/billing.ts` (usage status), enforcement en recorder (T-22 hook maxDurationMinutes)
   Pasos: seed Creator/Media/Network/Enterprise con límites; `GET /api/billing/usage` (count/limit/period/extra); banners >80%; stop suave al llegar maxDuration.
   ✔ `tsc` + endpoint devuelve período TZ tenant correcto; maxDuration detiene captura y procesa lo grabado.

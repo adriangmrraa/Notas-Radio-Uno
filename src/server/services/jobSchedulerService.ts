@@ -209,6 +209,22 @@ async function dispatchJob(
             action: 'scheduler.skipped_quota',
             metadata: { jobId: job.id, jobName: job.name, executionId: execution.id, operationId, count: quota.count, limit: quota.effectiveLimit, period: quota.period },
         });
+
+        // T-40/T-41: si el tenant está en trial y agotó sus transmisiones de
+        // cortesía → la suscripción pasa a 'expired' vía máquina (paywall).
+        try {
+            const { getSubscriptionByTenant, applyTransition } = await import('./subscriptionMachine.js');
+            const sub = await getSubscriptionByTenant(tenantId);
+            if (sub?.status === 'trialing') {
+                await applyTransition(sub.id, 'trial_quota_exhausted', {
+                    provider: 'system',
+                    actor: 'system:jobScheduler',
+                });
+            }
+        } catch (err) {
+            console.warn('[JobScheduler] trial_quota_exhausted transition:', err);
+        }
+
         console.log(`[JobScheduler] '${job.name}' skipped_quota (${quota.count}/${quota.effectiveLimit})`);
         return;
     }

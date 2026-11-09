@@ -32,6 +32,8 @@ import { registerPublicRoutes } from "./routes/public.js";
 import { registerPublicPageRoutes } from "./routes/publicPages.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
+import { teamRouter } from "./routes/team.js";
+import { adminRouter } from "./routes/admin.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
@@ -215,6 +217,8 @@ if (!IS_ENGINE) {
   // ---------------------------------------------------------------------------
   app.use("/api/auth", authRouter);
   app.use("/api/billing", billingRouter);
+  app.use("/api/team", teamRouter);
+  app.use("/api/admin", adminRouter);
   app.use("/api/connections", connectionsRouter);
   app.use("/api/jobs", jobsRouter);
   app.use("/api/images", imageEditRouter);

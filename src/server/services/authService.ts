@@ -1,23 +1,71 @@
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } from './emailService.js';
 import slugify from 'slugify';
 import { UserRole, UserStatus } from '../db/schema/enums.js';
-import { users, tenants, subscriptions, plans, refreshTokens } from '../db/schema/index.js';
-import { auditLog } from '../db/schema/index.js';
-import { eq, and, isNull } from 'drizzle-orm';
+import { users, tenants, subscriptions, plans, userTenants } from '../db/schema/index.js';
+import { audit } from './auditService.js';
+import { recordEvent } from './billingEventsService.js';
+import { applyTransition } from './subscriptionMachine.js';
+import { signAuthToken } from '../middleware/auth.js';
+import { eq, and, desc, asc } from 'drizzle-orm';
 
 const BCRYPT_ROUNDS = 12;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
-const JWT_EXPIRES_IN = '7d';
 const VERIFICATION_TOKEN_TTL_HOURS = 48;
 const RESET_TOKEN_TTL_HOURS = 1;
+const TRIAL_DAYS = 7;
+
+// ---------------------------------------------------------------------------
+// authService — multi-tenant (B-2 / D8)
+// - register crea tenant + membresía owner en user_tenants (users.tenantId
+//   queda deprecado — NO se escribe, D11)
+// - login devuelve JWT con activeTenantId + lista tenants[] para el switcher
+// - switchTenant re-emite JWT con otro tenant activo (+ last_used_at)
+// ---------------------------------------------------------------------------
+
+export interface MembershipInfo {
+    tenantId: string;
+    tenantName: string;
+    tenantSlug: string;
+    role: UserRole;
+    lastUsedAt: Date | null;
+    isActive: boolean;
+}
+
+/** Lista las membresías activas del usuario con datos del tenant. */
+export async function listMemberships(userId: string): Promise<MembershipInfo[]> {
+    const rows = await db.select({
+        tenantId: userTenants.tenantId,
+        role: userTenants.role,
+        lastUsedAt: userTenants.lastUsedAt,
+        tenantName: tenants.name,
+        tenantSlug: tenants.slug,
+        isActive: tenants.isActive,
+    })
+        .from(userTenants)
+        .innerJoin(tenants, eq(userTenants.tenantId, tenants.id))
+        .where(and(eq(userTenants.userId, userId), eq(userTenants.status, 'active')))
+        .orderBy(desc(userTenants.lastUsedAt), asc(userTenants.createdAt));
+
+    return rows.map((r) => ({
+        tenantId: r.tenantId,
+        tenantName: r.tenantName,
+        tenantSlug: r.tenantSlug,
+        role: r.role,
+        lastUsedAt: r.lastUsedAt,
+        isActive: r.isActive,
+    }));
+}
+
+/** Elige el tenant activo por default: el último usado, o el primero. */
+function pickActiveMembership(memberships: MembershipInfo[]): MembershipInfo | null {
+    return memberships[0] ?? null;
+}
 
 // =============================================
-// REGISTRO
+// REGISTRO → tenant + user + membresía owner
 // =============================================
 export async function register(input: {
     email: string;
@@ -58,13 +106,22 @@ export async function register(input: {
             email: normalizedEmail,
             passwordHash,
             fullName,
-            tenantId: tenant.id,
+            // users.tenantId DEPRECADO (D11): la membresía vive en user_tenants.
             role: UserRole.owner,
             status: isDev ? UserStatus.active : UserStatus.pending,
             isVerified: isDev ? true : false,
             verificationToken: isDev ? null : verificationToken,
             verificationTokenExpiresAt: isDev ? null : tokenExpires,
         }).returning();
+
+        // Membresía owner — reemplaza users.tenantId (B-2).
+        await tx.insert(userTenants).values({
+            userId: user.id,
+            tenantId: tenant.id,
+            role: UserRole.owner,
+            status: 'active',
+            lastUsedAt: new Date(),
+        });
 
         await tx.update(tenants)
             .set({ ownerId: user.id })
@@ -76,7 +133,7 @@ export async function register(input: {
                 tenantId: tenant.id,
                 planId: trialPlan.id,
                 status: 'trialing',
-                trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                trialEndsAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
             });
         }
 
@@ -85,11 +142,17 @@ export async function register(input: {
 
     sendVerificationEmail(normalizedEmail, fullName, result.verificationToken).catch(console.error);
 
-    await db.insert(auditLog).values({
+    void audit({
         tenantId: result.tenantId,
-        userId: result.userId,
-        action: 'register',
+        actorUserId: result.userId,
+        action: 'auth.register',
         metadata: { email: normalizedEmail },
+    });
+    void recordEvent({
+        tenantId: result.tenantId,
+        type: 'trial_started',
+        provider: 'system',
+        payload: { email: normalizedEmail, trialDays: TRIAL_DAYS },
     });
 
     return { message: 'Cuenta creada. Revisa tu email para verificar tu cuenta.' };
@@ -120,17 +183,22 @@ export async function verifyEmail(token: string) {
 
     sendWelcomeEmail(user.email, user.fullName).catch(console.error);
 
-    await db.insert(auditLog).values({
-        tenantId: user.tenantId,
-        userId: user.id,
-        action: 'email_verified',
+    const [membership] = await db.select({ tenantId: userTenants.tenantId })
+        .from(userTenants)
+        .where(eq(userTenants.userId, user.id))
+        .limit(1);
+
+    void audit({
+        tenantId: membership?.tenantId ?? null,
+        actorUserId: user.id,
+        action: 'auth.email_verified',
     });
 
     return { message: 'Email verificado exitosamente. Ya puedes iniciar sesion.' };
 }
 
 // =============================================
-// LOGIN
+// LOGIN → JWT multi-tenant + tenants[]
 // =============================================
 export async function login(
     input: { email: string; password: string },
@@ -139,28 +207,18 @@ export async function login(
 ) {
     const normalizedEmail = input.email.toLowerCase().trim();
 
-    const rows = await db.select({
-        user: users,
-        tenant: tenants,
-    })
-        .from(users)
-        .leftJoin(tenants, eq(users.tenantId, tenants.id))
+    const [user] = await db.select().from(users)
         .where(eq(users.email, normalizedEmail))
         .limit(1);
 
-    const row = rows[0];
-    if (!row) throw new AppError('Credenciales invalidas', 401);
-
-    const user = row.user;
-    const tenant = row.tenant;
+    if (!user) throw new AppError('Credenciales invalidas', 401);
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) {
-        await db.insert(auditLog).values({
-            tenantId: user.tenantId,
-            userId: user.id,
-            action: 'login_failed',
-            ipAddress,
+        void audit({
+            actorUserId: user.id,
+            action: 'auth.login_failed',
+            ip: ipAddress,
             metadata: { reason: 'invalid_password' },
         });
         throw new AppError('Credenciales invalidas', 401);
@@ -177,92 +235,187 @@ export async function login(
         );
     }
 
-    const payload = {
-        userId: user.id,
-        tenantId: user.tenantId,
-        email: user.email,
-        role: user.role,
-    };
+    const memberships = await listMemberships(user.id);
+    const active = pickActiveMembership(memberships);
 
-    const accessToken = jwt.sign(payload, JWT_SECRET, {
-        expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256',
+    // Tenant suspendido por plataforma → no puede ser activo (spec edge).
+    const effectiveActive = active?.isActive ? active : (memberships.find((m) => m.isActive) ?? null);
+
+    if (effectiveActive) {
+        await db.update(userTenants)
+            .set({ lastUsedAt: new Date() })
+            .where(and(
+                eq(userTenants.userId, user.id),
+                eq(userTenants.tenantId, effectiveActive.tenantId),
+            ));
+    }
+
+    const accessToken = signAuthToken({
+        userId: user.id,
+        activeTenantId: effectiveActive?.tenantId ?? null,
+        email: user.email,
+        role: effectiveActive?.role ?? UserRole.viewer,
+        isPlatformAdmin: user.isPlatformAdmin,
     });
 
     await db.update(users)
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id));
 
-    await db.insert(auditLog).values({
-        tenantId: user.tenantId,
-        userId: user.id,
-        action: 'login_success',
-        ipAddress,
+    void audit({
+        tenantId: effectiveActive?.tenantId ?? null,
+        actorUserId: user.id,
+        action: 'auth.login_success',
+        ip: ipAddress,
         userAgent,
     });
 
-    return {
-        user: {
-            id: user.id, email: user.email, fullName: user.fullName,
-            role: user.role, status: user.status, isVerified: user.isVerified,
-        },
-        tenant: tenant ? {
-            id: tenant.id, name: tenant.name, slug: tenant.slug,
-            platformName: tenant.platformName, logoUrl: tenant.logoUrl, timezone: tenant.timezone,
-        } : null,
-        accessToken,
-    };
-}
-
-// =============================================
-// GET ME
-// =============================================
-export async function getMe(userId: string) {
-    const rows = await db.select({ user: users, tenant: tenants })
-        .from(users)
-        .leftJoin(tenants, eq(users.tenantId, tenants.id))
-        .where(eq(users.id, userId))
-        .limit(1);
-
-    const row = rows[0];
-    if (!row) throw new AppError('Usuario no encontrado', 404);
-
-    const { user, tenant } = row;
-    if (!tenant) throw new AppError('Tenant no encontrado', 404);
-
-    const subRows = await db.select({ sub: subscriptions, plan: plans })
-        .from(subscriptions)
-        .leftJoin(plans, eq(subscriptions.planId, plans.id))
-        .where(eq(subscriptions.tenantId, tenant.id))
-        .limit(1);
-
-    const subRow = subRows[0];
-    const subscription = subRow?.sub ?? null;
-    const plan = subRow?.plan ?? null;
-
-    let trialDaysRemaining: number | null = null;
-    if (subscription?.status === 'trialing' && subscription.trialEndsAt) {
-        const msRemaining = subscription.trialEndsAt.getTime() - Date.now();
-        trialDaysRemaining = Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
-
-        if (trialDaysRemaining === 0) {
-            await db.update(subscriptions)
-                .set({ status: 'expired' })
-                .where(eq(subscriptions.id, subscription.id));
+    // Tenant activo con datos completos para la respuesta (compat con cliente).
+    let tenantPayload: Record<string, unknown> | null = null;
+    if (effectiveActive) {
+        const [t] = await db.select().from(tenants).where(eq(tenants.id, effectiveActive.tenantId)).limit(1);
+        if (t) {
+            tenantPayload = {
+                id: t.id, name: t.name, slug: t.slug,
+                platformName: t.platformName, logoUrl: t.logoUrl, timezone: t.timezone,
+            };
         }
     }
 
     return {
         user: {
             id: user.id, email: user.email, fullName: user.fullName,
-            avatarUrl: user.avatarUrl, role: user.role, status: user.status,
-            isVerified: user.isVerified, lastLoginAt: user.lastLoginAt,
-            createdAt: user.createdAt,
+            role: effectiveActive?.role ?? user.role, status: user.status,
+            isVerified: user.isVerified, isPlatformAdmin: user.isPlatformAdmin,
         },
-        tenant: {
+        tenant: tenantPayload,
+        /** Lista de tenants del usuario para el switcher (spec multi-tenant-auth). */
+        tenants: memberships.map((m) => ({
+            tenantId: m.tenantId,
+            name: m.tenantName,
+            slug: m.tenantSlug,
+            role: m.role,
+            isActive: m.isActive,
+            active: m.tenantId === effectiveActive?.tenantId,
+        })),
+        accessToken,
+    };
+}
+
+// =============================================
+// SWITCH TENANT → nuevo JWT con otro tenant activo
+// =============================================
+export async function switchTenant(userId: string, targetTenantId: string) {
+    const [membership] = await db.select({
+        role: userTenants.role,
+        tenantName: tenants.name,
+        isActive: tenants.isActive,
+    })
+        .from(userTenants)
+        .innerJoin(tenants, eq(userTenants.tenantId, tenants.id))
+        .where(and(
+            eq(userTenants.userId, userId),
+            eq(userTenants.tenantId, targetTenantId),
+            eq(userTenants.status, 'active'),
+        ))
+        .limit(1);
+
+    if (!membership) {
+        throw new AppError('No tienes membresia en ese tenant', 403, 'NOT_A_MEMBER');
+    }
+    if (!membership.isActive) {
+        throw new AppError('Este tenant esta suspendido', 403, 'TENANT_SUSPENDED');
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user) throw new AppError('Usuario no encontrado', 404);
+
+    await db.update(userTenants)
+        .set({ lastUsedAt: new Date() })
+        .where(and(eq(userTenants.userId, userId), eq(userTenants.tenantId, targetTenantId)));
+
+    const accessToken = signAuthToken({
+        userId: user.id,
+        activeTenantId: targetTenantId,
+        email: user.email,
+        role: membership.role,
+        isPlatformAdmin: user.isPlatformAdmin,
+    });
+
+    void audit({
+        tenantId: targetTenantId,
+        actorUserId: userId,
+        action: 'auth.switch_tenant',
+        metadata: { tenantName: membership.tenantName },
+    });
+
+    return { accessToken, activeTenantId: targetTenantId };
+}
+
+// =============================================
+// GET ME — user + tenant activo + tenants[] + suscripción
+// =============================================
+export async function getMe(userId: string, activeTenantId?: string | null) {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user) throw new AppError('Usuario no encontrado', 404);
+
+    const memberships = await listMemberships(userId);
+    const active = activeTenantId
+        ? (memberships.find((m) => m.tenantId === activeTenantId) ?? null)
+        : pickActiveMembership(memberships);
+
+    let tenant: typeof tenants.$inferSelect | null = null;
+    if (active) {
+        const [t] = await db.select().from(tenants).where(eq(tenants.id, active.tenantId)).limit(1);
+        tenant = t ?? null;
+    }
+
+    let subscription: typeof subscriptions.$inferSelect | null = null;
+    let plan: typeof plans.$inferSelect | null = null;
+    if (tenant) {
+        const subRows = await db.select({ sub: subscriptions, plan: plans })
+            .from(subscriptions)
+            .leftJoin(plans, eq(subscriptions.planId, plans.id))
+            .where(eq(subscriptions.tenantId, tenant.id))
+            .limit(1);
+        subscription = subRows[0]?.sub ?? null;
+        plan = subRows[0]?.plan ?? null;
+    }
+
+    let trialDaysRemaining: number | null = null;
+    if (subscription?.status === 'trialing' && subscription.trialEndsAt) {
+        const msRemaining = subscription.trialEndsAt.getTime() - Date.now();
+        trialDaysRemaining = Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
+        if (trialDaysRemaining === 0) {
+            await applyTransition(subscription.id, 'trial_expired', {
+                provider: 'system',
+                actor: 'system:getMe',
+            }).catch(() => undefined);
+            subscription.status = 'expired';
+        }
+    }
+
+    return {
+        user: {
+            id: user.id, email: user.email, fullName: user.fullName,
+            avatarUrl: user.avatarUrl, role: active?.role ?? user.role, status: user.status,
+            isVerified: user.isVerified, isPlatformAdmin: user.isPlatformAdmin,
+            lastLoginAt: user.lastLoginAt, createdAt: user.createdAt,
+        },
+        tenant: tenant ? {
             id: tenant.id, name: tenant.name, slug: tenant.slug,
             platformName: tenant.platformName, logoUrl: tenant.logoUrl,
             timezone: tenant.timezone, config: tenant.config,
-        },
+        } : null,
+        /** Membresías para el switcher multi-tenant (B-2). */
+        tenants: memberships.map((m) => ({
+            tenantId: m.tenantId,
+            name: m.tenantName,
+            slug: m.tenantSlug,
+            role: m.role,
+            isActive: m.isActive,
+            active: m.tenantId === active?.tenantId,
+        })),
         subscription: subscription && plan ? {
             id: subscription.id,
             status: subscription.status,
@@ -281,6 +434,11 @@ export async function getMe(userId: string) {
                 maxTeamMembers: plan.maxTeamMembers,
                 maxConnectedPlatforms: plan.maxConnectedPlatforms,
                 maxStorageGb: plan.maxStorageGb,
+                maxTransmissionsPerMonth: plan.maxTransmissionsPerMonth,
+                maxDurationMinutes: plan.maxDurationMinutes,
+                maxClipsPerTransmission: plan.maxClipsPerTransmission,
+                maxPersons: plan.maxPersons,
+                retentionDays: plan.retentionDays,
             },
             features: plan.features as Record<string, boolean>,
         } : null,
@@ -336,10 +494,15 @@ export async function resetPassword(token: string, newPassword: string) {
         })
         .where(eq(users.id, user.id));
 
-    await db.insert(auditLog).values({
-        tenantId: user.tenantId,
-        userId: user.id,
-        action: 'password_reset',
+    const [membership] = await db.select({ tenantId: userTenants.tenantId })
+        .from(userTenants)
+        .where(eq(userTenants.userId, user.id))
+        .limit(1);
+
+    void audit({
+        tenantId: membership?.tenantId ?? null,
+        actorUserId: user.id,
+        action: 'auth.password_reset',
     });
 
     return { message: 'Contrasena actualizada exitosamente.' };

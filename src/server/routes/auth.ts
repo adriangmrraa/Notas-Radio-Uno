@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
-import { register, login, verifyEmail, forgotPassword, resetPassword, getMe } from '../services/authService.js';
+import { register, login, verifyEmail, forgotPassword, resetPassword, getMe, switchTenant } from '../services/authService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { AppError } from '../lib/errors.js';
 
@@ -134,10 +134,10 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     }
 });
 
-// GET /api/auth/me (protegido)
+// GET /api/auth/me (protegido) — user + tenant activo + tenants[]
 router.get('/me', requireAuth, async (req: Request, res: Response) => {
     try {
-        const result = await getMe(req.auth!.userId);
+        const result = await getMe(req.auth!.userId, req.auth!.activeTenantId);
         res.json(result);
     } catch (err: any) {
         if (err instanceof AppError) {
@@ -145,6 +145,33 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
             return;
         }
         console.error('[Auth] GetMe error:', err);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+
+// POST /api/auth/switch-tenant (protegido) — nuevo JWT con otro tenant activo
+router.post('/switch-tenant', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const { tenantId } = req.body as { tenantId?: string };
+        if (!tenantId || typeof tenantId !== 'string') {
+            res.status(400).json({ error: 'tenantId requerido' });
+            return;
+        }
+        const result = await switchTenant(req.auth!.userId, tenantId);
+        res.cookie('token', result.accessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            path: '/',
+        });
+        res.json(result);
+    } catch (err: any) {
+        if (err instanceof AppError) {
+            res.status(err.statusCode).json({ error: err.message, code: err.code });
+            return;
+        }
+        console.error('[Auth] Switch tenant error:', err);
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });

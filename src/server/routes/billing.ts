@@ -1,12 +1,18 @@
 import { Router, Request, Response } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import Stripe from 'stripe';
-import { MercadoPagoConfig, PreApproval, Payment } from 'mercadopago';
+import { MercadoPagoConfig, PreApproval, Payment, Preference } from 'mercadopago';
 import { db } from '../db/index.js';
-import { requireAuth } from '../middleware/auth.js';
-import { plans, subscriptions, usageRecords, invoices } from '../db/schema/index.js';
+import { requireAuth, forbidImpersonated } from '../middleware/auth.js';
+import { plans, subscriptions, usageRecords, invoices, tenants } from '../db/schema/index.js';
 import { users } from '../db/schema/index.js';
 import { eq, and, desc } from 'drizzle-orm';
+import { recordEvent, hasEvent, listEvents } from '../services/billingEventsService.js';
+import { applyTransition, getSubscriptionByTenant } from '../services/subscriptionMachine.js';
+import { getQuotaStatus, grant as grantQuota } from '../services/quotaService.js';
+import { sendPaymentOkEmail } from '../services/emailService.js';
+import { listMemberEmails } from '../services/inviteService.js';
+import { auditRequest } from '../services/auditService.js';
 
 const router = Router();
 
@@ -24,6 +30,18 @@ function getMercadoPago() {
     if (!token) return null;
     return new MercadoPagoConfig({ accessToken: token });
 }
+
+// ---------------------------------------------------------------------------
+// Add-ons de transmisiones (PRODUCT-VISION §3.3): +5 / +15, expiran con ciclo.
+// Precios configurables por env — defaults razonables en centavos.
+// ---------------------------------------------------------------------------
+const ADDON_PACKAGES = {
+    plus5: { transmissions: 5, priceUsdCents: Number(process.env.ADDON_PLUS5_USD_CENTS ?? 1500), priceArs: Number(process.env.ADDON_PLUS5_ARS ?? 15000) },
+    plus15: { transmissions: 15, priceUsdCents: Number(process.env.ADDON_PLUS15_USD_CENTS ?? 3900), priceArs: Number(process.env.ADDON_PLUS15_ARS ?? 39000) },
+} as const;
+type AddonKey = keyof typeof ADDON_PACKAGES;
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 // ---------------------------------------------------------------------------
 // GET /api/billing/plans — Public
@@ -48,7 +66,7 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
         const rows = await db.select({ sub: subscriptions, plan: plans })
             .from(subscriptions)
             .leftJoin(plans, eq(subscriptions.planId, plans.id))
-            .where(eq(subscriptions.tenantId, req.auth!.tenantId))
+            .where(eq(subscriptions.tenantId, req.auth!.tenantId!))
             .limit(1);
 
         if (!rows[0]) {
@@ -68,9 +86,11 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
             const diff = subscription.trialEndsAt.getTime() - Date.now();
             trialDaysRemaining = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
             if (trialDaysRemaining === 0) {
-                await db.update(subscriptions)
-                    .set({ status: 'expired' })
-                    .where(eq(subscriptions.id, subscription.id));
+                // La expiración pasa por la máquina (T-39/T-40).
+                await applyTransition(subscription.id, 'trial_expired', {
+                    provider: 'system',
+                    actor: 'system:my-subscription',
+                }).catch((e) => console.warn('[Billing] trial_expired:', e));
                 subscription.status = 'expired';
             }
         }
@@ -85,6 +105,7 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
                 trialDaysRemaining,
                 currentPeriodEnd: subscription.currentPeriodEnd,
                 cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+                graceEndsAt: subscription.graceEndsAt,
                 limits: {
                     maxPipelineHoursPerMonth: plan.maxPipelineHoursPerMonth,
                     maxPublicationsPerMonth: plan.maxPublicationsPerMonth,
@@ -93,6 +114,11 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
                     maxTeamMembers: plan.maxTeamMembers,
                     maxConnectedPlatforms: plan.maxConnectedPlatforms,
                     maxStorageGb: plan.maxStorageGb,
+                    maxTransmissionsPerMonth: plan.maxTransmissionsPerMonth,
+                    maxDurationMinutes: plan.maxDurationMinutes,
+                    maxClipsPerTransmission: plan.maxClipsPerTransmission,
+                    maxPersons: plan.maxPersons,
+                    retentionDays: plan.retentionDays,
                 },
                 features: plan.features,
             },
@@ -104,34 +130,85 @@ router.get('/my-subscription', requireAuth, async (req: Request, res: Response) 
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/billing/usage — Auth required
+// GET /api/billing/usage — medidor del ciclo (T-44)
+// count/limit/period/extra + renovación en TZ del tenant + históricos legacy.
 // ---------------------------------------------------------------------------
+
+/** Offset (local − UTC) en ms para una fecha dada en una timezone IANA. */
+function tzOffsetMs(date: Date, timeZone: string): number {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+    });
+    const parts: Record<string, string> = {};
+    for (const p of dtf.formatToParts(date)) parts[p.type] = p.value;
+    const localAsUtc = Date.UTC(
+        Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+        Number(parts.hour) % 24, Number(parts.minute), Number(parts.second),
+    );
+    return localAsUtc - date.getTime();
+}
+
+/** Instante UTC en que empieza el período siguiente (00:00 del día 1 en TZ tenant). */
+export function periodRenewalInstant(period: string, timeZone: string): Date {
+    const [y, m] = period.split('-').map(Number);
+    const nextY = m === 12 ? y + 1 : y;
+    const nextM = m === 12 ? 1 : m + 1;
+    const guessUtc = Date.UTC(nextY, nextM - 1, 1, 0, 0, 0);
+    // Una iteración de corrección por DST basta para el boundary mensual.
+    const offset = tzOffsetMs(new Date(guessUtc), timeZone);
+    return new Date(guessUtc - offset);
+}
+
 router.get('/usage', requireAuth, async (req: Request, res: Response) => {
     try {
-        const now = new Date();
-        const periodStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const tenantId = req.auth!.tenantId!;
+        const quota = await getQuotaStatus(tenantId);
 
-        let [usage] = await db.select().from(usageRecords)
-            .where(and(
-                eq(usageRecords.tenantId, req.auth!.tenantId),
-                eq(usageRecords.periodStart, periodStart)
-            ))
+        const [tenant] = await db.select({ timezone: tenants.timezone })
+            .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+        const timezone = tenant?.timezone ?? 'UTC';
+
+        const [subRow] = await db.select({ plan: plans, sub: subscriptions })
+            .from(subscriptions)
+            .leftJoin(plans, eq(subscriptions.planId, plans.id))
+            .where(eq(subscriptions.tenantId, tenantId))
             .limit(1);
 
-        if (!usage) {
-            [usage] = await db.insert(usageRecords).values({
-                tenantId: req.auth!.tenantId,
-                periodStart,
-            }).returning();
-        }
+        const effectiveLimit = quota.effectiveLimit; // -1 = ilimitado
+        const used = quota.transmissionsUsed;
+        const usagePercent = effectiveLimit > 0
+            ? Math.round((used / effectiveLimit) * 100)
+            : (used > 0 && effectiveLimit === 0 ? 100 : 0);
+
+        // Histórico legacy (pipeline hours, publications…) — usage_records.
+        const now = new Date();
+        const legacyPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const [legacy] = await db.select().from(usageRecords)
+            .where(and(eq(usageRecords.tenantId, tenantId), eq(usageRecords.periodStart, legacyPeriod)))
+            .limit(1);
 
         res.json({
-            pipelineHoursUsed: Number(usage.pipelineHoursUsed),
-            publicationsCount: usage.publicationsCount,
-            transcriptionMinutes: Number(usage.transcriptionMinutes),
-            aiTokensUsed: Number(usage.aiTokensUsed),
-            storageUsedMb: Number(usage.storageUsedMb),
-            periodStart: usage.periodStart,
+            // ── Shape legacy FLAT (BillingPage lo consume tal cual) ──
+            pipelineHoursUsed: Number(legacy?.pipelineHoursUsed ?? 0),
+            publicationsCount: legacy?.publicationsCount ?? 0,
+            transcriptionMinutes: Number(legacy?.transcriptionMinutes ?? 0),
+            aiTokensUsed: Number(legacy?.aiTokensUsed ?? 0),
+            storageUsedMb: Number(legacy?.storageUsedMb ?? 0),
+            // ── Veredicto de cuota real del ciclo (T-44) ──
+            period: quota.period,
+            timezone,
+            transmissionsUsed: used,
+            effectiveLimit,                       // plan + extra (-1 = ∞)
+            extraTransmissions: quota.extraTransmissions,
+            planLimit: subRow?.plan?.maxTransmissionsPerMonth ?? null,
+            usagePercent,
+            over80: effectiveLimit > 0 && usagePercent >= 80,
+            renewsAt: periodRenewalInstant(quota.period, timezone),
+            subscriptionStatus: subRow?.sub?.status ?? null,
+            planName: subRow?.plan?.name ?? null,
         });
     } catch (err) {
         console.error('[Billing] Error fetching usage:', err);
@@ -145,7 +222,7 @@ router.get('/usage', requireAuth, async (req: Request, res: Response) => {
 router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
     try {
         const allInvoices = await db.select().from(invoices)
-            .where(eq(invoices.tenantId, req.auth!.tenantId))
+            .where(eq(invoices.tenantId, req.auth!.tenantId!))
             .orderBy(desc(invoices.createdAt))
             .limit(50);
         res.json(allInvoices);
@@ -156,16 +233,30 @@ router.get('/invoices', requireAuth, async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/billing/checkout — Auth required
+// GET /api/billing/events — historial billing_events del tenant (append-only)
 // ---------------------------------------------------------------------------
-router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
+router.get('/events', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const events = await listEvents(req.auth!.tenantId!, 100);
+        res.json(events);
+    } catch (err) {
+        console.error('[Billing] Error fetching events:', err);
+        res.status(500).json({ error: 'Error al obtener historial' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/billing/checkout — alta o cambio de plan (Stripe | MercadoPago)
+// BLOQUEADO durante impersonación (F4 anti-destructive: pagos).
+// ---------------------------------------------------------------------------
+router.post('/checkout', requireAuth, forbidImpersonated, async (req: Request, res: Response) => {
     try {
         const { planName, billingPeriod = 'monthly', provider = 'stripe' } = req.body;
 
         const [plan] = await db.select().from(plans)
             .where(eq(plans.name, planName))
             .limit(1);
-        if (!plan) {
+        if (!plan || !plan.isActive) {
             res.status(400).json({ error: 'Plan no encontrado' });
             return;
         }
@@ -173,8 +264,6 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
         const [user] = await db.select({ email: users.email }).from(users)
             .where(eq(users.id, req.auth!.userId))
             .limit(1);
-
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
         if (provider === 'stripe') {
             const stripe = getStripe();
@@ -196,20 +285,17 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
                 mode: 'subscription',
                 customer_email: user?.email,
                 line_items: [{ price: priceId, quantity: 1 }],
-                success_url: `${frontendUrl}/billing?status=success&provider=stripe`,
-                cancel_url: `${frontendUrl}/billing?status=cancel`,
+                success_url: `${FRONTEND_URL}/billing?status=success&provider=stripe`,
+                cancel_url: `${FRONTEND_URL}/billing?status=cancel`,
                 metadata: {
-                    tenantId: req.auth!.tenantId,
+                    tenantId: req.auth!.tenantId!,
                     planName: plan.name,
                     billingPeriod,
                 },
             });
 
-            res.json({
-                checkoutUrl: session.url,
-                sessionId: session.id,
-                provider: 'stripe',
-            });
+            void auditRequest(req, 'billing.checkout', { provider: 'stripe', planName, billingPeriod });
+            res.json({ checkoutUrl: session.url, sessionId: session.id, provider: 'stripe' });
         } else if (provider === 'mercadopago') {
             const mpConfig = getMercadoPago();
             if (!mpConfig) {
@@ -232,15 +318,12 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
                         currency_id: 'ARS',
                     },
                     external_reference: `tenant_${req.auth!.tenantId}_${plan.name}_${billingPeriod}`,
-                    back_url: `${frontendUrl}/billing?status=success&provider=mercadopago`,
+                    back_url: `${FRONTEND_URL}/billing?status=success&provider=mercadopago`,
                 },
             });
 
-            res.json({
-                checkoutUrl: result.init_point,
-                preapprovalId: result.id,
-                provider: 'mercadopago',
-            });
+            void auditRequest(req, 'billing.checkout', { provider: 'mercadopago', planName, billingPeriod });
+            res.json({ checkoutUrl: result.init_point, preapprovalId: result.id, provider: 'mercadopago' });
         } else {
             res.status(400).json({ error: 'Provider no soportado' });
         }
@@ -251,36 +334,139 @@ router.post('/checkout', requireAuth, async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/billing/cancel — Auth required
+// POST /api/billing/change-plan — cambio de plan con prorrateo (Stripe) o
+// checkout nuevo (MP no prorratea → se completa vía webhook authorized).
 // ---------------------------------------------------------------------------
-router.post('/cancel', requireAuth, async (req: Request, res: Response) => {
+router.post('/change-plan', requireAuth, forbidImpersonated, async (req: Request, res: Response) => {
     try {
-        const [subscription] = await db.select().from(subscriptions)
-            .where(eq(subscriptions.tenantId, req.auth!.tenantId))
-            .limit(1);
+        const { planName, billingPeriod } = req.body as { planName?: string; billingPeriod?: string };
+        if (!planName) { res.status(400).json({ error: 'planName requerido' }); return; }
 
-        if (!subscription) {
+        const [plan] = await db.select().from(plans).where(eq(plans.name, planName)).limit(1);
+        if (!plan || !plan.isActive) { res.status(400).json({ error: 'Plan no encontrado' }); return; }
+
+        const sub = await getSubscriptionByTenant(req.auth!.tenantId!);
+        if (!sub) { res.status(404).json({ error: 'No hay suscripcion activa — usa /checkout' }); return; }
+
+        const period = billingPeriod ?? sub.billingPeriod ?? 'monthly';
+
+        if (sub.paymentProvider === 'stripe' && sub.externalSubscriptionId) {
+            const stripe = getStripe();
+            if (!stripe) { res.status(503).json({ error: 'Stripe no esta configurado' }); return; }
+
+            const priceId = period === 'yearly' ? plan.stripePriceIdYearly : plan.stripePriceIdMonthly;
+            if (!priceId) { res.status(400).json({ error: 'Plan sin precio Stripe configurado' }); return; }
+
+            // Prorrateo del provider (spec: cambio de plan con proration).
+            const stripeSub = await stripe.subscriptions.retrieve(sub.externalSubscriptionId);
+            const itemId = stripeSub.items.data[0]?.id;
+            if (!itemId) { res.status(502).json({ error: 'Suscripcion Stripe sin items' }); return; }
+
+            await stripe.subscriptions.update(sub.externalSubscriptionId, {
+                items: [{ id: itemId, price: priceId }],
+                proration_behavior: 'create_prorations',
+            });
+
+            const applied = await applyTransition(sub.id, 'plan_changed', {
+                planId: plan.id,
+                billingPeriod: period,
+                frozenPrice: plan.priceUsd,
+                frozenCurrency: 'USD',
+                provider: 'stripe',
+                actor: req.auth!.userId,
+            });
+
+            void auditRequest(req, 'billing.plan_changed', { planName, provider: 'stripe', prorated: true, applied: applied.applied });
+            res.json({ message: 'Plan actualizado con prorrateo', plan: plan.name, applied: applied.applied });
+            return;
+        }
+
+        if (sub.paymentProvider === 'mercadopago') {
+            // MP no prorratea: emitir checkout del nuevo plan — el webhook
+            // authorized completa el cambio vía máquina (external_reference).
+            const mpConfig = getMercadoPago();
+            if (!mpConfig) { res.status(503).json({ error: 'MercadoPago no esta configurado' }); return; }
+
+            const amount = period === 'yearly' ? Number(plan.priceArsYearly || plan.priceArs) : Number(plan.priceArs);
+            const preApproval = new PreApproval(mpConfig);
+            const result = await preApproval.create({
+                body: {
+                    reason: `PeriodistApp ${plan.displayName} - ${period === 'yearly' ? 'Anual' : 'Mensual'}`,
+                    auto_recurring: {
+                        frequency: 1,
+                        frequency_type: period === 'yearly' ? 'years' : 'months',
+                        transaction_amount: amount,
+                        currency_id: 'ARS',
+                    },
+                    external_reference: `tenant_${req.auth!.tenantId}_${plan.name}_${period}`,
+                    back_url: `${FRONTEND_URL}/billing?status=success&provider=mercadopago`,
+                },
+            });
+            void auditRequest(req, 'billing.plan_change_requested', { planName, provider: 'mercadopago' });
+            res.json({ checkoutUrl: result.init_point, provider: 'mercadopago', message: 'Confirma el nuevo plan en MercadoPago' });
+            return;
+        }
+
+        // Sin provider externo (admin/manual): transición directa.
+        const applied = await applyTransition(sub.id, 'plan_changed', {
+            planId: plan.id,
+            billingPeriod: period,
+            frozenPrice: plan.priceUsd,
+            frozenCurrency: 'USD',
+            provider: 'manual',
+            actor: req.auth!.userId,
+        });
+        void auditRequest(req, 'billing.plan_changed', { planName, provider: 'manual', applied: applied.applied });
+        res.json({ message: 'Plan actualizado', plan: plan.name, applied: applied.applied });
+    } catch (err) {
+        console.error('[Billing] Change plan error:', err);
+        res.status(500).json({ error: 'Error al cambiar de plan' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/billing/cancel — soft-cancel con motivo (spec subscription-lifecycle)
+// ---------------------------------------------------------------------------
+router.post('/cancel', requireAuth, forbidImpersonated, async (req: Request, res: Response) => {
+    try {
+        const { reason } = req.body as { reason?: string };
+        const sub = await getSubscriptionByTenant(req.auth!.tenantId!);
+
+        if (!sub) {
             res.status(404).json({ error: 'No hay suscripcion activa' });
             return;
         }
 
-        await db.update(subscriptions)
-            .set({
-                cancelAtPeriodEnd: true,
-                canceledAt: new Date(),
-            })
-            .where(eq(subscriptions.id, subscription.id));
+        // Soft-cancel vía máquina: status intacto, flag hasta fin de período.
+        const applied = await applyTransition(sub.id, 'cancel_requested', {
+            cancelReason: reason ?? null,
+            actor: req.auth!.userId,
+            provider: sub.paymentProvider,
+        });
+        if (!applied.applied) {
+            res.status(409).json({ error: applied.reason ?? 'No se pudo cancelar' });
+            return;
+        }
 
-        // Cancel on Stripe if applicable
-        if (subscription.paymentProvider === 'stripe' && subscription.externalSubscriptionId) {
+        // Aviso al provider (best-effort — la fuente de verdad es el webhook).
+        if (sub.paymentProvider === 'stripe' && sub.externalSubscriptionId) {
             const stripe = getStripe();
             if (stripe) {
-                await stripe.subscriptions.update(subscription.externalSubscriptionId, {
+                await stripe.subscriptions.update(sub.externalSubscriptionId, {
                     cancel_at_period_end: true,
-                });
+                }).catch((e) => console.warn('[Billing] Stripe cancel_at_period_end:', e));
+            }
+        } else if (sub.paymentProvider === 'mercadopago' && sub.externalSubscriptionId) {
+            const mpConfig = getMercadoPago();
+            if (mpConfig) {
+                await new PreApproval(mpConfig).update({
+                    id: sub.externalSubscriptionId,
+                    body: { status: 'cancelled' },
+                }).catch((e) => console.warn('[Billing] MP preapproval cancel:', e));
             }
         }
 
+        void auditRequest(req, 'billing.cancel', { reason: reason ?? null });
         res.json({ message: 'Suscripcion cancelada al final del periodo' });
     } catch (err) {
         console.error('[Billing] Cancel error:', err);
@@ -289,7 +475,117 @@ router.post('/cancel', requireAuth, async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/billing/addon — add-on +5/+15 transmisiones (expiran con el ciclo)
+// ---------------------------------------------------------------------------
+router.post('/addon', requireAuth, forbidImpersonated, async (req: Request, res: Response) => {
+    try {
+        const { addon, provider = 'stripe' } = req.body as { addon?: AddonKey; provider?: string };
+        if (!addon || !(addon in ADDON_PACKAGES)) {
+            res.status(400).json({ error: 'Addon invalido — opciones: plus5 | plus15' });
+            return;
+        }
+        const pkg = ADDON_PACKAGES[addon];
+
+        if (provider === 'stripe') {
+            const stripe = getStripe();
+            if (!stripe) { res.status(503).json({ error: 'Stripe no esta configurado' }); return; }
+
+            const session = await stripe.checkout.sessions.create({
+                mode: 'payment',
+                line_items: [{
+                    price_data: {
+                        currency: 'usd',
+                        unit_amount: pkg.priceUsdCents,
+                        product_data: { name: `+${pkg.transmissions} transmisiones (ciclo actual)` },
+                    },
+                    quantity: 1,
+                }],
+                success_url: `${FRONTEND_URL}/billing?status=addon_success&provider=stripe`,
+                cancel_url: `${FRONTEND_URL}/billing?status=cancel`,
+                metadata: { tenantId: req.auth!.tenantId!, addon },
+            });
+            void auditRequest(req, 'billing.addon_checkout', { addon, provider: 'stripe' });
+            res.json({ checkoutUrl: session.url, sessionId: session.id, provider: 'stripe' });
+            return;
+        }
+
+        if (provider === 'mercadopago') {
+            const mpConfig = getMercadoPago();
+            if (!mpConfig) { res.status(503).json({ error: 'MercadoPago no esta configurado' }); return; }
+
+            const preference = new Preference(mpConfig);
+            const result = await preference.create({
+                body: {
+                    items: [{
+                        id: addon,
+                        title: `PeriodistApp +${pkg.transmissions} transmisiones`,
+                        quantity: 1,
+                        unit_price: pkg.priceArs,
+                        currency_id: 'ARS',
+                    }],
+                    external_reference: `addon_${req.auth!.tenantId}_${addon}`,
+                    back_urls: {
+                        success: `${FRONTEND_URL}/billing?status=addon_success&provider=mercadopago`,
+                        failure: `${FRONTEND_URL}/billing?status=cancel`,
+                    },
+                },
+            });
+            void auditRequest(req, 'billing.addon_checkout', { addon, provider: 'mercadopago' });
+            res.json({ checkoutUrl: result.init_point, provider: 'mercadopago' });
+            return;
+        }
+
+        res.status(400).json({ error: 'Provider no soportado' });
+    } catch (err) {
+        console.error('[Billing] Addon error:', err);
+        res.status(500).json({ error: 'Error al crear add-on' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Helpers compartidos de webhook
+// ---------------------------------------------------------------------------
+
+/** Asegura fila de suscripción para el tenant (edge: checkout sin sub previa). */
+async function ensureSubscription(tenantId: string, planId: string) {
+    const existing = await getSubscriptionByTenant(tenantId);
+    if (existing) return existing;
+    const [sub] = await db.insert(subscriptions).values({
+        tenantId,
+        planId,
+        status: 'trialing',
+    }).onConflictDoNothing({ target: subscriptions.tenantId }).returning();
+    if (sub) return sub;
+    return (await getSubscriptionByTenant(tenantId))!;
+}
+
+/** Otorga las transmisiones de un add-on pago (grant que expira con el ciclo). */
+async function grantAddon(tenantId: string, addon: string, externalOpId: string) {
+    const pkg = ADDON_PACKAGES[addon as AddonKey];
+    if (!pkg) {
+        console.warn(`[Billing] addon desconocido '${addon}' — grant ignorado`);
+        return;
+    }
+    await grantQuota(tenantId, pkg.transmissions, null, externalOpId);
+    await recordEvent({
+        tenantId,
+        type: 'addon_purchased',
+        payload: { addon, transmissions: pkg.transmissions, externalOpId },
+    });
+    console.log(`[Billing] add-on ${addon} → +${pkg.transmissions} tx para tenant ${tenantId}`);
+}
+
+/** Emails de pago OK a los owners del tenant (best-effort). */
+async function emailOwnersPaymentOk(tenantId: string): Promise<void> {
+    const emails = await listMemberEmails(tenantId).catch(() => [] as string[]);
+    for (const email of emails) {
+        sendPaymentOkEmail(email, 'equipo').catch((e) => console.warn('[Billing] sendPaymentOkEmail:', e));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/billing/webhook/stripe — No auth (Stripe signs it)
+// Flujo: firma → dedup billing_events(external_id=event.id) → máquina.
 // ---------------------------------------------------------------------------
 router.post('/webhook/stripe', async (req: Request, res: Response) => {
     const stripe = getStripe();
@@ -313,43 +609,50 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
     }
 
     try {
+        // Dedup ATÓMICO por external_id — el primer insert gana; un retry del
+        // mismo evento Stripe sale temprano sin doble efecto (F5).
+        const gate = await recordEvent({
+            type: 'webhook_received',
+            provider: 'stripe',
+            externalId: event.id,
+            payload: { eventType: event.type },
+        });
+        if (!gate.inserted) {
+            res.json({ received: true, deduplicated: true });
+            return;
+        }
+
         switch (event.type) {
             case 'checkout.session.completed': {
                 const session = event.data.object as Stripe.Checkout.Session;
-                const { tenantId, planName, billingPeriod } = session.metadata || {};
-                if (!tenantId || !planName) break;
+                const { tenantId, planName, billingPeriod, addon } = session.metadata || {};
+                if (!tenantId) break;
 
+                if (session.mode === 'payment' && addon) {
+                    // Add-on +N transmisiones → grant de cuota del ciclo.
+                    await grantAddon(tenantId, addon, `stripe_addon:${session.id}`);
+                    break;
+                }
+
+                if (!planName) break;
                 const [plan] = await db.select().from(plans)
                     .where(eq(plans.name, planName))
                     .limit(1);
                 if (!plan) break;
 
-                await db.insert(subscriptions).values({
-                    tenantId,
+                const sub = await ensureSubscription(tenantId, plan.id);
+                await applyTransition(sub.id, 'checkout_completed', {
                     planId: plan.id,
-                    status: 'active',
-                    paymentProvider: 'stripe',
                     billingPeriod: billingPeriod || 'monthly',
+                    paymentProvider: 'stripe',
                     externalSubscriptionId: session.subscription as string,
                     externalCustomerId: session.customer as string,
+                    frozenPrice: plan.priceUsd,
+                    frozenCurrency: 'USD',
                     currentPeriodStart: new Date(),
-                    trialEndsAt: null,
-                    cancelAtPeriodEnd: false,
-                    canceledAt: null,
-                }).onConflictDoUpdate({
-                    target: subscriptions.tenantId,
-                    set: {
-                        planId: plan.id,
-                        status: 'active',
-                        paymentProvider: 'stripe',
-                        billingPeriod: billingPeriod || 'monthly',
-                        externalSubscriptionId: session.subscription as string,
-                        externalCustomerId: session.customer as string,
-                        currentPeriodStart: new Date(),
-                        trialEndsAt: null,
-                        cancelAtPeriodEnd: false,
-                        canceledAt: null,
-                    },
+                    provider: 'stripe',
+                    actor: 'system:webhook-stripe',
+                    payload: { sessionId: session.id },
                 });
                 console.log(`[Stripe] Subscription activated for tenant ${tenantId}, plan ${planName}`);
                 break;
@@ -376,6 +679,14 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                     billingPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : undefined,
                     billingPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : undefined,
                 });
+
+                await applyTransition(subscription.id, 'invoice_paid', {
+                    currentPeriodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
+                    currentPeriodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+                    provider: 'stripe',
+                    actor: 'system:webhook-stripe',
+                });
+                void emailOwnersPaymentOk(subscription.tenantId);
                 break;
             }
 
@@ -383,17 +694,32 @@ router.post('/webhook/stripe', async (req: Request, res: Response) => {
                 const failedInvoice = event.data.object as Stripe.Invoice;
                 const custId = failedInvoice.customer as string;
 
-                await db.update(subscriptions)
-                    .set({ status: 'past_due' })
-                    .where(eq(subscriptions.externalCustomerId, custId));
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalCustomerId, custId))
+                    .limit(1);
+                if (!subscription) break;
+
+                // active → past_due + billing_event + enqueue dunning (máquina).
+                await applyTransition(subscription.id, 'payment_failed', {
+                    provider: 'stripe',
+                    actor: 'system:webhook-stripe',
+                    payload: { invoiceId: failedInvoice.id },
+                });
                 break;
             }
 
             case 'customer.subscription.deleted': {
                 const deletedSub = event.data.object as Stripe.Subscription;
-                await db.update(subscriptions)
-                    .set({ status: 'canceled', canceledAt: new Date() })
-                    .where(eq(subscriptions.externalSubscriptionId, deletedSub.id));
+                const [subscription] = await db.select().from(subscriptions)
+                    .where(eq(subscriptions.externalSubscriptionId, deletedSub.id))
+                    .limit(1);
+                if (!subscription) break;
+
+                await applyTransition(subscription.id, 'subscription_deleted', {
+                    cancelReason: 'provider_deleted',
+                    provider: 'stripe',
+                    actor: 'system:webhook-stripe',
+                });
                 break;
             }
         }
@@ -443,6 +769,7 @@ function verifyMercadoPagoSignature(req: Request): boolean {
 
 // ---------------------------------------------------------------------------
 // POST /api/billing/webhook/mercadopago — No auth
+// Flujo: firma (si hay secret) → re-fetch API → dedup external_id → máquina.
 // ---------------------------------------------------------------------------
 router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
     if (!verifyMercadoPagoSignature(req)) {
@@ -458,6 +785,13 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             (req.query['data.id'] as string) ||
             (req.body as { data?: { id?: unknown } })?.data?.id;
 
+        // Dedup ANTES de tocar la API: el external_id compuesto cubre retries.
+        const externalId = `mp:${type ?? 'unknown'}:${dataId ?? 'noid'}`;
+        if (dataId && (await hasEvent(externalId))) {
+            res.json({ received: true, deduplicated: true });
+            return;
+        }
+
         // SECURITY: req.body is NEVER trusted for state mutations. Every branch
         // below re-fetches the entity from the MercadoPago API (preApproval.get /
         // payment.get) and mutates only from that verified response.
@@ -468,6 +802,12 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
 
             const preApproval = new PreApproval(mpConfig);
             const result = await preApproval.get({ id: String(dataId) });
+
+            // Registramos la recepción DESPUÉS de confirmar que el evento es real.
+            await recordEvent({
+                type: 'webhook_received', provider: 'mercadopago', externalId,
+                payload: { mpStatus: result.status },
+            });
 
             const externalRef = result.external_reference || '';
             const match = externalRef.match(/^tenant_(.+?)_(.+?)_(.+)$/);
@@ -482,36 +822,28 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             const mpStatus = result.status;
 
             if (mpStatus === 'authorized') {
-                await db.insert(subscriptions).values({
-                    tenantId,
+                const sub = await ensureSubscription(tenantId, plan.id);
+                await applyTransition(sub.id, 'checkout_completed', {
                     planId: plan.id,
-                    status: 'active',
-                    paymentProvider: 'mercadopago',
                     billingPeriod,
+                    paymentProvider: 'mercadopago',
                     externalSubscriptionId: String(dataId),
+                    frozenPrice: plan.priceArs,
+                    frozenCurrency: 'ARS',
                     currentPeriodStart: new Date(),
-                    trialEndsAt: null,
-                    cancelAtPeriodEnd: false,
-                    canceledAt: null,
-                }).onConflictDoUpdate({
-                    target: subscriptions.tenantId,
-                    set: {
-                        planId: plan.id,
-                        status: 'active',
-                        paymentProvider: 'mercadopago',
-                        billingPeriod,
-                        externalSubscriptionId: String(dataId),
-                        currentPeriodStart: new Date(),
-                        trialEndsAt: null,
-                        cancelAtPeriodEnd: false,
-                        canceledAt: null,
-                    },
+                    provider: 'mercadopago',
+                    actor: 'system:webhook-mp',
                 });
                 console.log(`[MercadoPago] Subscription activated for tenant ${tenantId}`);
             } else if (mpStatus === 'paused' || mpStatus === 'cancelled') {
-                await db.update(subscriptions)
-                    .set({ status: 'canceled', canceledAt: new Date() })
-                    .where(eq(subscriptions.tenantId, tenantId));
+                const sub = await getSubscriptionByTenant(tenantId);
+                if (sub) {
+                    await applyTransition(sub.id, 'subscription_deleted', {
+                        cancelReason: `mp_${mpStatus}`,
+                        provider: 'mercadopago',
+                        actor: 'system:webhook-mp',
+                    });
+                }
             }
         }
 
@@ -522,8 +854,23 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
             const payment = new Payment(mpConfig);
             const paymentData = await payment.get({ id: String(dataId) });
 
+            await recordEvent({
+                type: 'webhook_received', provider: 'mercadopago', externalId,
+                payload: { mpStatus: paymentData.status },
+            });
+
             if (paymentData.status === 'approved' && paymentData.external_reference) {
-                const match = paymentData.external_reference.match(/^tenant_(.+?)_/);
+                const ref = paymentData.external_reference;
+
+                const addonMatch = ref.match(/^addon_(.+?)_(plus5|plus15)$/);
+                if (addonMatch) {
+                    const [, tenantId, addon] = addonMatch;
+                    await grantAddon(tenantId, addon, `mp_addon:${dataId}`);
+                    res.json({ received: true });
+                    return;
+                }
+
+                const match = ref.match(/^tenant_(.+?)_/);
                 if (match) {
                     const tenantId = match[1];
                     const [sub] = await db.select().from(subscriptions)
@@ -540,6 +887,11 @@ router.post('/webhook/mercadopago', async (req: Request, res: Response) => {
                             externalPaymentId: String(dataId),
                             paidAt: new Date(),
                         });
+                        await applyTransition(sub.id, 'invoice_paid', {
+                            provider: 'mercadopago',
+                            actor: 'system:webhook-mp',
+                        });
+                        void emailOwnersPaymentOk(tenantId);
                     }
                 }
             }
