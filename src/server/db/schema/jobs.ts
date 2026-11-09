@@ -15,6 +15,7 @@ import { scheduleTypeEnum, jobExecutionStatusEnum } from './enums.js';
 import { tenants } from './tenants.js';
 import { users } from './users.js';
 import { programs } from './programs.js';
+import { transmissions } from './transmissions.js';
 
 export const scheduledJobs = pgTable(
   'scheduled_jobs',
@@ -73,6 +74,7 @@ export const jobExecutions = pgTable(
     errorMessage: text('error_message'),
     errorCount: integer('error_count').notNull().default(0),
     executionLog: jsonb('execution_log').notNull().default([]),
+    transmissionId: uuid('transmission_id').references(() => transmissions.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
