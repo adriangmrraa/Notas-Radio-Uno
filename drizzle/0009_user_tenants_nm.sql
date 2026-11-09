@@ -1,4 +1,4 @@
-﻿-- 0008 â€” MembresÃ­as N:M usuarioâ†”tenant (decisiÃ³n B-2 / T-37)
+﻿-- 0009 â€” MembresÃ­as N:M usuarioâ†”tenant (decisiÃ³n B-2 / T-37)
 --
 -- `user_tenants` es la fuente de verdad del acceso: un usuario puede pertenecer
 -- a varios tenants con un rol por tenant. `users.tenant_id` pasa a legacy

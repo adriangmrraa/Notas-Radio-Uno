@@ -1,5 +1,5 @@
 {
-  "id": "a87061d8-f5fa-4b87-b9f9-e64ea165661f",
+  "id": "6cba9721-86a6-4a8d-8f4f-c67e20858bbc",
   "prevId": "3675aa98-de1b-4887-97d7-b31757a669b3",
   "version": "7",
   "dialect": "postgresql",
@@ -162,7 +162,7 @@
           "name": "tenant_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "role": {
           "name": "role",
@@ -327,7 +327,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -6301,15 +6301,16 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.user_tenants": {
-      "name": "user_tenants",
+    "public.scheduled_transmissions": {
+      "name": "scheduled_transmissions",
       "schema": "",
       "columns": {
-        "user_id": {
-          "name": "user_id",
+        "id": {
+          "name": "id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "tenant_id": {
           "name": "tenant_id",
@@ -6317,24 +6318,98 @@
           "primaryKey": false,
           "notNull": true
         },
-        "role": {
-          "name": "role",
-          "type": "UserRole",
-          "typeSchema": "public",
+        "program_id": {
+          "name": "program_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stream_url": {
+          "name": "stream_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rrule": {
+          "name": "rrule",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'viewer'"
+          "default": "'America/Argentina/Buenos_Aires'"
         },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "last_used_at": {
-          "name": "last_used_at",
+        "starts_at": {
+          "name": "starts_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_minutes": {
+          "name": "duration_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 60
+        },
+        "auto_start": {
+          "name": "auto_start",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "pipeline_config": {
+          "name": "pipeline_config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "next_run_at": {
+          "name": "next_run_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_run_at": {
+          "name": "last_run_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_transmission_id": {
+          "name": "last_transmission_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -6354,11 +6429,17 @@
         }
       },
       "indexes": {
-        "user_tenants_tenant_id_idx": {
-          "name": "user_tenants_tenant_id_idx",
+        "scheduled_transmissions_tenant_is_active_idx": {
+          "name": "scheduled_transmissions_tenant_is_active_idx",
           "columns": [
             {
               "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "is_active",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6369,11 +6450,47 @@
           "method": "btree",
           "with": {}
         },
-        "user_tenants_user_id_idx": {
-          "name": "user_tenants_user_id_idx",
+        "scheduled_transmissions_tenant_next_run_at_idx": {
+          "name": "scheduled_transmissions_tenant_next_run_at_idx",
           "columns": [
             {
-              "expression": "user_id",
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_run_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_transmissions_program_id_idx": {
+          "name": "scheduled_transmissions_program_id_idx",
+          "columns": [
+            {
+              "expression": "program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_transmissions_last_transmission_id_idx": {
+          "name": "scheduled_transmissions_last_transmission_id_idx",
+          "columns": [
+            {
+              "expression": "last_transmission_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6386,22 +6503,9 @@
         }
       },
       "foreignKeys": {
-        "user_tenants_user_id_users_id_fk": {
-          "name": "user_tenants_user_id_users_id_fk",
-          "tableFrom": "user_tenants",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "user_tenants_tenant_id_tenants_id_fk": {
-          "name": "user_tenants_tenant_id_tenants_id_fk",
-          "tableFrom": "user_tenants",
+        "scheduled_transmissions_tenant_id_tenants_id_fk": {
+          "name": "scheduled_transmissions_tenant_id_tenants_id_fk",
+          "tableFrom": "scheduled_transmissions",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -6411,17 +6515,276 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "scheduled_transmissions_program_id_programs_id_fk": {
+          "name": "scheduled_transmissions_program_id_programs_id_fk",
+          "tableFrom": "scheduled_transmissions",
+          "tableTo": "programs",
+          "columnsFrom": [
+            "program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "scheduled_transmissions_last_transmission_id_transmissions_id_fk": {
+          "name": "scheduled_transmissions_last_transmission_id_transmissions_id_fk",
+          "tableFrom": "scheduled_transmissions",
+          "tableTo": "transmissions",
+          "columnsFrom": [
+            "last_transmission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {
-        "user_tenants_user_id_tenant_id_pk": {
-          "name": "user_tenants_user_id_tenant_id_pk",
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.transmissions": {
+      "name": "transmissions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "program_id": {
+          "name": "program_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scheduled_transmission_id": {
+          "name": "scheduled_transmission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "TransmissionSource",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "TransmissionStatus",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'scheduled'"
+        },
+        "stream_url": {
+          "name": "stream_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_stream_url": {
+          "name": "resolved_stream_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "crudo_ref": {
+          "name": "crudo_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_minutes": {
+          "name": "duration_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "waiting_since": {
+          "name": "waiting_since",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_heartbeat_at": {
+          "name": "last_heartbeat_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pipeline_config": {
+          "name": "pipeline_config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "transmissions_tenant_status_idx": {
+          "name": "transmissions_tenant_status_idx",
           "columns": [
-            "user_id",
-            "tenant_id"
-          ]
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "transmissions_tenant_id_created_at_idx": {
+          "name": "transmissions_tenant_id_created_at_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "transmissions_program_id_idx": {
+          "name": "transmissions_program_id_idx",
+          "columns": [
+            {
+              "expression": "program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "transmissions_scheduled_transmission_id_idx": {
+          "name": "transmissions_scheduled_transmission_id_idx",
+          "columns": [
+            {
+              "expression": "scheduled_transmission_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
+      "foreignKeys": {
+        "transmissions_tenant_id_tenants_id_fk": {
+          "name": "transmissions_tenant_id_tenants_id_fk",
+          "tableFrom": "transmissions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "transmissions_program_id_programs_id_fk": {
+          "name": "transmissions_program_id_programs_id_fk",
+          "tableFrom": "transmissions",
+          "tableTo": "programs",
+          "columnsFrom": [
+            "program_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "transmissions_scheduled_transmission_id_scheduled_transmissions_id_fk": {
+          "name": "transmissions_scheduled_transmission_id_scheduled_transmissions_id_fk",
+          "tableFrom": "transmissions",
+          "tableTo": "scheduled_transmissions",
+          "columnsFrom": [
+            "scheduled_transmission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -6547,6 +6910,28 @@
         "canceled",
         "suspended",
         "expired"
+      ]
+    },
+    "public.TransmissionSource": {
+      "name": "TransmissionSource",
+      "schema": "public",
+      "values": [
+        "live_capture",
+        "vod_upload",
+        "manual"
+      ]
+    },
+    "public.TransmissionStatus": {
+      "name": "TransmissionStatus",
+      "schema": "public",
+      "values": [
+        "scheduled",
+        "waiting",
+        "live",
+        "processing",
+        "done",
+        "error",
+        "canceled"
       ]
     },
     "public.UsageCycleStatus": {
