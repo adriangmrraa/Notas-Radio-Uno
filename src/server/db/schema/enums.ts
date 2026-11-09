@@ -155,3 +155,41 @@ export const FaceEnrollmentStatus = {
   failed: 'failed',
 } as const;
 export type FaceEnrollmentStatus = (typeof FaceEnrollmentStatus)[keyof typeof FaceEnrollmentStatus];
+
+// ── TransmissionSource ────────────────────────────────────────────────────────
+// Origen de una corrida de transmisión: captura en vivo (agenda/auto-start),
+// upload de un VOD, o disparo manual.
+export const transmissionSourceEnum = pgEnum('TransmissionSource', [
+  'live_capture',
+  'vod_upload',
+  'manual',
+]);
+export const TransmissionSource = {
+  live_capture: 'live_capture',
+  vod_upload: 'vod_upload',
+  manual: 'manual',
+} as const;
+export type TransmissionSource = (typeof TransmissionSource)[keyof typeof TransmissionSource];
+
+// ── TransmissionStatus ────────────────────────────────────────────────────────
+// Ciclo de vida de una transmisión (los estados que consume la ingesta de
+// Épica D): scheduled → waiting → live → processing → done | error | canceled.
+export const transmissionStatusEnum = pgEnum('TransmissionStatus', [
+  'scheduled',
+  'waiting',
+  'live',
+  'processing',
+  'done',
+  'error',
+  'canceled',
+]);
+export const TransmissionStatus = {
+  scheduled: 'scheduled',
+  waiting: 'waiting',
+  live: 'live',
+  processing: 'processing',
+  done: 'done',
+  error: 'error',
+  canceled: 'canceled',
+} as const;
+export type TransmissionStatus = (typeof TransmissionStatus)[keyof typeof TransmissionStatus];

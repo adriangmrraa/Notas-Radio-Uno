@@ -20,6 +20,7 @@ export * from './clips.js';
 export * from './features.js';
 export * from './persons.js';
 export * from './editorialProfiles.js';
+export * from './transmissions.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -49,6 +50,7 @@ import { clips } from './clips.js';
 import { tenantFeatures, impersonationSessions } from './features.js';
 import { persons, personPhotos, faceEmbeddings, personProgram } from './persons.js';
 import { editorialProfiles } from './editorialProfiles.js';
+import { transmissions, scheduledTransmissions } from './transmissions.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -87,6 +89,8 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   faceEmbeddings: many(faceEmbeddings),
   personPrograms: many(personProgram),
   editorialProfiles: many(editorialProfiles),
+  transmissions: many(transmissions),
+  scheduledTransmissions: many(scheduledTransmissions),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -227,6 +231,8 @@ export const programsRelations = relations(programs, ({ one, many }) => ({
   guestDossiers: many(guestDossiers),
   personPrograms: many(personProgram),
   editorialProfiles: many(editorialProfiles),
+  transmissions: many(transmissions),
+  scheduledTransmissions: many(scheduledTransmissions),
 }));
 
 export const programUrlsRelations = relations(programUrls, ({ one }) => ({
@@ -326,4 +332,26 @@ export const personProgramRelations = relations(personProgram, ({ one }) => ({
 export const editorialProfilesRelations = relations(editorialProfiles, ({ one }) => ({
   tenant: one(tenants, { fields: [editorialProfiles.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [editorialProfiles.programId], references: [programs.id] }),
+}));
+
+// ── transmissions relations ───────────────────────────────────────────────────
+export const transmissionsRelations = relations(transmissions, ({ one }) => ({
+  tenant: one(tenants, { fields: [transmissions.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [transmissions.programId], references: [programs.id] }),
+  scheduledTransmission: one(scheduledTransmissions, {
+    fields: [transmissions.scheduledTransmissionId],
+    references: [scheduledTransmissions.id],
+    relationName: 'ScheduledTransmissionRuns',
+  }),
+}));
+
+export const scheduledTransmissionsRelations = relations(scheduledTransmissions, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [scheduledTransmissions.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [scheduledTransmissions.programId], references: [programs.id] }),
+  lastTransmission: one(transmissions, {
+    fields: [scheduledTransmissions.lastTransmissionId],
+    references: [transmissions.id],
+    relationName: 'ScheduledTransmissionLastRun',
+  }),
+  transmissions: many(transmissions, { relationName: 'ScheduledTransmissionRuns' }),
 }));

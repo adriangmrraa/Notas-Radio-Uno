@@ -4,8 +4,8 @@
  *
  *   - Levanta @electric-sql/pglite en memoria.
  *   - Aplica en orden TODOS los drizzle/*.sql.
- *   - Aplica 0005 y 0006 DOS VECES (prueba de idempotencia).
- *   - Imprime OK + tablas/columnas nuevas de Épica B y Épica C.
+ *   - Aplica 0005, 0006 y 0008 DOS VECES (prueba de idempotencia).
+ *   - Imprime OK + tablas/columnas nuevas de Épica B, Épica C y PC-07.
  *
  * Limitación documentada: PGlite (WASM) no trae pgvector. Se omiten los
  * statements CREATE EXTENSION vector y los índices USING hnsw, y el tipo
@@ -155,8 +155,9 @@ if (pc02Migration) {
   }
 }
 
-// 2) Idempotencia: la 0005 (Épica B) y la 0006 (Épica C) se aplican dos veces.
-for (const tag of ['0005', '0006']) {
+// 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C) y la 0008 (PC-07) se
+//    aplican dos veces.
+for (const tag of ['0005', '0006', '0008']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -166,18 +167,20 @@ for (const tag of ['0005', '0006']) {
   console.log(`re-applied ${migration} (idempotente)`);
 }
 
-// 3) Tablas nuevas de Épica B y Épica C.
+// 3) Tablas nuevas de Épica B, Épica C y PC-07.
 const { rows: tables } = await db.query(`
   SELECT tablename FROM pg_tables
   WHERE schemaname = 'public'
     AND tablename IN ('usage_cycles','quota_operations','plan_addons','addon_purchases','billing_events',
-      'persons','person_photos','face_embeddings','person_program','editorial_profiles')
+      'persons','person_photos','face_embeddings','person_program','editorial_profiles',
+      'transmissions','scheduled_transmissions')
   ORDER BY tablename
 `);
 const tableNames = tables.map((r) => r.tablename);
 const expectedTables = [
   'addon_purchases', 'billing_events', 'plan_addons', 'quota_operations', 'usage_cycles',
   'persons', 'person_photos', 'face_embeddings', 'person_program', 'editorial_profiles',
+  'transmissions', 'scheduled_transmissions',
 ];
 const missingTables = expectedTables.filter((t) => !tableNames.includes(t));
 if (missingTables.length > 0) {
@@ -243,8 +246,83 @@ if (missingCCols.length > 0) {
   process.exit(1);
 }
 
+// 6) PC-07: columnas clave de transmissions y scheduled_transmissions.
+const { rows: tCols } = await db.query(`
+  SELECT table_name, column_name FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND ((table_name = 'transmissions' AND column_name IN ('tenant_id','program_id','scheduled_transmission_id','status','source','crudo_ref','pipeline_config'))
+      OR (table_name = 'scheduled_transmissions' AND column_name IN ('tenant_id','program_id','rrule','timezone','starts_at','auto_start','next_run_at','last_transmission_id')))
+  ORDER BY table_name, column_name
+`);
+const expectedTCols = [
+  'transmissions.tenant_id', 'transmissions.program_id', 'transmissions.scheduled_transmission_id',
+  'transmissions.status', 'transmissions.source', 'transmissions.crudo_ref', 'transmissions.pipeline_config',
+  'scheduled_transmissions.tenant_id', 'scheduled_transmissions.program_id', 'scheduled_transmissions.rrule',
+  'scheduled_transmissions.timezone', 'scheduled_transmissions.starts_at', 'scheduled_transmissions.auto_start',
+  'scheduled_transmissions.next_run_at', 'scheduled_transmissions.last_transmission_id',
+];
+const haveTCols = new Set(tCols.map((r) => `${r.table_name}.${r.column_name}`));
+const missingTCols = expectedTCols.filter((c) => !haveTCols.has(c));
+if (missingTCols.length > 0) {
+  console.error(`Faltan columnas en tablas PC-07: ${missingTCols.join(', ')}`);
+  process.exit(1);
+}
+
+// 7) PC-07: los 2 enums existen con todos sus valores.
+const { rows: enumRows } = await db.query(`
+  SELECT t.typname, e.enumlabel
+  FROM pg_type t
+  JOIN pg_enum e ON e.enumtypid = t.oid
+  JOIN pg_namespace n ON n.oid = t.typnamespace
+  WHERE n.nspname = 'public' AND t.typname IN ('TransmissionSource', 'TransmissionStatus')
+  ORDER BY t.typname, e.enumsortorder
+`);
+const expectedEnums = {
+  TransmissionSource: ['live_capture', 'vod_upload', 'manual'],
+  TransmissionStatus: ['scheduled', 'waiting', 'live', 'processing', 'done', 'error', 'canceled'],
+};
+const gotEnums = {};
+for (const row of enumRows) (gotEnums[row.typname] ??= []).push(row.enumlabel);
+for (const [typeName, labels] of Object.entries(expectedEnums)) {
+  const got = gotEnums[typeName] ?? [];
+  if (JSON.stringify(got) !== JSON.stringify(labels)) {
+    console.error(`Enum ${typeName} incorrecto: esperado [${labels}], encontrado [${got}]`);
+    process.exit(1);
+  }
+}
+
+// 8) PC-07: las FKs apuntan a las tablas correctas.
+const { rows: fkRows } = await db.query(`
+  SELECT tc.table_name, kcu.column_name, ccu.table_name AS foreign_table
+  FROM information_schema.table_constraints tc
+  JOIN information_schema.key_column_usage kcu
+    ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+  JOIN information_schema.constraint_column_usage ccu
+    ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+  WHERE tc.constraint_type = 'FOREIGN KEY'
+    AND tc.table_schema = 'public'
+    AND tc.table_name IN ('transmissions', 'scheduled_transmissions')
+`);
+const expectedFks = [
+  'transmissions.tenant_id->tenants',
+  'transmissions.program_id->programs',
+  'transmissions.scheduled_transmission_id->scheduled_transmissions',
+  'scheduled_transmissions.tenant_id->tenants',
+  'scheduled_transmissions.program_id->programs',
+  'scheduled_transmissions.last_transmission_id->transmissions',
+];
+const haveFks = new Set(fkRows.map((r) => `${r.table_name}.${r.column_name}->${r.foreign_table}`));
+const missingFks = expectedFks.filter((fk) => !haveFks.has(fk));
+if (missingFks.length > 0) {
+  console.error(`Faltan o apuntan mal las FKs PC-07: ${missingFks.join(', ')}`);
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
+console.log('columnas PC-07:', expectedTCols.join(', '));
+console.log('enums PC-07:', Object.entries(expectedEnums).map(([k, v]) => `${k}(${v.join('|')})`).join(', '));
+console.log('fks PC-07:', expectedFks.join(', '));
 await db.close();
 process.exit(0);
