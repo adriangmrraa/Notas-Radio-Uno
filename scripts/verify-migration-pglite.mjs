@@ -71,9 +71,11 @@ if (pc02Migration) {
     INSERT INTO conductors (id, tenant_id, program_id, name, role, bio, is_active) VALUES
       ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'Ana Columnista', 'columnista', 'Legacy conductor bio', true),
       ('00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000002', NULL, 'Bruno Otro', 'other', NULL, false),
-      ('00000000-0000-4000-8000-000000000103', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000012', 'Cross tenant conductor', 'conductor', NULL, true);
+      ('00000000-0000-4000-8000-000000000103', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000012', 'Cross tenant conductor', 'conductor', NULL, true),
+      ('00000000-0000-4000-8000-000000000104', '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000012', 'Elena Rol Largo', 'AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJ', NULL, true);
     INSERT INTO guests (id, tenant_id, program_id, name, role, bio, scheduled_date, is_active) VALUES
-      ('00000000-0000-4000-8000-000000000201', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'Carla Invitada', 'Investigadora', 'Legacy guest bio', '2026-11-09', true);
+      ('00000000-0000-4000-8000-000000000201', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'Carla Invitada', 'Investigadora', 'Legacy guest bio', '2026-11-09', true),
+      ('00000000-0000-4000-8000-000000000202', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000012', 'Diana Cross tenant', 'Panelista', NULL, '2026-11-10', true);
   `);
   await apply(pc02Migration);
   console.log(`applied ${pc02Migration}`);
@@ -82,24 +84,26 @@ if (pc02Migration) {
     '00000000-0000-4000-8000-000000000101',
     '00000000-0000-4000-8000-000000000102',
     '00000000-0000-4000-8000-000000000103',
-    '00000000-0000-4000-8000-000000000201'
+    '00000000-0000-4000-8000-000000000104',
+    '00000000-0000-4000-8000-000000000201',
+    '00000000-0000-4000-8000-000000000202'
   )`;
   const { rows: firstPassPersons } = await db.query(`SELECT id FROM persons WHERE id IN ${ids}`);
   await apply(pc02Migration);
   console.log(`re-applied ${pc02Migration} (idempotent)`);
   const { rows: secondPassPersons } = await db.query(`SELECT id FROM persons WHERE id IN ${ids}`);
-  if (firstPassPersons.length !== 4 || secondPassPersons.length !== 4) {
+  if (firstPassPersons.length !== 6 || secondPassPersons.length !== 6) {
     throw new Error('PC-02 duplicated or omitted migrated persons on re-application');
   }
 
   const { rows: mappings } = await db.query(`
     SELECT id, person_id, tenant_id FROM conductors
-    WHERE id IN ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000103')
+    WHERE id IN ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000103', '00000000-0000-4000-8000-000000000104')
     UNION ALL
     SELECT id, person_id, tenant_id FROM guests
-    WHERE id = '00000000-0000-4000-8000-000000000201'
+    WHERE id IN ('00000000-0000-4000-8000-000000000201', '00000000-0000-4000-8000-000000000202')
   `);
-  if (mappings.length !== 4 || mappings.some((row) => row.id !== row.person_id)) {
+  if (mappings.length !== 6 || mappings.some((row) => row.id !== row.person_id)) {
     throw new Error('PC-02 did not link every legacy row to its deterministic person');
   }
 
@@ -108,7 +112,7 @@ if (pc02Migration) {
     WHERE tenant_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')
     GROUP BY tenant_id ORDER BY tenant_id
   `);
-  if (tenantCounts.length !== 2 || Number(tenantCounts[0].count) !== 3 || Number(tenantCounts[1].count) !== 1) {
+  if (tenantCounts.length !== 2 || Number(tenantCounts[0].count) !== 4 || Number(tenantCounts[1].count) !== 2) {
     throw new Error('PC-02 failed tenant isolation for migrated persons');
   }
 
@@ -117,22 +121,33 @@ if (pc02Migration) {
   if (rolesById.get('00000000-0000-4000-8000-000000000101') !== 'columnista'
     || rolesById.get('00000000-0000-4000-8000-000000000102') !== 'otro'
     || rolesById.get('00000000-0000-4000-8000-000000000103') !== 'conductor'
-    || rolesById.get('00000000-0000-4000-8000-000000000201') !== 'invitado') {
+    || rolesById.get('00000000-0000-4000-8000-000000000104') !== 'conductor'
+    || rolesById.get('00000000-0000-4000-8000-000000000201') !== 'invitado'
+    || rolesById.get('00000000-0000-4000-8000-000000000202') !== 'invitado') {
     throw new Error('PC-02 assigned an incorrect person role');
   }
 
   const { rows: programLinks } = await db.query(`
     SELECT person_id FROM person_program
-    WHERE person_id IN ('00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000201')
   `);
-  if (programLinks.length !== 2) {
+  if (programLinks.length !== 3) {
     throw new Error('PC-02 did not preserve legacy program relationships');
+  }
+
+  const { rows: truncated } = await db.query(`
+    SELECT LENGTH(pp.role_on_program)::int AS rel_len, LENGTH(p.role_label)::int AS label_len
+    FROM person_program pp
+    INNER JOIN persons p ON p.id = pp.person_id
+    WHERE pp.person_id = '00000000-0000-4000-8000-000000000104'
+  `);
+  if (truncated.length !== 1 || truncated[0].rel_len !== 80 || truncated[0].label_len !== 100) {
+    throw new Error('PC-02 failed deterministic role_on_program truncation or role_label preservation');
   }
 
   const { rows: crossTenantLinks } = await db.query(`
     SELECT pp.person_id
     FROM person_program pp
-    WHERE pp.person_id = '00000000-0000-4000-8000-000000000103'
+    WHERE pp.person_id IN ('00000000-0000-4000-8000-000000000103', '00000000-0000-4000-8000-000000000202')
       AND pp.program_id = '00000000-0000-4000-8000-000000000012'
   `);
   if (crossTenantLinks.length !== 0) {
