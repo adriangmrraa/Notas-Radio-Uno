@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff, Bell } from 'lucide-react';
+import { TeamSettings } from '../components/team/TeamSettings';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 import { AlertKeywordsSettings } from '../components/alerts/AlertKeywordsSettings';
@@ -445,17 +446,7 @@ export function SettingsPage() {
                 )}
 
                 {/* Team */}
-                {activeTab === 'team' && (
-                    <div className="glass-card-static p-6">
-                        <p className="text-sm text-white/35 mb-5">Invita miembros a tu organizacion (proximamente)</p>
-                        <div className="border border-dashed border-white/[0.08] rounded-2xl p-12 text-center">
-                            <div className="w-16 h-16 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-                                <Users className="w-7 h-7 text-white/15" />
-                            </div>
-                            <p className="text-white/25 text-sm">Funcion de equipo disponible en planes Starter+</p>
-                        </div>
-                    </div>
-                )}
+                {activeTab === 'team' && <TeamSettings />}
             </div>
         </div>
     );

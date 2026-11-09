@@ -8,6 +8,7 @@ interface User {
   role: string;
   tenantId: string;
   isVerified: boolean;
+  isPlatformAdmin?: boolean;
   tenant?: {
     id: string;
     name: string;
