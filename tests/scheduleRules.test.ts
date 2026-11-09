@@ -21,6 +21,7 @@ import {
   describeSchedule,
   occurrencesBetween,
   parseScheduleBody,
+  valuesFromFields,
   type ScheduleInput,
 } from '../src/server/lib/scheduleRules';
 
@@ -214,6 +215,38 @@ describe('buildSchedule', () => {
   });
 });
 
+// ── valuesFromFields — input + triple → fila a persistir ─────────────────────
+describe('valuesFromFields', () => {
+  const built = {
+    rrule: 'FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=18;BYMINUTE=0',
+    startsAt: new Date('2026-11-09T21:00:00Z'),
+    endsAt: null,
+    nextRunAt: new Date('2026-11-09T21:00:00Z'),
+  };
+
+  it('honra isActive del body: crear con isActive:false ⇒ fila inactiva', () => {
+    const parsed = parseScheduleBody({ ...baseBody, isActive: false });
+    expect(parsed.error).toBeUndefined();
+    expect(valuesFromFields(parsed.fields!, built).isActive).toBe(false);
+  });
+
+  it('isActive default true cuando el body no lo trae', () => {
+    const parsed = parseScheduleBody(baseBody);
+    expect(valuesFromFields(parsed.fields!, built).isActive).toBe(true);
+  });
+
+  it('whitelistea la fila: tenantId/id del body no pasan a los valores', () => {
+    const parsed = parseScheduleBody({
+      ...baseBody,
+      id: '11111111-2222-3333-4444-555555555555',
+      tenantId: '66666666-7777-8888-9999-000000000000',
+    });
+    const values = valuesFromFields(parsed.fields!, built);
+    expect(values).not.toHaveProperty('id');
+    expect(values).not.toHaveProperty('tenantId');
+  });
+});
+
 // ── deriveSchedule / describeSchedule — fila → formulario/UI ─────────────────
 describe('deriveSchedule + describeSchedule', () => {
   it('puntual ⇒ mode once con date/time locales; descripción "Una sola vez"', () => {
@@ -248,7 +281,8 @@ describe('occurrencesBetween', () => {
   const novStart = Date.UTC(2026, 10, 1);
   const decStart = Date.UTC(2026, 11, 1);
 
-  it('semanal Lu/Mi/Vi 18:00 expande a los 13 días de noviembre 2026', () => {
+  it('semanal Lu/Mi/Vi 18:00 recorta lo previo a starts_at (12 de noviembre 2026)', () => {
+    // La serie arranca el miércoles 4 ⇒ el lunes 2 NO aparece (predata la creación).
     const occ = occurrencesBetween(
       'FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=18;BYMINUTE=0',
       UTC,
@@ -256,9 +290,31 @@ describe('occurrencesBetween', () => {
       novStart,
       decStart,
     );
-    expect(occ).toHaveLength(13);
-    expect(occ[0].toISOString()).toBe('2026-11-02T18:00:00.000Z'); // lunes 2
-    expect(occ[12].toISOString()).toBe('2026-11-30T18:00:00.000Z'); // lunes 30
+    expect(occ).toHaveLength(12);
+    expect(occ[0].toISOString()).toBe('2026-11-04T18:00:00.000Z'); // = starts_at, incluido
+    expect(occ[11].toISOString()).toBe('2026-11-30T18:00:00.000Z'); // lunes 30
+  });
+
+  it('regla creada a mitad de mes ⇒ el mes anterior devuelve 0 ocurrencias', () => {
+    const occ = occurrencesBetween(
+      'FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=18;BYMINUTE=0',
+      UTC,
+      new Date('2026-11-11T18:00:00Z'), // creada el miércoles 11/11
+      Date.UTC(2026, 9, 1), // todo octubre
+      novStart,
+    );
+    expect(occ).toEqual([]);
+  });
+
+  it('starts_at posterior al rango ⇒ 0 ocurrencias (diario)', () => {
+    const occ = occurrencesBetween(
+      'FREQ=DAILY;BYHOUR=18;BYMINUTE=0',
+      UTC,
+      new Date('2026-12-05T18:00:00Z'),
+      novStart,
+      decStart,
+    );
+    expect(occ).toEqual([]);
   });
 
   it('puntual incluye starts_at sólo si cae dentro del rango', () => {

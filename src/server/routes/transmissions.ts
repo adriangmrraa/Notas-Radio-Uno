@@ -13,7 +13,7 @@ import {
     describeSchedule,
     occurrencesBetween,
     parseScheduleBody,
-    type ScheduleInput,
+    valuesFromFields,
 } from "../lib/scheduleRules.js";
 
 // ---------------------------------------------------------------------------
@@ -91,26 +91,6 @@ async function findScheduled(tenantId: string, id: string): Promise<ScheduledRow
         .where(and(eq(scheduledTransmissions.id, id), eq(scheduledTransmissions.tenantId, tenantId)))
         .limit(1);
     return row ?? null;
-}
-
-function valuesFromFields(
-    f: ScheduleInput,
-    built: { rrule: string; startsAt: Date; endsAt: Date | null; nextRunAt: Date },
-) {
-    return {
-        name: f.name,
-        description: f.description,
-        streamUrl: f.streamUrl,
-        programId: f.programId,
-        rrule: built.rrule,
-        timezone: f.timezone,
-        startsAt: built.startsAt,
-        endsAt: built.endsAt,
-        durationMinutes: f.durationMinutes,
-        autoStart: f.autoStart,
-        pipelineConfig: f.pipelineConfig,
-        nextRunAt: built.nextRunAt,
-    };
 }
 
 // ------------------------------------------------------------------

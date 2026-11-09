@@ -301,6 +301,32 @@ export function buildSchedule(
   return { schedule: { rrule, startsAt: first, endsAt, nextRunAt: first } };
 }
 
+// ── valuesFromFields — input validado + triple → valores a persistir ──────────
+
+/**
+ * Valores de la fila para INSERT (POST) y UPDATE completo (PUT): whitelist
+ * explícita — `tenantId`, `id` y cualquier clave extra del body no pasan.
+ * `isActive` default `true` en create; el PUT puede pisar la clave para
+ * preservar el valor existente (`f.isActive ?? existing.isActive`).
+ */
+export function valuesFromFields(f: ScheduleInput, built: BuiltSchedule) {
+  return {
+    name: f.name,
+    description: f.description,
+    streamUrl: f.streamUrl,
+    programId: f.programId,
+    rrule: built.rrule,
+    timezone: f.timezone,
+    startsAt: built.startsAt,
+    endsAt: built.endsAt,
+    durationMinutes: f.durationMinutes,
+    autoStart: f.autoStart,
+    pipelineConfig: f.pipelineConfig,
+    nextRunAt: built.nextRunAt,
+    isActive: f.isActive ?? true,
+  };
+}
+
 // ── deriveSchedule — fila persistida → campos del formulario (edición) ───────
 
 export interface DerivedSchedule {
@@ -386,7 +412,10 @@ export function describeSchedule(rrule: string): string {
 /**
  * Instantes de la regla dentro de `[fromMs, toMs)` — la grilla mensual se arma
  * con esto (cada instante se bucketa por fecha local en `timezone`).
- * Puntual: la única ocurrencia es `startsAt`. Cap defensivo por reglas densas.
+ * La serie arranca en `startsAt` (DTSTART): las ocurrencias se recortan a
+ * `>= startsAt` para que meses anteriores a la creación no muestren sheds
+ * fantasma. Puntual: la única ocurrencia es `startsAt`. Cap defensivo por
+ * reglas densas.
  */
 export function occurrencesBetween(
   rrule: string,
@@ -397,13 +426,14 @@ export function occurrencesBetween(
   cap = 500,
 ): Date[] {
   const p = parseRRule(rrule);
+  const lowerMs = Math.max(fromMs, startsAt.getTime());
   if (p.freq === 'DAILY' && p.count === 1) {
     const t = startsAt.getTime();
-    return t >= fromMs && t < toMs ? [startsAt] : [];
+    return t >= lowerMs && t < toMs ? [startsAt] : [];
   }
 
   const out: Date[] = [];
-  let cursor = new Date(fromMs - 1);
+  let cursor = new Date(lowerMs - 1);
   while (out.length < cap) {
     const next = nextOccurrence(rrule, cursor, timezone);
     if (!next || next.getTime() >= toMs) break;
