@@ -84,3 +84,16 @@ export const PublicationStatus = {
   rejected: 'rejected',
 } as const;
 export type PublicationStatus = (typeof PublicationStatus)[keyof typeof PublicationStatus];
+
+// ── FeatureSource ─────────────────────────────────────────────────────────────
+// Origen del valor efectivo de un feature flag de tenant:
+//   plan     → valor heredado del plan contratado
+//   override → valor pisado manualmente por el owner del tenant
+//   admin    → valor pisado por un super admin de la plataforma
+export const featureSourceEnum = pgEnum('FeatureSource', ['plan', 'override', 'admin']);
+export const FeatureSource = {
+  plan: 'plan',
+  override: 'override',
+  admin: 'admin',
+} as const;
+export type FeatureSource = (typeof FeatureSource)[keyof typeof FeatureSource];

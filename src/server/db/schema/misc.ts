@@ -12,8 +12,10 @@ import {
   date,
   primaryKey,
   unique,
+  uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { userRoleEnum, invitationStatusEnum } from './enums.js';
 import { tenants } from './tenants.js';
 import { users } from './users.js';
@@ -56,6 +58,9 @@ export const notifications = pgTable(
 );
 
 // ── AuditLog ──────────────────────────────────────────────────────────────────
+// `audit_log` es el nombre físico histórico (migración 0000) y se mantiene para
+// no reescribir una tabla ya desplegada. Registra acciones sensibles:
+// login, publish, cambios de admin/billing, impersonación, etc.
 export const auditLog = pgTable(
   'audit_log',
   {
@@ -63,6 +68,18 @@ export const auditLog = pgTable(
     tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     action: varchar('action', { length: 100 }).notNull(),
+    /** Rol del actor al momento de la acción (owner/editor/viewer/platform_admin). */
+    actorRole: varchar('actor_role', { length: 20 }),
+    actorEmail: varchar('actor_email', { length: 255 }),
+    /** Entidad afectada, para poder reconstruir "qué se tocó". */
+    entityType: varchar('entity_type', { length: 60 }),
+    entityId: varchar('entity_id', { length: 100 }),
+    /** success | denied | error */
+    outcome: varchar('outcome', { length: 20 }).notNull().default('success'),
+    /** Super admin que estaba impersonando al actor, si aplica. */
+    impersonatedByUserId: uuid('impersonated_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     ipAddress: varchar('ip_address', { length: 45 }),
     userAgent: text('user_agent'),
     metadata: jsonb('metadata').notNull().default({}),
@@ -71,6 +88,8 @@ export const auditLog = pgTable(
   (t) => [
     index('audit_log_tenant_id_idx').on(t.tenantId),
     index('audit_log_created_at_idx').on(t.createdAt),
+    index('audit_log_tenant_id_action_created_at_idx').on(t.tenantId, t.action, t.createdAt),
+    index('audit_log_user_id_idx').on(t.userId),
   ],
 );
 
@@ -111,6 +130,8 @@ export const dailyMetrics = pgTable(
 );
 
 // ── TeamInvitation ────────────────────────────────────────────────────────────
+// `team_invitations` es el nombre físico histórico; cumple el rol de `team_invites`.
+// Un invite nace `pending`, expira a las 72 h y puede revocarse o reenviarse.
 export const teamInvitations = pgTable(
   'team_invitations',
   {
@@ -127,11 +148,30 @@ export const teamInvitations = pgTable(
     status: invitationStatusEnum('status').notNull().default('pending'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    /** Usuario creado al aceptar la invitación. */
+    acceptedByUserId: uuid('accepted_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    /** Último envío del mail (para reenvíos y rate limit). */
+    lastSentAt: timestamp('last_sent_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedByUserId: uuid('revoked_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdateFn(() => new Date()),
   },
   (t) => [
     index('team_invitations_token_idx').on(t.token),
     index('team_invitations_tenant_id_idx').on(t.tenantId),
+    index('team_invitations_tenant_id_status_idx').on(t.tenantId, t.status),
+    // Un solo invite pendiente por email dentro del tenant.
+    uniqueIndex('team_invitations_tenant_id_email_pending_unique')
+      .on(t.tenantId, t.email)
+      .where(sql`${t.status} = 'pending'`),
   ],
 );
 

@@ -6,8 +6,9 @@ import { AppError } from '../lib/errors.js';
 import { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } from './emailService.js';
 import slugify from 'slugify';
 import { UserRole, UserStatus } from '../db/schema/enums.js';
-import { users, tenants, subscriptions, plans, refreshTokens } from '../db/schema/index.js';
+import { users, tenants, subscriptions, plans, refreshTokens, tenantFeatures } from '../db/schema/index.js';
 import { auditLog } from '../db/schema/index.js';
+import { buildFeatureRowsForPlan } from './tenantFeaturesService.js';
 import { eq, and, isNull } from 'drizzle-orm';
 
 const BCRYPT_ROUNDS = 12;
@@ -79,6 +80,9 @@ export async function register(input: {
                 trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
             });
         }
+
+        // Feature flags: el tenant nace con los defaults del plan (trial o fallback).
+        await tx.insert(tenantFeatures).values(buildFeatureRowsForPlan(tenant.id, trialPlan ?? null));
 
         return { userId: user.id, tenantId: tenant.id, verificationToken };
     });

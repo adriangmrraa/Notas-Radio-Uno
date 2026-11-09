@@ -16,6 +16,13 @@ export const users = pgTable(
     role: userRoleEnum('role').notNull().default('owner'),
     status: userStatusEnum('status').notNull().default('pending'),
     isVerified: boolean('is_verified').notNull().default(false),
+    /**
+     * Super admin de la plataforma (staff Fusa Labs). Vive como flag en `users`
+     * en lugar de una tabla `admin_users` separada para no duplicar identidades:
+     * un usuario es owner de su tenant y admin de plataforma a la vez si hace falta.
+     * Sólo se puede setear por SQL/operación interna, nunca por la API pública.
+     */
+    isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
     verificationToken: uuid('verification_token'),
     verificationTokenExpiresAt: timestamp('verification_token_expires_at', { withTimezone: true }),
     resetPasswordToken: uuid('reset_password_token'),
@@ -29,5 +36,6 @@ export const users = pgTable(
     index('users_tenant_id_idx').on(t.tenantId),
     index('users_verification_token_idx').on(t.verificationToken),
     index('users_reset_password_token_idx').on(t.resetPasswordToken),
+    index('users_is_platform_admin_idx').on(t.isPlatformAdmin),
   ],
 );

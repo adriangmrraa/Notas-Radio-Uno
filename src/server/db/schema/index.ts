@@ -17,6 +17,7 @@ export * from './conductors.js';
 export * from './guests.js';
 export * from './dossiers.js';
 export * from './clips.js';
+export * from './features.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -33,6 +34,7 @@ import { conductors, conductorPhotos } from './conductors.js';
 import { guests, guestPhotos } from './guests.js';
 import { guestDossiers } from './dossiers.js';
 import { clips } from './clips.js';
+import { tenantFeatures, impersonationSessions } from './features.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -61,6 +63,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   guests: many(guests),
   guestDossiers: many(guestDossiers),
   clips: many(clips),
+  features: many(tenantFeatures),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -213,4 +216,20 @@ export const guestDossiersRelations = relations(guestDossiers, ({ one }) => ({
 // ── clips relations ───────────────────────────────────────────────────────────
 export const clipsRelations = relations(clips, ({ one }) => ({
   tenant: one(tenants, { fields: [clips.tenantId], references: [tenants.id] }),
+}));
+
+// ── features relations ────────────────────────────────────────────────────────
+export const tenantFeaturesRelations = relations(tenantFeatures, ({ one }) => ({
+  tenant: one(tenants, { fields: [tenantFeatures.tenantId], references: [tenants.id] }),
+  plan: one(plans, { fields: [tenantFeatures.planId], references: [plans.id] }),
+  overriddenBy: one(users, { fields: [tenantFeatures.overriddenByUserId], references: [users.id] }),
+}));
+
+export const impersonationSessionsRelations = relations(impersonationSessions, ({ one }) => ({
+  admin: one(users, {
+    fields: [impersonationSessions.adminUserId],
+    references: [users.id],
+    relationName: 'ImpersonationAdmin',
+  }),
+  tenant: one(tenants, { fields: [impersonationSessions.tenantId], references: [tenants.id] }),
 }));
