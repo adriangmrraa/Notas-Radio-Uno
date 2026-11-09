@@ -10,6 +10,13 @@ import { programs } from "../db/schema/programs.js";
 import { conductors } from "../db/schema/conductors.js";
 import { guests } from "../db/schema/guests.js";
 import { personRoleEnum } from "../db/schema/enums.js";
+import {
+  createDrizzleFaceStore,
+  disenrollFace,
+  enrollFace,
+  getFaceStatus,
+} from "../services/faceEnrollmentService.js";
+import { getFaceDetector } from "../services/faceDetectionService.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -882,3 +889,93 @@ personsRouter.put(
     }
   },
 );
+
+// ------------------------------------------------------------------
+// POST /api/persons/:id/photos/:photoId/enroll — enrolar rostro de una foto
+// (PC-04). 0 caras → 400 NO_FACE_DETECTED · >1 caras → 400 MULTIPLE_FACES ·
+// sin consentimiento → 400 CONSENT_REQUIRED · detector caído → 503.
+// ------------------------------------------------------------------
+personsRouter.post(
+  "/:id/photos/:photoId/enroll",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const { consent } = (req.body ?? {}) as { consent?: unknown };
+      const result = await enrollFace(
+        { store: createDrizzleFaceStore(db), resolveDetector: getFaceDetector },
+        {
+          tenantId: req.auth!.tenantId,
+          personId: req.params.id,
+          photoId: req.params.photoId,
+          consent: consent === true,
+        },
+      );
+      res.status(result.status).json(result.body);
+    } catch (error) {
+      console.error("[Persons] Error al enrolar rostro:", error);
+      res.status(500).json({ error: "Error al enrolar el rostro" });
+    }
+  },
+);
+
+// ------------------------------------------------------------------
+// POST /api/persons/:id/enroll — atajo: enrola la foto primaria de la persona.
+// ------------------------------------------------------------------
+personsRouter.post("/:id/enroll", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { consent } = (req.body ?? {}) as { consent?: unknown };
+    const result = await enrollFace(
+      { store: createDrizzleFaceStore(db), resolveDetector: getFaceDetector },
+      {
+        tenantId: req.auth!.tenantId,
+        personId: req.params.id,
+        consent: consent === true,
+      },
+    );
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error("[Persons] Error al enrolar rostro (foto primaria):", error);
+    res.status(500).json({ error: "Error al enrolar el rostro" });
+  }
+});
+
+// ------------------------------------------------------------------
+// DELETE /api/persons/:id/photos/:photoId/embedding — desenrolar una foto:
+// borra su embedding, limpia persons.embedding_ref y vuelve a pending.
+// ------------------------------------------------------------------
+personsRouter.delete(
+  "/:id/photos/:photoId/embedding",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const result = await disenrollFace(
+        { store: createDrizzleFaceStore(db), resolveDetector: getFaceDetector },
+        {
+          tenantId: req.auth!.tenantId,
+          personId: req.params.id,
+          photoId: req.params.photoId,
+        },
+      );
+      res.status(result.status).json(result.body);
+    } catch (error) {
+      console.error("[Persons] Error al desenrolar rostro:", error);
+      res.status(500).json({ error: "Error al desenrolar el rostro" });
+    }
+  },
+);
+
+// ------------------------------------------------------------------
+// GET /api/persons/:id/face-status — estado del enrolment + detector.
+// ------------------------------------------------------------------
+personsRouter.get("/:id/face-status", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await getFaceStatus(
+      { store: createDrizzleFaceStore(db), resolveDetector: getFaceDetector },
+      { tenantId: req.auth!.tenantId, personId: req.params.id },
+    );
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error("[Persons] Error al obtener estado de rostro:", error);
+    res.status(500).json({ error: "Error al obtener el estado de enrolamiento" });
+  }
+});

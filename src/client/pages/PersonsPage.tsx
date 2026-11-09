@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
     Plus, Pencil, Trash2, Users, X, Star, ChevronDown, Camera,
-    ChevronLeft, ChevronRight, Search,
+    ChevronLeft, ChevronRight, Search, ScanFace, ShieldCheck, UserX,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
@@ -36,9 +36,23 @@ interface Person {
     notes: string | null;
     socialLinks: Record<string, string>;
     isActive: boolean;
+    faceStatus: 'pending' | 'enrolled' | 'failed';
+    consentGiven: boolean;
+    consentAt: string | null;
+    embeddingRef: string | null;
     createdAt: string;
     photos: PersonPhoto[];
     programs: PersonProgramLink[];
+}
+
+interface FaceStatusInfo {
+    personId: string;
+    faceStatus: 'pending' | 'enrolled' | 'failed';
+    consentGiven: boolean;
+    consentAt: string | null;
+    embeddingRef: string | null;
+    faceCount: number;
+    detectorAvailable: boolean;
 }
 
 interface Program {
@@ -127,6 +141,14 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
     const [justCreated, setJustCreated] = useState(false);
     const [error, setError] = useState('');
     const photoInputRef = useRef<HTMLInputElement>(null);
+
+    // ── Enrolamiento de rostro (PC-04) ──
+    const [faceStatus, setFaceStatus] = useState<Person['faceStatus']>(person?.faceStatus ?? 'pending');
+    const [consentGiven, setConsentGiven] = useState(person?.consentGiven ?? false);
+    const [consentChecked, setConsentChecked] = useState(false);
+    const [detectorAvailable, setDetectorAvailable] = useState<boolean | null>(null);
+    const [enrollingId, setEnrollingId] = useState<string | null>(null);
+    const [disenrollingId, setDisenrollingId] = useState<string | null>(null);
 
     const toggleProgram = (programId: string) => {
         setProgramIds((prev) =>
@@ -228,6 +250,74 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
             setError(err.message || 'Error al actualizar la foto primaria');
         }
     };
+
+    // ── Enrolamiento de rostro (PC-04) ──────────────────────────────────────
+
+    const refreshPerson = async () => {
+        if (!personId) return;
+        try {
+            const data = await fetchApi<{ person: Person }>(`/persons/${personId}`);
+            setPhotos(data.person.photos);
+            setFaceStatus(data.person.faceStatus);
+            setConsentGiven(data.person.consentGiven);
+        } catch {
+            // El error de refresco no tapa el resultado principal.
+        }
+    };
+
+    useEffect(() => {
+        if (!personId) return;
+        let cancelled = false;
+        fetchApi<FaceStatusInfo>(`/persons/${personId}/face-status`)
+            .then((info) => {
+                if (cancelled) return;
+                setDetectorAvailable(info.detectorAvailable);
+                setFaceStatus(info.faceStatus);
+                setConsentGiven(info.consentGiven);
+            })
+            .catch(() => { if (!cancelled) setDetectorAvailable(null); });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [personId]);
+
+    const enrollPhoto = async (photoId?: string) => {
+        if (!personId) return;
+        if (!consentGiven && !consentChecked) {
+            setError('Marcá el consentimiento biométrico antes de enrolar el rostro.');
+            return;
+        }
+        setEnrollingId(photoId ?? 'primary');
+        setError('');
+        try {
+            const url = photoId
+                ? `/persons/${personId}/photos/${photoId}/enroll`
+                : `/persons/${personId}/enroll`;
+            await fetchApi(url, { method: 'POST', body: { consent: consentGiven || consentChecked } });
+            await refreshPerson();
+        } catch (err: any) {
+            // El mensaje llega literal desde la API (400 sin cara / 400 varias
+            // caras / 503 detector no disponible) — se muestra tal cual.
+            setError(err.message || 'Error al enrolar el rostro');
+            await refreshPerson();
+        }
+        setEnrollingId(null);
+    };
+
+    const disenrollPhoto = async (photoId: string) => {
+        if (!personId) return;
+        setDisenrollingId(photoId);
+        setError('');
+        try {
+            await fetchApi(`/persons/${personId}/photos/${photoId}/embedding`, { method: 'DELETE' });
+            await refreshPerson();
+        } catch (err: any) {
+            setError(err.message || 'Error al desenrolar el rostro');
+        }
+        setDisenrollingId(null);
+    };
+
+    const enrollDisabled =
+        detectorAvailable === false || (!consentGiven && !consentChecked);
 
     const initials = initialsOf(name || 'P');
 
@@ -382,11 +472,31 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
 
                     {/* ── Fotos ── */}
                     <div>
-                        <label className="text-xs font-medium text-white/40 uppercase tracking-wider mb-2 block">
-                            Fotos ({photos.length}/{MAX_PHOTOS})
-                        </label>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="text-xs font-medium text-white/40 uppercase tracking-wider block">
+                                Fotos ({photos.length}/{MAX_PHOTOS})
+                            </label>
+                            {isEdit && photos.length > 0 && (
+                                <button
+                                    onClick={() => enrollPhoto()}
+                                    disabled={enrollDisabled || enrollingId !== null}
+                                    className="btn-secondary !py-1.5 !px-3 !text-xs inline-flex items-center gap-1.5 disabled:opacity-40"
+                                    title="Enrolar el rostro a partir de la foto principal"
+                                >
+                                    <ScanFace className="w-3.5 h-3.5" />
+                                    {enrollingId === 'primary' ? 'Enrolando...' : 'Enrolar rostro (principal)'}
+                                </button>
+                            )}
+                        </div>
                         {isEdit ? (
                             <>
+                                {detectorAvailable === false && (
+                                    <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2 mb-3">
+                                        Detector de rostros no disponible: los modelos no están descargados en el
+                                        servidor. Pedile al administrador que ejecute
+                                        {' '}<code className="font-mono">npx tsx scripts/download-face-models.ts</code>.
+                                    </p>
+                                )}
                                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
                                     {photos.map((photo) => (
                                         <div key={photo.id} className="relative group aspect-square rounded-xl overflow-hidden border border-white/[0.08] bg-white/[0.03]">
@@ -400,6 +510,15 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                     <Star className="w-3 h-3 text-black fill-black" />
                                                 </div>
                                             )}
+                                            {photo.faceDetected && (
+                                                <div
+                                                    className="absolute bottom-1.5 left-1.5 px-1.5 h-5 rounded-md bg-emerald-500/90 flex items-center justify-center gap-1"
+                                                    title={`Rostro detectado (${photo.faceCount})`}
+                                                >
+                                                    <ShieldCheck className="w-3 h-3 text-white" />
+                                                    <span className="text-[10px] font-semibold text-white">{photo.faceCount}</span>
+                                                </div>
+                                            )}
                                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                                                 {!photo.isPrimary && (
                                                     <button
@@ -408,6 +527,24 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                         title="Marcar como principal"
                                                     >
                                                         <Star className="w-3.5 h-3.5 text-white/80" />
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => enrollPhoto(photo.id)}
+                                                    disabled={enrollDisabled || enrollingId !== null}
+                                                    className="w-7 h-7 rounded-lg bg-white/10 hover:bg-cyan-400/30 flex items-center justify-center transition-colors disabled:opacity-40"
+                                                    title={detectorAvailable === false ? 'Detector de rostros no disponible' : 'Enrolar rostro desde esta foto'}
+                                                >
+                                                    <ScanFace className="w-3.5 h-3.5 text-white/80" />
+                                                </button>
+                                                {photo.faceDetected && (
+                                                    <button
+                                                        onClick={() => disenrollPhoto(photo.id)}
+                                                        disabled={disenrollingId === photo.id}
+                                                        className="w-7 h-7 rounded-lg bg-white/10 hover:bg-red-500/30 flex items-center justify-center transition-colors disabled:opacity-40"
+                                                        title="Desenrolar (borrar embedding de esta foto)"
+                                                    >
+                                                        <UserX className="w-3.5 h-3.5 text-white/80" />
                                                     </button>
                                                 )}
                                                 <button
@@ -443,6 +580,43 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                     }}
                                 />
                                 <p className="text-xs text-white/25 mt-2">PNG o JPEG, máximo 5MB. La primera foto queda como principal.</p>
+
+                                {photos.length > 0 && (
+                                    <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 space-y-2">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <p className="text-xs text-white/50">
+                                                Estado del rostro:{' '}
+                                                <span className={
+                                                    faceStatus === 'enrolled' ? 'text-emerald-300' :
+                                                    faceStatus === 'failed' ? 'text-red-300' : 'text-white/60'
+                                                }>
+                                                    {faceStatus === 'enrolled' ? 'Enrolado' : faceStatus === 'failed' ? 'Fallido' : 'Pendiente'}
+                                                </span>
+                                                {detectorAvailable === false && <span className="text-amber-300/80"> · detector no disponible</span>}
+                                            </p>
+                                        </div>
+                                        {!consentGiven ? (
+                                            <label className="flex items-start gap-2.5 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={consentChecked}
+                                                    onChange={(e) => setConsentChecked(e.target.checked)}
+                                                    className="mt-0.5 w-4 h-4 accent-cyan-400"
+                                                />
+                                                <span className="text-xs text-white/55 leading-relaxed">
+                                                    La persona consiente el enrolamiento biométrico de su rostro
+                                                    (embedding de 512 dimensiones) para reconocerla en los
+                                                    programas del canal. El consentimiento queda registrado.
+                                                </span>
+                                            </label>
+                                        ) : (
+                                            <p className="text-xs text-emerald-300/80 flex items-center gap-1.5">
+                                                <ShieldCheck className="w-3.5 h-3.5" />
+                                                Consentimiento biométrico registrado.
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
                             </>
                         ) : (
                             <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center">

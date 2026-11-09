@@ -3,6 +3,7 @@ dist/
 data/
 output/
 uploads/
+.cache/
 .env
 *.db
 *.mp3
