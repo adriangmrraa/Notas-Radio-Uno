@@ -48,7 +48,6 @@ El gap medido contra PRODUCT-VISION.md: **sin video** (solo audio), **sin rostro
 ### OUT (post-v1, explícito)
 - Voice-prints dedicados (v2 — rostro+diarización primero).
 - BYOK Enterprise (patrón validado, queda detrás de flag).
-- Multi-marca: un user en varios tenants (salvo decisión contraria — ver preguntas).
 - Analytics de engagement del contenido publicado, app mobile, editor de video avanzado, API pública, señal de chat en vivo.
 - Managed video (Livepeer/Mux) — no aplica a captura de streams de terceros.
 - RLS en Neon (enforcement app-level documentado).
@@ -104,7 +103,7 @@ El gap medido contra PRODUCT-VISION.md: **sin video** (solo audio), **sin rostro
 
 | Riesgo | Prob. | Mitigación |
 |--------|-------|------------|
-| R-1 YouTube bloquea IPs de datacenter (audio ya lo sufre; video sube el riesgo) | Alta | Posicionar producto sobre streams PROPIOS del tenant (HLS/RTMP directo) + YT best-effort; VPS propio/proxies; fallback upload de VOD habilita early adopters igual |
+| R-1 YouTube blocks datacenter IPs (audio already suffers it; video increases the risk) | High | **B-1 resolved:** dedicated VPS plus rotating proxies from T1, health checks and rotation; VOD upload is continuity fallback, not a best-effort substitute |
 | R-2 Costo del modelo multimodal en transmisiones largas | Media | Análisis sampled (no frame-by-frame), metering de costo por transmisión (PI-03), maxDurationMinutes por plan, capa de proveedores permite bajar a Flash |
 | R-3 Biometría: rostros = dato sensible + atribución errónea con pocas fotos | Media | Enrolled-only (solo personas que el tenant registra), consentimiento en UX, retención acotada, 3+ fotos en onboarding, corrección manual realimenta sesión |
 | R-4 Zernio cobra por cuenta conectada + alcance real de su API | Media | Passthrough vía `maxConnectedPlatforms` del plan; **spike en S1**: validar connect embebido + post de video 9:16 en IG/TikTok antes de construir encima |
@@ -147,17 +146,29 @@ El gap medido contra PRODUCT-VISION.md: **sin video** (solo audio), **sin rostro
 - Cuenta Zernio + docs verificados (API keys, pricing por cuenta).
 - InsightFace self-hosted: VPS/container con CPU (GPU opcional).
 - pgvector habilitado en Neon.
-- Decisiones B-1/B-2 (abajo) antes de iniciar T1.
+- B-1/B-2 ya resueltas; la infraestructura de VPS/proxies y la migracion N:M son precondiciones verificables de sus tareas, no preguntas abiertas.
 
-## Preguntas abiertas
+## Decisiones resueltas y asumibles
 
-**Bloqueantes (requieren decisión del usuario):**
-- **B-1 — Ingesta YouTube en producción**: ¿aceptamos el posicionamiento "streams propios del tenant (HLS/RTMP/upload) + YouTube best-effort" para early adopters, o invertimos en VPS/proxies dedicados desde T1? Define infra y mensaje comercial.
-- **B-2 — Multi-tenant por usuario**: ¿un user puede pertenecer a varios tenants desde ya (multi-marca Network) o se confirma post-v1? Cambia el modelo de auth/switch.
+**Resueltas por el dueno (vinculantes):**
+- **B-1 - Ingesta YouTube FULL desde v1:** YouTube Live debe capturarse en produccion desde T1 mediante VPS propio y proxies dedicados, con monitoreo y rotacion. HLS/RTMP y upload VOD siguen soportados como fuentes/fallbacks, pero no reducen esta obligacion.
+- **B-2 - Multi-tenant por usuario desde v1:** `users` a `tenants` es N:M mediante `user_tenants`; la sesion/JWT porta tenant activo y la UI permite switch. El maximo de marcas por cuenta se aplica por plan (Creator/Media=1, Network=3, Enterprise=unlimited).
 
 **Asumibles (default propuesto, confirmar en design):**
-- A-1 Storage de crudos: filesystem en VPS para MVP → S3/R2 cuando entre plan Network. (D-2 visión)
-- A-2 Modelo de análisis: Gemini Flash para sampling en vivo, Pro para post-stream; ajustable por provider registry. (D-1 visión)
+- A-1 Storage de crudos: filesystem en VPS para MVP; S3/R2 cuando entre plan Network.
+- A-2 Modelo de analisis: Gemini Flash para sampling en vivo, Pro para post-stream; ajustable por provider registry.
 - A-3 InsightFace: container en el mismo VPS de ingesta; separar si crece carga.
-- A-4 Zernio: costo por cuenta absorbido vía límite `maxConnectedPlatforms` del plan (sin passthrough de precio en v1).
+- A-4 Zernio: costo por cuenta absorbido via limite `maxConnectedPlatforms` del plan (sin passthrough de precio en v1).
 - A-5 BYOK Enterprise: diferido post-launch (flag ya previsto).
+
+## Orden de ejecucion reconciliado
+
+El orden de producto vinculante es **PA, PB, PC, PD, PE, PF, PG, PH, PI**. Las tandas T1/T2/T3 no son el orden de entrega: son etiquetas de capacidad para riesgo y arquitectura. Para no crear re-trabajo, se adelantan unicamente habilitadores sin superficie de producto: GATE-1 (pgvector) antes de PC, GATE-2 (Zernio) antes de PG, y las migraciones/base de cola estrictamente requeridas por la epica activa. Cada epica se cierra con sus APIs, UI y gates antes de abrir la siguiente; PI conserva los controles operacionales transversales que deben estar activos desde PA, pero su aceptacion de lanzamiento ocurre al final.
+
+## Rollback plan
+
+- Todo surface nuevo detras de `tenant_features`: desactivar flag devuelve el comportamiento anterior.
+- Video path es **aditivo**: pipeline de audio actual sigue funcionando si falla ingesta de video.
+- Convivencia Zernio: publishService legacy queda intacto; desactivar Zernio vuelve a Meta/Twitter directo.
+- Migraciones Drizzle reversibles; tablas nuevas no alteran flujo existente salvo enforcement flaggeable.
+- Fixes (Stripe TZ/settings) son correcciones aisladas con diff minimo.

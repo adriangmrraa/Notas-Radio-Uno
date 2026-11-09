@@ -473,7 +473,7 @@ migración aplicada, feature flaggeada si es nueva superficie.
 
 *Objetivo: la plataforma es administrable, segura y vendible.*
 
-- **PA-01** Schema Drizzle: `team_invites`, `admin_users`, `audit_logs`, `tenant_features` [3]
+- **PA-01** Schema Drizzle: `user_tenants`, `tenant_features`, `audit_logs`, `jobs_queue` y flag `users.is_platform_admin` [3]
   - AC: migraciones generadas; `tenant_features` con default por plan.
 - **PA-02** Invitaciones de equipo: endpoints invite/accept/revoke + email con token [3]
   - AC: invitar editor → link → crea cuenta activa en el tenant.
@@ -493,7 +493,7 @@ migración aplicada, feature flaggeada si es nueva superficie.
 
 *Objetivo: el modelo de negocio funciona end-to-end.*
 
-- **PB-01** Schema: `usage_cycles` (transmisiones por ciclo) + campos de plan (transmisiones, duración máx, clips, personas, retención crudo) [3]
+- **PB-01** Schema: `tenant_quotas` + `quota_operations` idempotentes por período/TZ y campos de plan (transmisiones, duración máx, clips, personas, retención crudo) [3]
 - **PB-02** Metering: consumir 1 transmisión al iniciar pipeline; liberar si falla antes de N min [3]
   - AC: una transmisión activa NUNCA se corta por cuota.
 - **PB-03** Plans seed (Creator/Media/Network/Enterprise) + admin de planes [2]
@@ -508,8 +508,8 @@ migración aplicada, feature flaggeada si es nueva superficie.
 
 *Objetivo: el cliente alimenta el sistema y el sistema "sabe" quién es quién.*
 
-- **PC-01** Schema: `people` (fotos, embedding_ref, rol, redes JSON, notas), `person_program`, `editorial_profiles` [3]
-- **PC-02** Migración conductores→people (los conductores actuales pasan a la biblioteca) [2]
+- **PC-01** Schema: `persons`, `person_photos`, `face_embeddings`, `person_program` y `editorial_profiles` [3]
+- **PC-02** Migración conductores+invitados→persons (la biblioteca unificada conserva fotos y vínculos) [2]
 - **PC-03** Módulo Personas (UI): CRUD con multi-foto, redes, notas, programas asociados [5]
 - **PC-04** Pipeline de rostros: al subir foto → detectar cara → generar embedding → guardar [5]
   - AC: foto sin cara rechazada con mensaje claro.
@@ -540,7 +540,7 @@ migración aplicada, feature flaggeada si es nueva superficie.
 
 - **PE-01** Capa de proveedores de análisis (interface + config por proceso: análisis/transcripción/imagen) [3]
 - **PE-02** Integración del modelo multimodal top (video+transcripción → momentos, temas, citas) [8]
-- **PE-03** Identidad de personas: diarización → matching rostro en frames contra embeddings de `people` [8]
+- **PE-03** Identidad de personas: diarización → matching rostro en frames contra embeddings de `persons` [8]
   - AC: speaker label resuelto a persona con confianza; corrección manual persiste en la sesión.
 - **PE-04** Detección de momentos clipables en tiempo real (score + razón + ventana sugerida) [5]
 - **PE-05** Detección de citas atribuidas a persona (nombre+foto) [3]
@@ -559,7 +559,7 @@ migración aplicada, feature flaggeada si es nueva superficie.
 - **PF-06** Notas por rubro con citas atribuidas (plantillas por rubro editorial) [3]
 - **PF-07** Flyers/quote-cards con foto real de la persona detectada [3]
 - **PF-08** Imágenes multi-modelo: provider seleccionable por tenant + fallback [3]
-- **PF-09** Variantes por red: copy+hashtags+menciones con handles de `people.social` [3]
+- **PF-09** Variantes por red: copy+hashtags+menciones con handles de `persons.socials` [3]
 - **PF-10** Modelo `assets` unificado (clip/nota/flyer/post) con estados editoriales — refactor de `clips`/`publications` actuales [5]
 
 ### ÉPICA G — Bandeja, publicación y Zernio

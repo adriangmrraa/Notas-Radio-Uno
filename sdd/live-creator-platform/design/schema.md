@@ -54,8 +54,8 @@ CREATE EXTENSION IF NOT EXISTS vector;  -- pgvector (Neon o imagen pgvector-enab
 PK compuesta `(person_id, program_id)`; ambos FK cascade.
 
 ### person_transmission (invitado puntual)
-| id uuid PK | person_id FK→persons cascade NN | transmission_id uuid FK→transmissions set null (NULL = aún no creada) | program_id uuid FK→programs set null | scheduled_date date (fecha del invitado cuando no hay transmission) | role varchar default 'guest' | created_at |
-Índice `(tenant_id?)` no aplica (vía person). Unique parcial `(person_id, transmission_id)` donde transmission_id not null — enforced en service.
+| id uuid PK | tenant_id uuid FK->tenants cascade NN | person_id uuid FK->persons cascade NN | transmission_id uuid FK->transmissions set null (NULL = not created yet) | program_id uuid FK->programs set null | scheduled_date date (guest date without a transmission) | role varchar default 'guest' | created_at |
+Indexes `(tenant_id, scheduled_date)` and `(tenant_id, transmission_id)`; the service validates person/program/transmission belong to the same tenant. Partial unique `(person_id, transmission_id)` where transmission_id is not null.
 
 ### transmissions
 | col | type | notes |
@@ -134,7 +134,7 @@ idx `(status, run_at)` para claim `FOR UPDATE SKIP LOCKED`; `(tenant_id, status)
 ### Alteraciones T2
 - `users` + `is_platform_admin bool default false`; `tenant_id` pasa NULLABLE en 0009 (tras backfill).
 - `tenants` + `onboarding_completed bool default false`, `suspended_at timestamp tz`, `suspension_reason text` (`is_active` ya existe).
-- `plans` + `max_transmissions_per_month int`, `max_duration_minutes int`, `max_clips_per_transmission int`, `max_persons int`, `retention_days int`. `features` jsonb pasa a leerse como capa "plan" de flags.
+- `plans` + `max_transmissions_per_month int`, `max_duration_minutes int`, `max_clips_per_transmission int`, `max_persons int`, `max_team_members int`, `max_tenants int`, `max_connected_platforms int`, `retention_days int`. `features` jsonb pasa a leerse como capa "plan" de flags.
 - `subscriptions` + `grace_ends_at timestamp tz`, `dunning_attempts int default 0`, `last_dunning_at`, `frozen_price numeric(10,2)`, `frozen_currency varchar(3)`, `cancel_reason text`, `provider_ref jsonb` (snapshot del alta).
 - `refresh_tokens` — sin cambio (`tenant_id` ya existe = sesión activa).
 - `team_invitations` — sin cambio estructural; enforcement de unicidad pending en service.
