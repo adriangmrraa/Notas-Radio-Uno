@@ -31,13 +31,25 @@ import {
     listAssetsPage,
     syncAssets,
     transitionAsset,
+    createDrizzleAssetStore,
     type AssetServiceDeps,
 } from '../services/assetsService.js';
+import { getAvailableProviders } from '../services/aiProviders.js';
+import { generateTextWithFallback } from '../services/aiSdkService.js';
+import { clipRenderQueueService, type ClipRenderJob } from '../services/clipRenderQueueService.js';
+import { generateImage, type GenerateImageResult } from '../services/imageModelService.js';
 
 export const assetsRouter = Router();
 
 /** Mismo contrato que notesRouteDeps/publicationsRouteDeps. */
 export const assetsRouteDeps: AssetServiceDeps = {};
+
+/** Injectable AI/queue boundaries: route tests never call external providers. */
+export const assetsAiRouteDeps: {
+    proposeText?: (input: { tenantId: string; sourceText: string; instruction: string }) => Promise<{ text: string; provider: string }>;
+    enqueueClipRegeneration?: (input: { tenantId: string; clipId: string; assetId: string; prompt: string }) => Promise<ClipRenderJob>;
+    regenerateImage?: (input: { tenantId: string; prompt: string }) => Promise<GenerateImageResult>;
+} = {};
 
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -205,3 +217,88 @@ assetsRouter.post(
         }
     },
 );
+
+// ------------------------------------------------------------------
+// PG-02: AI-assisted editorial actions. Both actions resolve the ledger
+// row through the authenticated tenant before invoking any provider/queue.
+// ------------------------------------------------------------------
+assetsRouter.post('/:id/edit-text', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const tenantId = req.auth!.tenantId;
+        if (!UUID_RE.test(req.params.id)) {
+            res.status(400).json({ error: 'id invalido (uuid)' });
+            return;
+        }
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        if (typeof body.instruction !== 'string' || body.instruction.trim().length === 0) {
+            res.status(400).json({ error: 'instruction es obligatoria' });
+            return;
+        }
+        const asset = await (assetsRouteDeps.store ?? createDrizzleAssetStore()).getAsset(req.params.id, tenantId);
+        if (!asset) {
+            res.status(404).json({ error: 'Asset no encontrado', code: 'asset_not_found' });
+            return;
+        }
+        if (asset.kind !== 'note' && asset.kind !== 'post') {
+            res.status(422).json({ error: 'Este tipo de asset no admite edicion de texto', code: 'text_edit_unsupported' });
+            return;
+        }
+        const sourceText = typeof asset.payload.content === 'string'
+            ? asset.payload.content
+            : typeof asset.payload.copy === 'string' ? asset.payload.copy : asset.title ?? '';
+        if (!sourceText) {
+            res.status(422).json({ error: 'El asset no tiene texto editable', code: 'missing_source_text' });
+            return;
+        }
+        const propose = assetsAiRouteDeps.proposeText ?? (async (input: { tenantId: string; sourceText: string; instruction: string }) => {
+            if (getAvailableProviders().length === 0) {
+                throw new AppError('No hay proveedor de IA configurado para editar texto', 503, 'no_provider_configured');
+            }
+            return generateTextWithFallback({
+                system: 'Eres un editor editorial. Devuelve solo el texto editado, sin inventar hechos.',
+                prompt: `Texto original:\n${input.sourceText}\n\nInstruccion editorial:\n${input.instruction}`,
+            });
+        });
+        const result = await propose({ tenantId, sourceText, instruction: body.instruction.trim() });
+        res.status(200).json({ proposal: result.text, provider: result.provider });
+    } catch (error) {
+        handleError(res, error, 'Error al editar el texto del asset');
+    }
+});
+
+assetsRouter.post('/:id/regenerate', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const tenantId = req.auth!.tenantId;
+        if (!UUID_RE.test(req.params.id)) {
+            res.status(400).json({ error: 'id invalido (uuid)' });
+            return;
+        }
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
+            res.status(400).json({ error: 'prompt es obligatorio' });
+            return;
+        }
+        const asset = await (assetsRouteDeps.store ?? createDrizzleAssetStore()).getAsset(req.params.id, tenantId);
+        if (!asset) {
+            res.status(404).json({ error: 'Asset no encontrado', code: 'asset_not_found' });
+            return;
+        }
+        if (asset.kind === 'clip' && asset.sourceTable === 'clips') {
+            const enqueue = assetsAiRouteDeps.enqueueClipRegeneration ?? ((input: { tenantId: string; clipId: string; assetId: string; prompt: string }) =>
+                clipRenderQueueService.enqueue({ tenantId: input.tenantId, clipId: input.clipId, kind: 'reframe', payload: { clipId: input.clipId, assetId: input.assetId, prompt: input.prompt } }));
+            const job = await enqueue({ tenantId, clipId: asset.refId, assetId: asset.id, prompt: body.prompt.trim() });
+            res.status(202).json({ jobId: job.id, status: job.status });
+            return;
+        }
+        if (asset.kind === 'flyer') {
+            const regenerate = assetsAiRouteDeps.regenerateImage ?? ((input: { tenantId: string; prompt: string }) => generateImage(input));
+            const result = await regenerate({ tenantId, prompt: body.prompt.trim() });
+            // The image service writes the real result; do not fabricate a public URL.
+            res.status(202).json({ status: 'generated', path: result.path, model: result.model });
+            return;
+        }
+        res.status(422).json({ error: 'Este tipo de asset no admite regeneracion', code: 'regeneration_unsupported' });
+    } catch (error) {
+        handleError(res, error, 'Error al solicitar regeneracion del asset');
+    }
+});
