@@ -431,7 +431,7 @@ export function createDrizzleAssetStore(
                 )),
             ));
             const where = and(...conds);
-            const [totalRow, pageRows] = await Promise.all([
+            const [[totalRow], pageRows] = await Promise.all([
                 executor.select({ value: count() }).from(assets).where(where),
                 executor.select().from(assets).where(where)
                     .orderBy(desc(assets.createdAt), desc(assets.id))
