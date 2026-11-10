@@ -1,59 +1,123 @@
-# PF-01 — Clip-cutter: cortar ventana del crudo con ffmpeg
+# BRIEF — PF-04 Cola de render de clips (jobs) + estados por clip + reintento
 
-KANBAN_TASK_ID: t_682756fa
-Slice de: ÉPICA F — Fábrica de contenido desde el crudo
-Ejecutor: devin-swe-2-max (agente delegado en worktree Orca)
-Base: f1b5899 (master tip — ÉPICA E completa)
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-04, 3 pts)
+**Base**: `b481548` (master tip, incluye PF-01 clipCutterService)
+**Branch**: `pf-04-render-queue`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-04-render-queue`
 
-## Objetivo
+## Contexto
 
-`cutRawWindow({tenantId, transmissionId, startMs, endMs})` → corta la ventana
-del **video crudo real** (decisión D-1: NUNCA clips sintéticos) y registra el
-clip en `clips`. La ventana es en la convención de offsets relativos a
-`transmissions.started_at` (misma que `transcript_segments`/momentos).
+PF-01 (`clipCutterService.cutRawWindow`) corta ventanas del crudo y deja el `clips` row en
+`generating → pending_review | error`. ÉPICA F necesita una **cola de render** que desacople
+"pedir un clip" de "renderizarlo", con estados persistentes por job y reintento automático.
 
-El punto no trivial: **la ventana puede cubrir varios `recording_segments`**
-— hay que resolver por cada tramo qué segmento lo contiene, extraer cada
-parte con `-ss` relativo al archivo y concatenarlas en UN MP4.
+`scheduled_jobs`/`job_executions` existen pero son para jobs recurrentes de programación de
+transmisiones — NO reutilizar. Necesitamos tabla propia para jobs de render ad-hoc.
 
-## Contratos heredados (NO reimplementar)
+Patrones del repo a seguir OBLIGATORIAMENTE:
+- Store pattern: interface `XStore` + `createDrizzleXStore(db)` + memory store en tests
+  (ver `src/server/services/transmissionSegmentsService.ts`, `clipCutterService.ts`)
+- `tenant_id` en TODA query de DB (verificación automática)
+- Worker init como `initJobScheduler(io)` en `src/server/index.ts:277`
+- Timestamps `timestamp('x', { withTimezone: true })`, `updatedAt` con `$onUpdateFn`
+- Índices por tenant + por la query del claim (status, run_at)
 
-| Pieza | Dónde | Uso |
-|---|---|---|
-| `recording_segments` + `stream_recordings` | `recordings.ts` | `sequence, startMs, endMs(nullable si aún graba), fileRef, status`. fileRef relativo a `stream_recordings.storage_prefix` → key RawStorage `${storagePrefix}/${fileRef}` (mismo que PE-02/03). |
-| `clips` | `clips.ts` | `title, hookText(notNull!), videoPath, duration(s), status, transmissionId, metadata jsonb`. `createClip`/`updateClipVideoPath` existen en `clipService.ts` — reusarlos como store/wrapper si encajan (status final sugerido: `'pending_review'` como ya hace `updateClipVideoPath`). |
-| `getRawStorage()` | `rawStorageService.ts` | `publicPath(ref)` → ruta local del MP4 fuente. Salida del clip: misma convención que el pipeline actual (`output/` del proyecto — ver `clipService.generateClipVideo`) O un prefix RawStorage `clips/` — elegir lo más consistente con cómo se sirven los clips hoy (`videoPath` es path de archivo local). |
-| ffmpeg | `findBinary('ffmpeg')` + `src/server/lib/binaries.ts` | Precisión de frames SIN re-encode completo: `-ss <rel> -t <dur>` por tramo con re-encode corto por tramo (accuracy) o `-c copy` si el tramo arranca en keyframe — elegir y justificar en código; concat via demuxer (`-f concat -safe 0`) o un solo input si la ventana cae en UN segmento (camino rápido obligatorio). |
-| `transmission_moments` | `live.ts` | consumidor natural del cutter (moment clipable → clip) — pero el cutter NO escribe moments; acepta window explícita. |
+## Alcance
 
-## Arquitectura pedida (patrón del repo)
+### 1) Schema — `clip_render_jobs` (nueva tabla, migración drizzle)
 
-`src/server/services/clipCutterService.ts`:
+Archivo nuevo `src/server/db/schema/renderJobs.ts` + export en `schema/index.ts`.
 
-- `ClipCutterStore` + `createDrizzleClipCutterStore` + `createClipCutterService(store, deps)`.
-- Store (TODA query `tenant_id`): `getTransmission`, `listRecordingsWithSegments(tenantId, transmissionId)` (recordings + segments 'active' ordenados por startMs/sequence), `createClipRow`, `setClipResult(tenantId, clipId, {videoPath, duration, status, metadata})`.
-- Deps inyectables: `runFfmpeg(args)`/exec, `storage` (RawStorage), `tempDir`/`outputDir`.
-- `cutRawWindow(input)` → valida ventana (endMs > startMs, duración máx. configurable ~120s default, dentro del rango grabado) → resuelve tramos por segmento → por cada tramo `-ss (tramo.start - segment.startMs)` → concat → MP4 único → `clips` row con `transmissionId`, `duration`, `videoPath`, `metadata: {window:{startMs,endMs}, sourceSegments:[refs]}` → `{clipId, videoPath, durationSec, segmentsUsed}`.
-- Errores: ventana fuera de rango / sin segmentos que la cubran / ffmpeg falla → error tipado con razón; nada queda a medias (clip row en estado 'error' o sin crear — elegir y documentar).
-- Temp files siempre se limpian (finally).
+Columnas:
+- `id` uuid PK defaultRandom
+- `tenant_id` uuid NOT NULL FK tenants cascade + index
+- `clip_id` uuid NULL FK clips cascade + index (nullable: para kind='cut' el clip lo crea el cutter durante el render; el worker lo rellena al terminar)
+- `kind` varchar(32) NOT NULL — 'cut' ahora; diseñar extensible (PF-02 'reframe', PF-03 'subtitles' vendrán)
+- `status` varchar(20) NOT NULL default 'pending' — 'pending' | 'running' | 'done' | 'error' | 'cancelled'
+- `payload` jsonb NOT NULL default {} — para 'cut': `{ transmissionId, startMs, endMs }`
+- `attempts` integer NOT NULL default 0
+- `max_attempts` integer NOT NULL default 3
+- `last_error` text NULL
+- `run_at` timestamptz NOT NULL defaultNow — cuándo puede correr (backoff mueve esto)
+- `started_at` timestamptz NULL, `finished_at` timestamptz NULL
+- `created_at`, `updated_at` (patrón jobs.ts)
+- Índice compuesto `(status, run_at)` para el claim del worker
 
-## Tests (`tests/clipCutter.test.ts` + `tests/helpers/memoryClipCutterStore.ts`)
+Generar migración con `npm run db:generate` (o `npx drizzle-kit generate` según package.json)
+y verificar que aplica limpio contra pglite como hizo PE-06 (ver script de verificación en
+drizzle/ o tests previos — reproducir el patrón usado para transmission_segments).
 
-Deterministas (ffmpeg stubbed — capturar args y producir "archivo" falso):
-- ventana dentro de UN segmento → 1 tramo, args ffmpeg correctos (`-ss` relativo al archivo), clip registrado
-- ventana que cruza 2 segmentos → 2 tramos + concat, offsets relativos correctos por tramo
-- ventana fuera de rango → error, no crea clip
-- ffmpeg que falla → error controlado
-- aislamiento por tenant en queries del store
+### 2) `clipRenderQueueService.ts` — Store pattern
 
-## Constraints
+Interface `ClipRenderQueueStore` + drizzle impl + export. Métodos:
+- `enqueue({tenantId, clipId?, kind, payload, maxAttempts?})` → job (status 'pending', run_at now)
+- `claimNext(now)` → job | null — atómico: status 'pending' AND run_at <= now → 'running',
+  attempts+1, started_at=now. Tenant-agnóstico OK SOLO aquí (la cola es global; el job ya
+  lleva tenant_id). Documentar esa excepción con comentario.
+- `markDone(jobId, {clipId?})` → status 'done', finished_at, rellena clip_id si viene
+- `markFailed(jobId, error, {retryAt})` → si attempts < max_attempts: status vuelve a
+  'pending' con run_at=retryAt + last_error; si no: status 'error' terminal + finished_at
+- `retry(jobId, tenantId)` → manual: status→'pending', run_at→now, attempts→0, last_error→null.
+  Permitido desde 'error' o 'cancelled'.
+- `listByClip(clipId, tenantId)`, `getById(jobId, tenantId)`, `listPending(tenantId?)`
 
-- `tenant_id` en TODA query. NUNCA clip sintético — siempre del crudo real.
-- NO tocar: `clipService.ts` (reusar de afuera), `streamRecorderService.ts`, `analysisEngineService.ts`, `liveAnalysisRunner.ts`, schemas.
-- No crop 9:16 ni subtítulos acá — PF-02/03 vienen después sobre este MP4.
+### 3) `clipRenderWorker.ts` — loop de dispatch
 
-## Gates
+`initClipRenderWorker(io?)` siguiendo el patrón de `initJobScheduler`:
+- `setInterval` cada ~10s (constante `POLL_MS`, env-overridable `RENDER_WORKER_POLL_MS`)
+- Por tick: `store.claimNext(now)` → si hay job, dispatch por `kind`:
+  - `'cut'` → `clipCutterService.cutRawWindow({tenantId: job.tenantId, ...job.payload})`
+    → devuelve clip → `markDone(jobId, {clipId: clip.id})`
+  - kind desconocido → `markFailed` con error 'unknown kind' (sin reintento: markFailed
+    directo a terminal — pasar flag o retryAt far-future NO; mejor: markFailed con
+    retry:false → terminal)
+- Error del render → `markFailed(jobId, err.message, {retryAt: now + attempts*60_000})`
+  (backoff lineal 1min por intento)
+- Fire-and-forget por tick: un job no bloquea el siguiente claim del próximo tick
+- Un solo worker por proceso (flag de guard si se llama 2 veces)
+- `io` opcional: emit `clip:render:done`/`clip:render:error` al room `tenant:{tenantId}`
+  si io presente (mismo contrato de rooms que transmission:moments — ver index.ts)
 
-`npx tsc --noEmit` EXIT 0 · `npx vitest run` verde · `npm run build` verde.
-`npm ci --ignore-scripts` primero si no hay node_modules.
-Commit conventional en `pf-01-clip-cutter`, paths explícitos, sin atribución IA. NO push, NO PR.
+Dependencias inyectables para test: `{store, cutRawWindow, now, backoffMs}` con defaults reales.
+
+### 4) Wiring — `src/server/index.ts`
+
+`initClipRenderWorker(io)` junto a `initJobScheduler(io)` (línea ~277), env-guarded igual que
+los otros schedulers si ellos lo están (revisar cómo se guardan; si no hay guard, agregar
+`if (process.env.RENDER_WORKER_ENABLED !== '0')`).
+
+### 5) Tests deterministas
+
+`tests/helpers/memoryRenderJobsStore.ts` + `tests/clipRenderQueue.test.ts`:
+- enqueue → claimNext devuelve job (status running, attempts=1)
+- claimNext respeta run_at futuro (no lo toma)
+- markFailed con attempts < max → vuelve 'pending' con run_at=retryAt
+- markFailed con attempts = max → 'error' terminal
+- retry() manual desde 'error' → 'pending', attempts 0
+- worker tick con cutRawWindow fake → markDone con clipId rellenado
+- worker tick con cutter que tira → markFailed + backoff
+- tenant isolation en getById/listByClip/retry
+- cancel (si lo implementás) o al menos listPending
+
+## NO TOCAR
+
+- `clipCutterService.ts` (es el target del dispatch, se consume vía dep inyectable)
+- `clipService.ts`, `streamRecorderService.ts`, `analysisEngineService.ts`, `liveAnalysisRunner.ts`
+- Schemas existentes (solo AGREGAR `renderJobs.ts`)
+- No implementar reframe/subtitles (PF-02/03) — solo el kind 'cut' funcional
+
+## Gates obligatorios
+
+```bash
+npm ci --ignore-scripts   # si node_modules no está
+npx drizzle-kit generate  # migración
+# verificar migración aplica limpio (patrón pglite usado en PE-06)
+npx tsc --noEmit          # EXIT 0
+npx vitest run            # todos verdes (471 base + nuevos)
+npm run build             # verde
+```
+
+## Reporte
+
+`DONE: PF-04 → <SHA>` + archivos + gates + decisiones (p.ej. si clip_id nullable, política
+de retry, índice de claim). Si bloqueado: `BLOCKED: <razón>` + qué falta.
