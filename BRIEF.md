@@ -1,112 +1,122 @@
-# BRIEF — PF-02 Re-encuadre 9:16 inteligente (crop por rostro activo / split 2 personas)
+# BRIEF — PF-03 Subtítulos quemados + progreso + branding (logo, lower-third persona)
 
-**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-02, 8 pts)
-**Base**: `64996bb` (master tip: PF-01 cutter + PF-04 cola de render)
-**Branch**: `pf-02-reframe`
-**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-02-reframe`
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-03, 5 pts)
+**Base**: `75e6f99` (master tip: PF-01 cutter + PF-02 reframe + PF-04 cola)
+**Branch**: `pf-03-subtitles-branding`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-03-subtitles-branding`
 
 ## Contexto
 
-PF-01 produce el clip crudo 16:9 (`clips.videoPath` → MP4 en `output/`). PF-04 tiene la
-cola `clip_render_jobs` + worker con dispatch por `kind`. Este slice agrega el re-encuadre
-vertical inteligente: detectar rostros en frames del clip y cropear 9:16 centrado en el
-rostro activo — o layout split (dos mitades verticales) si hay 2 personas.
+El clip ya pasa por `cut` (16:9 crudo) y `reframe` (9:16). Este slice agrega la pasada de
+**subtítulos quemados con estilo del tenant + barra de progreso + logo + lower-third con el
+nombre de la persona que habla** — se aplica sobre el `videoPath` actual del clip
+(post-reframe si existe, post-cut si no). Dispatch como `kind='subtitles'` en la cola.
 
 Contratos existentes (verificados):
-- `getFaceDetector()` → `detect(Buffer)` → `{faces: [{bbox: [x,y,w,h], embedding}]}` —
-  `src/server/services/faceDetectionService.ts`. Lazy, descarga modelos ONNX.
-- `FakeFaceDetector` ya existe en tests (`tests/personIdentity.test.ts` lo usa).
-- `clipCutterService`: convención `outputDir` (default `<repo>/output`), ffmpeg runner
-  inyectable `createFfmpegRunner`, `msToSec`, patrones de args — reutilizar estilo.
-- `clipRenderWorker.dispatch`: `if (job.kind !== 'cut') → markFailed(unknown kind)`. Hay
-  que extender el dispatch con 'reframe' (deps inyectables como `cutRawWindow`).
-- `clips` schema: `videoPath`, `status` ('generating'|'pending_review'|'error'|...),
-  `metadata` jsonb, `duration`. PF-01 guarda `metadata.window` + `metadata.sourceSegments`.
-- `clip_render_jobs.payload` para 'reframe': `{ clipId }` (el tenant va en la fila).
+- `transcript_segments` (schema/live.ts): `transmissionId`, `startMs`, `endMs`,
+  `speakerLabel`, `personId`, `text` — tiempos absolutos vs `transmissions.started_at`.
+- `clips.metadata.window` = `{startMs, endMs}` absolutos vs started_at (PF-01 lo escribe);
+  `clips.transmissionId` también lo escribe PF-01. Las cues = transcript_segments que se
+  solapen con la ventana, tiempo relativo = `seg.startMs − window.startMs`.
+- `brandingService.loadTenantBranding(tenantId)` → `{logoBuffer, platformName,
+  fontFamily, templateId}` — REUSAR como dep inyectable (no re-implementar la query).
+- `fontService`: `FONT_REGISTRY: Record<FontFamilyId,{filename,family}>` + `getFontFamily()`
+  — resuelve familia+archivo real en disco (fonts/ dir). ASS usa `FontName` + `fontsdir`.
+- `persons.name` para el lower-third; `transcript_segments.personId` (PE-03 lo resuelve).
+- Worker dispatch: agregar `kind === 'subtitles'` igual que 'reframe' (dep `burnSubtitles`
+  inyectable, default → servicio nuevo). Payload: `{clipId}`.
+- `clipReframeService` muestra el patrón: probe dims, ffmpegRunner inyectable, temps en
+  `finally`, estados `generating → pending_review | error`, metadata en jsonb.
 
 ## Alcance
 
-### 1) `clipReframeService.ts` — Store pattern (obligatorio)
+### 1) `clipSubtitleService.ts` — Store pattern
 
-`ReframeStore` (load/update clip tenant-scoped) + `createDrizzleReframeStore` + memory store.
-Función principal `reframeClip({tenantId, clipId})`:
+`SubtitleStore` + `createDrizzleSubtitleStore`:
+- `getClip(clipId, tenantId)` — con transmissionId, videoPath, metadata.window, duration
+- `listUtterances(tenantId, transmissionId, startMs, endMs)` — transcript_segments con
+  overlap, orden por startMs, incluir speakerLabel + personId
+- `getPersonNames(tenantId, personIds[])` → Map personId→name
+- `updateClip(clipId, tenantId, patch)` — videoPath/status/metadata
 
-1. Load clip (tenant-scoped, 404 si no). Requiere `videoPath` no-null → si no, error
-   `missing_source_video`.
-2. Probar dimensiones del video fuente (ffprobe inyectable o dims en deps — NO hardcodear).
-3. Samplear M frames uniformes sobre `clip.duration` (default ~8-10 samples, constante
-   `SAMPLE_COUNT`): ffmpeg extrae frame a temp jpg → `detector.detect(buf)` por frame.
-   Frames sin caras no aportan centro pero cuentan como sample.
-4. Timeline de centros: por frame, rostro dominante = mayor área de bbox → centerX
-   fracción (0-1). Colectar `{t, centerX, faceCount}`.
-5. **Decisión de layout** (función pura testeable `decideLayout(samples)`):
-   - `single` (default): un rostro dominante → crop width `ih*9/16`, x = clamp(
-     mediana(centerX)*iw − cropW/2, 0, iw−cropW ), y=0, alto completo.
-   - `split`: 2 clusters de rostros estables — criterio: ≥2 posiciones x distintas con
-     ≥30% de frames con cara cada una y separación > 25% del ancho. Dos crops
-     horizontales (izq/der) centrados en cada cluster → apilados verticalmente.
-   - `center` (fallback): 0 caras detectadas → crop centrado estándar.
-6. Render ffmpeg:
-   - single/center: `crop=cropW:ih:x:0,scale=1080:1920` + `-c:a copy`
-   - split: filter_complex `[0:v]crop=w1:ih:x1:0,scale=1080:960[t];[0:v]crop=w2:ih:x2:0,scale=1080:960[b];[t][b]vstack` + `-c:a copy`
-   - Una sola invocación ffmpeg, temps limpios en `finally`.
-7. Output: `output/<clipId>_916.mp4`. Update clip: `videoPath` → archivo nuevo,
-   `metadata.sourceVideoPath` = path anterior, `metadata.reframe` =
-   `{layout, samples: n, facesDetected: n, centerX}`; status → 'pending_review'
-   (o 'generating' al empezar + 'error' si falla — mismos estados que PF-01).
+### 2) Generación ASS (pura, testeable — el corazón del slice)
 
-Deps inyectables: `{store, detector, ffmpegRunner, frameExtractor, probe, tempDir, outputDir,
-sampleCount, now}` con defaults reales. `detector` default = `getFaceDetector()` LAZY
-(no resolver en import — solo cuando reframeClip corre).
+`buildAssFile({utterances, windowStartMs, style, personNames})` → string ASS:
+- `[V4+ Styles]` con `FontName`/`Fontsize`/`PrimaryColour`/`OutlineColour`/`Outline`/
+  `Shadow`/`Alignment=2` (bottom-center) según `style` derivado del branding
+- Cues `Dialogue: 0,start,end,Default,,0,0,0,,{text}` con tiempos `h:mm:ss.cc`
+  RELATIVOS al clip (clamp a [0, duration], descartar cues fuera)
+- Wrap de líneas largas (~42 chars) con `\N`
+- Escapar `{`,`}` y `\` en texto
+- **Lower-third**: por cambio de speaker con `personId` resuelto (o speakerLabel si no hay
+  person), evento `Dialogue` extra con estilo `LowerThird` (Alignment=7 top-left o 1
+  bottom-left sobre la zona de subs, `\pos`, fondo `\bord`+`3a` alpha) mostrando
+  `NOMBRE PERSONA` los primeros ~3.5s de su turno — función pura `lowerThirdEvents()`.
 
-### 2) Wiring en `clipRenderWorker.ts` (MODIFICAR — es el punto de extensión)
+`resolveSubtitleStyle(branding, dims)` → `{fontName, fontSize, primary, outline, boxAlpha}`
+(pura): fontFamily→FONT_REGISTRY.family; colores por `templateId` (mapear los templates
+existentes de templateService a paletas: dark_gradient→blanco/sombra oscura, etc. — leer
+`templateService.ts` para los colores reales de cada template y reusarlos).
 
-- Agregar dep inyectable `reframeClip` (default → `clipReframeService.reframeClip`).
-- Dispatch: `kind === 'reframe'` → `reframeClip({tenantId: job.tenantId, clipId:
-  job.payload.clipId})` → `markDone(jobId)` (el clip ya existe — clip_id ya viene en la
-  fila si el enqueue lo puso; payload.clipId es la fuente de verdad).
-- Mantener contrato: error → `markFailed` con backoff, eventos socket igual que 'cut'.
+### 3) Render ffmpeg — `burnSubtitles({tenantId, clipId})`
 
-### 3) Helper de encolado
+1. Load clip tenant-scoped; videoPath requerido (`missing_source_video`), window requerida
+   (`missing_window` si metadata.window no existe — clip viejo sin metadata → error tipado).
+2. Probe dims (dep `probe` como reframe).
+3. Escribir ASS a tempDir; logoBuffer→png temp si hay logo.
+4. filter graph (UNA invocación):
+   - `subtitles=<ass>:fontsdir=<fonts dir>` (escapar `:` y `\` en path Windows → forward
+     slashes + escape `:` con `\:`)
+   - logo: `[1:v]scale=w:-1[lg];[0:v][lg]overlay=W-w-margin:margin` (margin ~3% ancho,
+     logo ancho ~12-15% del video)
+   - progreso: `drawbox=x=0:y=0:w='t/dur*iw':h=<barH>:color=<accent>@0.9:t=fill` — barra
+     fina arriba que avanza con t (función `buildProgressFilter(dur, dims, accent)`)
+   - orden: subtitles → overlay logo → drawbox progreso; `-c:a copy`
+5. Output `output/<clipId>_sub.mp4` → update videoPath, `metadata.sourceVideoPath`,
+   `metadata.subtitles={cues, styled, logo:bool, progressBar:bool}`; status flow igual
+   que reframe.
+6. Temps (ass, logo png) en `finally`.
 
-`clipRenderQueueService` ya tiene `enqueue` genérico — NO modificarlo. Documentar en el
-servicio de reframe (o en BRIEF de API futura) que encolar reframe =
-`enqueue({tenantId, clipId, kind:'reframe', payload:{clipId}})`.
+Deps inyectables: `{store, ffmpegRunner, probe, loadBranding, tempDir, outputDir, fontsDir,
+now}` — `loadBranding` default = `loadTenantBranding`.
 
-### 4) Tests deterministas
+### 4) Worker dispatch `kind='subtitles'`
 
-`tests/helpers/memoryReframeStore.ts` + `tests/clipReframe.test.ts` con FakeFaceDetector +
-ffmpeg runner fake que captura args:
-- `decideLayout`: single (1 cluster), split (2 clusters estables), center (0 caras),
-  single si el 2do rostro es minoritario (<30% frames)
-- crop args single: `crop=<ih*9/16>:<ih>:<x>:0` con x clampeado a bordes (rostro en borde
-  izquierdo → x=0; borde derecho → x=iw-cropW)
-- split: filter_complex con vstack + 2 scales 1080x960
-- reframeClip completo: clip→'generating'→'pending_review', videoPath nuevo,
-  metadata.sourceVideoPath + metadata.reframe.layout
-- ffmpeg failure → status 'error' + last metadata
-- missing videoPath → error tipado, sin tocar ffmpeg
-- tenant isolation (clip de otro tenant → 404)
-- worker dispatch: kind 'reframe' llama reframeClip con el clipId del payload
+`clipRenderWorker.ts`: dep `burnSubtitles` (default → clipSubtitleService), dispatch igual
+que reframe: payload.clipId → `burnSubtitles({tenantId, clipId})` → markDone{clipId}.
+
+### 5) Tests deterministas
+
+`tests/helpers/memorySubtitleStore.ts` + `tests/clipSubtitles.test.ts`:
+- `buildAssFile`: cue shift relativo a window, clamp bordes, escape, wrap, estilo por
+  templateId, lower-third por speaker con personName (y sin person → speakerLabel)
+- `resolveSubtitleStyle`: fontFamily→family del registry, paleta por template
+- `buildProgressFilter`: expresión `t/dur*iw`, color accent del template
+- ffmpeg args: subtitles filter con path escapado, overlay logo solo si logoBuffer,
+  `-c:a copy`
+- clip completo: 'generating'→'pending_review', metadata.subtitles; ffmpeg fail → 'error'
+- missing videoPath / missing window → errores tipados sin tocar ffmpeg
+- sin utterances → render igual (clip sin subs, metadata.subtitles.cues=0) NO error
+- tenant isolation
+- worker dispatch kind 'subtitles'
 
 ## NO TOCAR
 
-- `clipCutterService.ts`, `clipRenderQueueService.ts` (consume, no modifica)
-- `faceDetectionService.ts`, `personIdentityService.ts` (solo consume `detect`)
-- `clipService.ts`, `streamRecorderService.ts`, schemas existentes
-- NO persistir `metadata.reframe` en columna nueva — va en el jsonb `metadata`
-- NO animación de crop (crop x fijo por clip en v1 — panning dinámico es post-v1)
+- `clipCutterService.ts`, `clipReframeService.ts`, `clipRenderQueueService.ts`
+- `brandingService.ts`, `fontService.ts`, `templateService.ts` (solo consumir)
+- Schemas — cero migraciones; todo en `metadata` jsonb
+- No inventar colores: mapear desde los templates REALES de templateService
 
 ## Gates obligatorios
 
 ```bash
 npm ci --ignore-scripts   # si node_modules no está
 npx tsc --noEmit          # EXIT 0
-npx vitest run            # todos verdes (488 base + nuevos)
-npm run build             # verde — NO debe haber schema changes
+npx vitest run            # 511 base + nuevos
+npm run build             # verde — sin schema changes
 ```
 
 ## Reporte
 
-`DONE: PF-02 → <SHA>` + archivos + gates + decisiones (umbrales de split, sample count,
-manejo de clips sin caras). Si bloqueado: `BLOCKED: <razón>`.
+`DONE: PF-03 → <SHA>` + archivos + gates + decisiones (formato ASS vs SRT, paletas por
+template, posición lower-third, tamaño barra progreso). `BLOCKED: <razón>` si aplica.
