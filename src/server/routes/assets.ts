@@ -101,11 +101,33 @@ assetsRouter.get(
                 transmissionId = q.transmissionId;
             }
 
+            let programId: string | undefined;
+            if (q.programId !== undefined) {
+                if (typeof q.programId !== 'string' || !UUID_RE.test(q.programId)) {
+                    res.status(400).json({ error: 'programId invalido (uuid)' });
+                    return;
+                }
+                programId = q.programId;
+            }
+
+            const page = q.page === undefined ? 1 : Number(q.page);
+            const pageSize = q.pageSize === undefined ? 50 : Number(q.pageSize);
+            if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+                res.status(400).json({ error: 'page y pageSize invalidos' });
+                return;
+            }
+
             const rows = await listAssets(
-                { tenantId, kind, status, transmissionId },
+                { tenantId, kind, status, transmissionId, programId },
                 assetsRouteDeps,
             );
-            res.status(200).json({ assets: rows });
+            const start = (page - 1) * pageSize;
+            res.status(200).json({
+                assets: rows.slice(start, start + pageSize),
+                total: rows.length,
+                page,
+                pageSize,
+            });
         } catch (error) {
             handleError(res, error, 'Error al listar los assets');
         }

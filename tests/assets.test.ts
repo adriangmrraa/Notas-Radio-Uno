@@ -760,6 +760,19 @@ describe('API /api/assets', () => {
         }
     });
 
+    it('GET / pagina el resultado y valida programId/paginacion', async () => {
+        await postJson('/api/assets/sync', {}, T_A);
+        const paged = await (await getJson('/api/assets?page=1&pageSize=2', T_A)).json();
+        expect(paged.assets).toHaveLength(2);
+        expect(paged.total).toBe(5);
+        expect(paged.page).toBe(1);
+        expect(paged.pageSize).toBe(2);
+
+        for (const q of ['?programId=ajeno', '?page=0', '?pageSize=101']) {
+            expect((await getJson(`/api/assets${q}`, T_A)).status).toBe(400);
+        }
+    });
+
     it('POST /:id/transition → 200 con asset actualizado + write-through', async () => {
         await postJson('/api/assets/sync', {}, T_A);
         const list = await (await getJson('/api/assets', T_A)).json();

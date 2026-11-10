@@ -40,13 +40,14 @@
  * Patrón del repo: `AssetStore` + `createDrizzleAssetStore` + memory store
  * en tests — TODA query filtra por `tenant_id`.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, exists } from 'drizzle-orm';
 import { v5 as uuidv5 } from 'uuid';
 
 import { db, type Database } from '../db/index.js';
 import { assets } from '../db/schema/assets.js';
 import { clips } from '../db/schema/clips.js';
 import { publications } from '../db/schema/publications.js';
+import { transmissions } from '../db/schema/transmissions.js';
 import { AppError } from '../lib/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -241,6 +242,7 @@ export interface AssetListFilters {
     kind?: string;
     status?: string;
     transmissionId?: string;
+    programId?: string;
 }
 
 /** Lo que el sync necesita de `clips` (tenant-scoped). */
@@ -374,11 +376,20 @@ export function createDrizzleAssetStore(
                 conds.push(
                     eq(assets.transmissionId, filters.transmissionId),
                 );
+            if (filters.programId) {
+                conds.push(exists(
+                    executor.select({ id: transmissions.id }).from(transmissions).where(and(
+                        eq(transmissions.id, assets.transmissionId),
+                        eq(transmissions.tenantId, tenantId),
+                        eq(transmissions.programId, filters.programId),
+                    )),
+                ));
+            }
             return executor
                 .select()
                 .from(assets)
                 .where(and(...conds))
-                .orderBy(assets.createdAt, assets.id);
+                .orderBy(desc(assets.createdAt), desc(assets.id));
         },
 
         async setAssetStatus(id, tenantId, status) {
@@ -517,6 +528,7 @@ export async function listAssets(
         kind: input.kind,
         status: input.status,
         transmissionId: input.transmissionId,
+        programId: input.programId,
     });
 }
 
