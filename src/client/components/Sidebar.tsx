@@ -25,24 +25,48 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatures } from '../hooks/useFeature';
 
-const NAV_MAIN = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
-  { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
-  { to: '/assets', icon: Inbox, label: 'Assets' },
-  { to: '/en-vivo', icon: Radio, label: 'En vivo' },
-  { to: '/editor', icon: Workflow, label: 'Pipeline Editor', feature: 'pipeline_editor' },
-  { to: '/programs', icon: Mic, label: 'Programas' },
-  { to: '/agenda', icon: CalendarDays, label: 'Agenda' },
-  { to: '/persons', icon: Users, label: 'Personas' },
-  { to: '/editorial', icon: PenLine, label: 'Línea editorial' },
-  { to: '/connections', icon: Share2, label: 'Conexiones' },
-  { to: '/publish', icon: Send, label: 'Publicación' },
-  { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
-  { to: '/analytics', icon: BarChart3, label: 'Analytics' },
+const NAV_SECTIONS = [
+  {
+    label: 'Ahora',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Panel de control' },
+      { to: '/en-vivo', icon: Radio, label: 'Operación en vivo' },
+    ],
+  },
+  {
+    label: 'Producción editorial',
+    items: [
+      { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
+      { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
+      { to: '/editor', icon: Workflow, label: 'Pipeline', feature: 'pipeline_editor' },
+      { to: '/programs', icon: Mic, label: 'Programas' },
+      { to: '/persons', icon: Users, label: 'Personas' },
+      { to: '/editorial', icon: PenLine, label: 'Línea editorial' },
+    ],
+  },
+  {
+    label: 'Contenido',
+    items: [{ to: '/assets', icon: Inbox, label: 'Assets' }],
+  },
+  {
+    label: 'Publicación',
+    items: [{ to: '/publish', icon: Send, label: 'Cola de publicación' }],
+  },
+  {
+    label: 'Programación',
+    items: [
+      { to: '/scheduled', icon: CalendarClock, label: 'Automatizaciones' },
+      { to: '/agenda', icon: CalendarDays, label: 'Agenda' },
+    ],
+  },
+  {
+    label: 'Analítica',
+    items: [{ to: '/analytics', icon: BarChart3, label: 'Rendimiento' }],
+  },
 ];
 
-const NAV_BOTTOM = [
+const NAV_SYSTEM = [
+  { to: '/connections', icon: Share2, label: 'Conexiones' },
   { to: '/settings', icon: Settings, label: 'Configuracion' },
   { to: '/billing', icon: CreditCard, label: 'Billing' },
 ];
@@ -57,8 +81,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { features } = useFeatures();
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Un flag apagado oculta la entrada del menú (la API igual valida del lado server).
-  const navMain = NAV_MAIN.filter((item) => {
+  // A disabled flag hides only its entry; server-side authorization remains authoritative.
+  const visibleItems = (items: typeof NAV_SECTIONS[number]['items']) => items.filter((item) => {
     const feature = (item as { feature?: string }).feature;
     return !feature || features[feature]?.enabled !== false;
   });
@@ -100,10 +124,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
       </div>
 
-      {/* Main nav */}
-      <nav className="sidebar-nav">
-        <div className="sidebar-nav-label">Menu</div>
-        {navMain.map(({ to, icon: Icon, label }) => (
+      <nav className="sidebar-nav" id="newsroom-navigation" aria-label="Navegación principal">
+        {NAV_SECTIONS.map((section) => {
+          const items = visibleItems(section.items);
+          if (items.length === 0) return null;
+
+          return (
+            <section key={section.label} aria-label={section.label}>
+              <div className="sidebar-nav-label">{section.label}</div>
+              {items.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
@@ -140,7 +169,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </>
             )}
           </NavLink>
-        ))}
+              ))}
+            </section>
+          );
+        })}
 
         <div className="sidebar-divider" />
         {user?.isPlatformAdmin && (
@@ -165,9 +197,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           </>
         )}
 
-        <div className="sidebar-nav-label">Sistema</div>
+        <div className="sidebar-nav-label">Configuración</div>
 
-        {NAV_BOTTOM.map(({ to, icon: Icon, label }) => (
+        {NAV_SYSTEM.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
@@ -202,7 +234,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <p className="sidebar-user-org">{user?.tenant?.name || 'Organizacion'}</p>
           </div>
         </div>
-        <button onClick={logout} className="sidebar-logout">
+        <button onClick={logout} className="sidebar-logout" aria-label="Cerrar sesión" title="Cerrar sesión">
           <LogOut className="w-4 h-4" />
         </button>
       </div>

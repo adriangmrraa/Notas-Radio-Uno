@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
-import { Menu, Moon, Sun } from 'lucide-react';
+import { ArrowLeft, Menu, Moon, Sun } from 'lucide-react';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { Toaster } from './ui/toaster';
 
@@ -11,6 +11,11 @@ const PAGE_TITLES: Record<string, string> = {
   '/en-vivo': 'En vivo',
   '/assets': 'Bandeja de assets',
   '/dashboard': 'Dashboard',
+  '/review': 'Revisión editorial',
+  '/clips': 'Clips',
+  '/programs': 'Programas',
+  '/agenda': 'Agenda',
+  '/publish': 'Publicación',
   '/persons': 'Personas',
   '/editorial': 'Línea editorial',
   '/editor': 'Pipeline Editor',
@@ -24,6 +29,11 @@ const PAGE_TITLES: Record<string, string> = {
 const PAGE_DESCRIPTIONS: Record<string, string> = {
   '/en-vivo': 'Sala de monitoreo de la transmisión activa',
   '/dashboard': 'Centro de control de tu newsroom',
+  '/review': 'Validá el contenido pendiente antes de publicar',
+  '/clips': 'Editá y aprobá clips de la producción',
+  '/programs': 'Organizá la programación del canal',
+  '/agenda': 'Planificá la cobertura y los contenidos',
+  '/publish': 'Seguimiento de trabajos listos para salir',
   '/persons': 'Biblioteca de personas del canal',
   '/editorial': 'Tono, reglas y formatos del canal y por programa',
   '/editor': 'Disena el flujo de tu pipeline',
@@ -37,6 +47,7 @@ const PAGE_DESCRIPTIONS: Record<string, string> = {
 export function Layout() {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(true);
 
@@ -95,8 +106,12 @@ export function Layout() {
           <div className="layout-header-left">
             {/* Hamburger — mobile only */}
             <button
+              type="button"
               className="md:hidden p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/5"
               onClick={() => setSidebarOpen(true)}
+              aria-label="Abrir navegación"
+              aria-expanded={sidebarOpen}
+              aria-controls="newsroom-navigation"
             >
               <Menu size={22} />
             </button>
@@ -108,6 +123,15 @@ export function Layout() {
           </div>
 
           <div className="layout-header-right">
+            <button
+              type="button"
+              className="theme-toggle hidden sm:inline-flex"
+              onClick={() => navigate(-1)}
+              aria-label="Volver a la página anterior"
+              title="Volver"
+            >
+              <ArrowLeft size={16} />
+            </button>
             <button
               type="button"
               className="theme-toggle"
