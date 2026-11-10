@@ -1,71 +1,64 @@
-# PE-02 — Motor de análisis en vivo (video + transcripción → momentos, temas, citas)
+# PE-03 — Identidad de personas: diarización → matching rostro en frames contra embeddings
 
 KANBAN_TASK_ID: t_d2f3cad5
 Slice de: ÉPICA E — Motor de análisis en vivo
 Ejecutor: devin-swe-2-max (agente delegado en worktree Orca)
-Base: 0c11fea (master tip — incluye PE-01 registry, PE-06 transmission_segments, PE-07 liveAlertsService)
+Base: aa3b6ad (master tip — incluye PE-01/02/06/07)
 
 ## Objetivo
 
-Crear el servicio que conecta la ingesta (ÉPICA D) con el análisis (ÉPICA E):
-dado un segmento de grabación MP4 ya persistido por `streamRecorderService`,
-el motor **extrae audio → transcribe (diarizado) → escribe `transcript_segments`
-→ analiza el texto acumulado con el modelo multimodal → escribe
-`transmission_segments` (temas) y `transmission_moments` (momentos clipables)
-→ dispara `liveAlertsService.checkTranscriptAlerts`**.
-
-Este slice implementa el **camino por segmento** (`processRecordingSegment`):
-el loop/orquestador que itera segmentos en vivo puede quedar como método
-expuesto, pero NO hace falta un worker/scheduler real todavía.
+Resolver `speaker_label` → `person_id`: por cada speaker de la diarización en
+`transcript_segments`, samplear frames del video en SUS ventanas temporales,
+detectar rostros (SCRFD+ArcFace) y matchear los embeddings contra
+`face_embeddings` (pgvector). Escribir `person_id` con confianza. **AC:
+corrección manual persiste** — la resolución automática sólo escribe donde
+`person_id IS NULL`, y hay un método explícito de corrección.
 
 ## Contratos heredados (NO reimplementar)
 
 | Pieza | Dónde | Uso |
 |---|---|---|
-| `transcribeAudio(filePath)` | `src/server/services/transcriptionService.ts` | Retorna `DiarizedTranscription { text, utterances: {speaker,text,start,end}[], provider }`. Ya usa el registry PE-01 (AssemblyAI→Whisper). Utterance.start/end son ms relativos AL ARCHIVO — sumale `recordingSegment.startMs` para offset vs `transmissions.started_at`. |
-| `recordingSegments` | `src/server/db/schema/recordings.ts` | `sequence, startMs, endMs (nullable mientras graba), fileRef, status`. Leélos; NO los escribas. |
-| `transcript_segments` | `src/server/db/schema/live.ts` | Escribir: tenant_id, transmission_id, start/end_ms, speaker_label, person_id=NULL, text, confidence. |
-| `transmission_segments` | `live.ts` + `transmissionSegmentsService` (PE-06) | Escribir via `transmissionSegmentsService.recordSegment({tenantId, transmissionId, startMs, endMs, topic, summary, speakers, confidence})`. |
-| `transmission_moments` | `live.ts` | kind='detected' con title/reason/score/startMs/endMs, clip_id=NULL. La Sala "En vivo" los lee sola. |
-| `liveAlertsService.checkTranscriptAlerts` | `liveAlertsService.ts` (PE-07) | Llamarlo fire-and-forget por cada chunk de texto nuevo con `{tenantId, transmissionId, text}`. |
-| `resolveAnalysisProvider('analysis')` | `src/server/lib/analysisProviders.ts` (PE-01) | Devuelve config del modelo de análisis (gemini por defecto). Usalo para el analyzer; NO hardcodees provider. |
-| `getRawStorage()` | `rawStorageService.ts` | Lee el MP4 desde `fileRef` (RawStorage sanea paths). |
-| ffmpeg | `src/server/lib/binaries.ts` (`findBinary`) | Extraer audio del MP4 (`-vn -acodec libmp3lame` o pcm) a archivo temp. |
+| `getFaceDetector()` | `src/server/services/faceDetectionService.ts` | `detect(imageBuffer) → {faces:[{bbox,detScore,embedding:number[512]}]}`. Modelo `insightface-buffalo_l`. **`FakeFaceDetector` ya existe** — usalo en tests. |
+| `face_embeddings` | `src/server/db/schema/persons.ts` | `tenant_id, person_id, embedding vector(512), det_score`. Matching = pgvector cosine distance (`<=>` via `sql` tag de drizzle) — umbral recomendado ~0.35 (ArcFace normalizado); exponerlo como constante configurable. |
+| `persons` | `persons.ts` | `id, name, role_label, role, face_status`. |
+| `transcript_segments` | `live.ts` | `speaker_label`, `person_id` (NULL), `start_ms/end_ms` — PE-02 ya los puebla. |
+| `recording_segments` + `stream_recordings` | `recordings.ts` | frames vienen de `${storagePrefix}/${fileRef}` via `getRawStorage()` — igual que PE-02. |
+| `transmissionSegmentsService.setSegmentSpeakers` | `transmissionSegmentsService.ts` (PE-06) | Propagar la resolución al jsonb `speakers` de los segmentos temáticos cuando apliquen (opcional pero deseable: update solo de labels que coincidaan). |
+| ffmpeg | `src/server/lib/binaries.ts` | `ffmpeg -ss <ms> -i <mp4> -frames:v 1 -f image2pipe -vcodec mjpeg -` → Buffer del frame. |
 
 ## Arquitectura pedida (patrón del repo)
 
-`src/server/services/analysisEngineService.ts`:
+`src/server/services/personIdentityService.ts`:
 
-- `AnalysisEngineStore` interface + `createDrizzleAnalysisEngineStore(executor)` + `createAnalysisEngineService(store, deps)`.
-- Store: `getTransmission(tenantId, transmissionId)`, `listRecordingSegments(tenantId, recordingId)`, `insertTranscriptSegments(tenantId, rows[])`, `insertMoment(tenantId, {...})`. Toda query con `tenant_id`.
-- Deps inyectables (defaults a las impl reales): `transcribe(filePath)`, `analyze(input: {transcript, prevContext?}) → AnalysisResult`, `extractAudio(fileRef) → filePath`, `alerts(tenantId, transmissionId, text)`.
-- `AnalysisResult` shape (lo devuelve el modelo): `{ segments: [{startMs,endMs,topic,summary,speakers,confidence}], moments: [{startMs,endMs,title,reason,score}], quotes: [{startMs,endMs,text,speakerLabel}] }`. Las quotes van a `transmission_moments` con `reason='quote'` y `title` = texto de la cita (PE-05 las enriquece después — acá basta persistirlas).
-- Métodos:
-  - `processRecordingSegment({tenantId, transmissionId, recordingId, sequence})` → extrae audio del `fileRef`, transcribe, inserta utterances en `transcript_segments` (offsets absolutos), analiza el texto nuevo (+ contexto previo opcional), escribe segments/moments/quotes, dispara alerts. Devuelve resumen `{utterancesInserted, segmentsWritten, momentsWritten, quotesWritten}`.
-  - `processTransmission({tenantId, transmissionId})` → itera `streamRecordings`+`recordingSegments` 'active' de esa transmisión llamando al método anterior (para procesado post-hoc/testing).
-- El analyzer real: llamada al provider resuelto por `analysisProviders('analysis')` (gemini flash, JSON mode, prompt en español rioplatense como `alertService`). Definilo como `analyzeTranscriptWindow(text)` exportado — los tests lo stubbean.
-- Manejo de errores: un segmento que falla se loguea y se saltea; nunca corta el loop.
+- `PersonIdentityStore` + `createDrizzlePersonIdentityStore` + `createPersonIdentityService(store, deps)`.
+- Store (TODA query con `tenant_id`):
+  - `listUnresolvedSpeakers(tenantId, transmissionId)` → speaker_labels distintos con `person_id IS NULL` + su rango temporal (min/max start_ms).
+  - `matchEmbedding(tenantId, embedding, limit)` → `[{personId, personName, distance}]` por distancia coseno `<=>` ASC.
+  - `assignPersonToSpeaker(tenantId, transmissionId, speakerLabel, personId)` → UPDATE `transcript_segments` SET person_id **WHERE person_id IS NULL** (así la corrección manual persiste).
+  - `overrideSpeakerPerson(tenantId, transmissionId, speakerLabel, personId|null)` → UPDATE forzado (corrección manual: pisa lo que haya, incluido null para desasignar).
+- Deps inyectables: `detectFaces(buf)`, `extractFrame(fileRef, atMs)→Buffer`, `storage`/`fileRefFor(segment)`.
+- `resolveTransmissionSpeakers({tenantId, transmissionId})` → por cada speaker sin resolver: samplea N frames dentro de su ventana (elegir recording_segment que cubre cada ms vía `listRecordingSegments`), detecta rostros, matchea embeddings, vota/agrupa → `{personId, confidence, evidence}` y escribe la asignación. Devuelve el mapa de resoluciones.
+- `correctSpeakerPerson(...)` → override manual.
+- Un frame sin rostro, un rostro sin match bajo umbral, o speaker sin frames → `personId=null` con razón; nunca rompe el loop.
 
-## Tests (`tests/analysisEngine.test.ts` + `tests/helpers/memoryAnalysisEngineStore.ts`)
+## Tests (`tests/personIdentity.test.ts` + `tests/helpers/memoryPersonIdentityStore.ts`)
 
-Deterministas, sin API ni DB:
-- utterances → transcript_segments con offsets absolutos correctos (startMs del segmento + offset del utterance)
-- topics → transmission_segments via service real (o store spy)
-- moments/quotes insertados con kind='detected' y campos correctos
-- alerts llamado con el texto nuevo y tenant correcto
-- segmento sin utterances → no inserta nada
-- aislamiento por tenant en todas las queries del store
-- error en un segmento no corta `processTransmission`
+Deterministas (FakeFaceDetector + embeddings sintéticos normalizados):
+- speaker resuelto cuando el match supera el umbral (distancia < umbral)
+- sin match → person_id queda NULL con razón registrada
+- auto-resolve NO pisa un person_id ya asignado (manual persiste) — el test lo verifica en el memory store replicando el WHERE
+- `correctSpeakerPerson` pisa asignaciones previas y admite desasignar (null)
+- aislamiento por tenant en queries del store
+- múltiples speakers independientes
 
 ## Constraints
 
-- `tenant_id` en TODA query. Offsets siempre relativos a `transmissions.started_at`.
-- NO tocar: `streamRecorderService.ts`, `pipelineService.ts`, `alertService.ts`, `transcriptionService.ts`, `transmissionSocketService.ts`, esquemas existentes (solo nuevas tablas si hicieran falta — no debería).
-- NO crear worker/scheduler/socket nuevo — el servicio es el contrato; el orquestador en vivo viene después.
-- No hardcodear modelo/provider: siempre via `analysisProviders`.
+- `tenant_id` en TODA query. Distancia pgvector parametrizada (no interpolar el array a mano — `sql`${embedding}`` con cast `::vector` o array literal, como prefiera drizzle; revisar cómo `faceEnrollmentService` inserta el vector para el formato).
+- NO tocar: `faceDetectionService.ts`, `faceEnrollmentService.ts`, `analysisEngineService.ts`, `streamRecorderService.ts`, schemas.
+- No crear endpoints ni scheduler — el servicio es el contrato (el loop en vivo lo llama después).
 
 ## Gates
 
-`npx tsc --noEmit` EXIT 0 · `npx vitest run` verde (sin regresiones) · `npm run build` verde.
+`npx tsc --noEmit` EXIT 0 · `npx vitest run` verde · `npm run build` verde.
 `npm ci --ignore-scripts` primero si no hay node_modules.
-Commit conventional en `pe-02-multimodal-engine` (ej: `feat(analysis): multimodal analysis engine (PE-02)`), paths explícitos, sin atribución IA. NO push, NO PR — el orquestador mergea tras QA.
+Commit conventional en `pe-03-person-identity`, paths explícitos, sin atribución IA. NO push, NO PR.
