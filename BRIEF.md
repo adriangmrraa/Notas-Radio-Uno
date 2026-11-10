@@ -1,39 +1,48 @@
-# PE-06 — Segmentos: `transmission_segments` (tema, resumen, speakers, ventana temporal)
+# PE-07 — Alertas en vivo: reusar `alertService` sobre la transcripción nueva
 
 KANBAN_TASK_ID: t_d2f3cad5
 Slice de: ÉPICA E — Motor de análisis en vivo
 Ejecutor: devin-swe-2-max (sesión de orquestación en worktree master)
-Base: 260680b (master tip — incluye PE-01 mergeado)
+Base: 6f77d61 (master tip — incluye PE-01 y PE-06 mergeados)
 
 ## Objetivo
 
-Crear la tabla `transmission_segments` y su servicio — la unidad editorial que el
-motor de análisis (PE-02) va a escribir por ventana: tema, resumen, speakers y
-ventana temporal. Mismo contrato que `transcript_segments`/`transmission_moments`
-(PD-05): offsets relativos a `transmissions.started_at`, `tenant_id` en todo.
+`alertService.detectAlerts(text, keywords, speakerContext, editorialBlock)` ya
+existe y detecta keywords + momentos semánticos (Gemini) en un fragmento de
+transcripción. El pipeline VIEJO (`pipelineService.detectAndEmitAlerts`) lo usa
+sobre su propia transcripción. **PE-07 = exponer ese mismo camino para la
+transcripción NUEVA** (los `transcript_segments` que el motor de ÉPICA E va a
+poblar), en un servicio dedicado que PE-02 pueda llamar por cada utterance/chunk.
+
+## Contrato heredado (no reinventar)
+
+- `detectAlerts` devuelve `LiveAlert[]` (type/severity/title/excerpt/context/
+  speaker/matchedKeyword/timestamp).
+- El pipeline viejo por alerta: `notify({tenantId, type: alert_<type>, ...})`
+  (persiste `notifications` + emite `notification`) **y** emite
+  `live_alert` al room `tenant:{id}` (el hook `useLiveAlerts` /
+  `LiveAlertFeed` del cliente ya escuchan ese evento — mismo nombre y payload).
+- Keywords por tenant: setting `alert_keywords` (JSON array) vía
+  `getSetting('alert_keywords', tenantId)`.
+- Línea editorial (PC-06): `resolveEditorialPromptBlock(tenantId, programId)`.
 
 ## Alcance
 
-- `src/server/db/schema/live.ts`: nueva tabla `transmission_segments`
-  (tenantId, transmissionId, startMs/endMs bigint, topic varchar(200),
-  summary text, speakers jsonb `{label, personId?}[]`, confidence real,
-  createdAt) + índices tenant / (transmission,start_ms).
-- Migración drizzle (`npx drizzle-kit generate`) + `node scripts/verify-migration-pglite.mjs`.
-- `src/server/services/transmissionSegmentsService.ts`: interface `SegmentsStore`
-  + impl drizzle + factory `createTransmissionSegmentsService(store)` (patrón
-  de `streamRecorderService`/`transmissionSchedulerService`).
-- `tests/helpers/memorySegmentsStore.ts` + `tests/transmissionSegments.test.ts`.
+- `src/server/services/liveAlertsService.ts` — patrón Store del repo:
+  `LiveAlertsStore` interface + impl drizzle + `createLiveAlertsService`.
+  - `checkTranscriptAlerts({tenantId, transmissionId?, text})` → `LiveAlert[]`.
+  - Por cada alerta: notificación persistida + `live_alert` emitido a
+    `tenant:{id}` (emit inyectable para tests; wiring de io como
+    `initNotificationService`).
+  - Filtra keywords/editorial SIEMPRE por tenant; `transmissionId` sólo metadato
+    + lookup de `program_id` para contexto editorial.
+- `tests/helpers/memoryLiveAlertsStore.ts` + `tests/liveAlerts.test.ts`:
+  keyword alert dispara, notify+emit llamados, texto vacío/sin match → nada,
+  aislamiento por tenant.
+- NO tocar `pipelineService` (el viejo sigue igual), ni `alertService.ts`,
+  ni `streamRecorderService.ts`.
 
 ## Gates
 
-- [ ] `npx tsc --noEmit` → EXIT 0
-- [ ] `node scripts/verify-migration-pglite.mjs` → la migración aplica limpio
-- [ ] `npx vitest run` → verde, sin regresiones
-- [ ] `npm run build` → verde
-
-## Límites
-
-- NO push, NO PR. Commit conventional en rama `pe-06-transmission-segments`, sin atribución IA.
-- `tenant_id` en TODA query. El engine (PE-02) es quien poblará la tabla — este
-  slice deja el contrato y el camino de escritura/lectura, no el análisis.
-- NO tocar `streamRecorderService.ts` ni `transcript_segments`/`transmission_moments`.
+`npx tsc --noEmit` EXIT 0 · `npx vitest run` verde · `npm run build` verde.
+Commit conventional en `pe-07-live-alerts`.

@@ -50,6 +50,7 @@ import { liveRouter } from "./routes/live.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
+import { initLiveAlertsService } from "./services/liveAlertsService.js";
 import { initTransmissionService } from "./services/transmissionService.js";
 import { registerTransmissionSocketHandlers } from "./services/transmissionSocketService.js";
 import { disconnectDb } from "./db/index.js";
@@ -269,6 +270,7 @@ app.use("/api/live", liveRouter);
 
 // Initialize background services
 initNotificationService(io);
+initLiveAlertsService(io);
 initTransmissionService(io);
 initJobScheduler(io);
 // TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
