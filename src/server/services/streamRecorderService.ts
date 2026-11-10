@@ -92,6 +92,48 @@ export interface RecordingOutcome {
   errorMessage: string | null;
 }
 
+// ─── Hook de segmento cerrado (PE-04) ───────────────────────────────────────
+
+/**
+ * Identifica el segmento de grabación que acaba de CERRAR (end_ms fijado):
+ * lo consume el runner de análisis en vivo (`liveAnalysisRunner`) para
+ * disparar `processRecordingSegment` apenas hay audio completo que
+ * transcribir.
+ */
+export interface SegmentFinalizedInfo {
+  tenantId: string;
+  transmissionId: string;
+  recordingId: string;
+  sequence: number;
+}
+
+export type SegmentFinalizedHook = (info: SegmentFinalizedInfo) => unknown;
+
+let segmentFinalizedHook: SegmentFinalizedHook | null = null;
+
+/**
+ * Registra (o limpia con `null`) el hook que se dispara cuando un segmento
+ * cierra — en los dos puntos de cierre del loop: `prevPending.closed = true`
+ * en `pollSegments` y el cierre del último pending en `finalize`. Es
+ * fire-and-forget: el recorder NUNCA lo awaita ni deja que un error del hook
+ * rompa la captura. Default `null` = comportamiento idéntico a hoy.
+ */
+export function setSegmentFinalizedHook(fn: SegmentFinalizedHook | null): void {
+  segmentFinalizedHook = fn;
+}
+
+/** Dispara el hook si hay uno registrado — errores logueados, nunca propagan. */
+function fireSegmentFinalized(info: SegmentFinalizedInfo): void {
+  if (!segmentFinalizedHook) return;
+  try {
+    Promise.resolve(segmentFinalizedHook(info)).catch((err) =>
+      console.error('[recorder] segmentFinalizedHook falló:', errorMessage(err)),
+    );
+  } catch (err) {
+    console.error('[recorder] segmentFinalizedHook falló:', errorMessage(err));
+  }
+}
+
 // ─── Dependencias inyectables ───────────────────────────────────────────────
 
 /** Proceso ffmpeg mínimo que el recorder necesita (spawn real o fake de test). */
@@ -574,6 +616,13 @@ export async function startRecording(
           )
           .catch((err) => console.error('[recorder] setSegmentEndMs falló:', errorMessage(err)));
         prevPending.closed = true;
+        // PE-04: el segmento cerró → análisis en vivo (fire-and-forget).
+        fireSegmentFinalized({
+          tenantId,
+          transmissionId,
+          recordingId,
+          sequence: prevPending.sequence,
+        });
       }
       const seq = sequence++;
       pendingSegments.push({ sequence: seq, fileName: name, startMs, closed: false });
@@ -714,6 +763,14 @@ export async function startRecording(
       await store
         .setSegmentEndMs(tenantId, recordingId, lastPending.sequence, endMs)
         .catch(() => {});
+      lastPending.closed = true;
+      // PE-04: el último segmento cerró → análisis en vivo (fire-and-forget).
+      fireSegmentFinalized({
+        tenantId,
+        transmissionId,
+        recordingId,
+        sequence: lastPending.sequence,
+      });
     }
 
     totalBytes = [...segmentBytes.values()].reduce((a, b) => a + b, 0);

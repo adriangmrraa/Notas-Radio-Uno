@@ -52,6 +52,7 @@ import { initTransmissionScheduler } from "./services/transmissionSchedulerServi
 import { initNotificationService } from "./services/notificationService.js";
 import { initLiveAlertsService } from "./services/liveAlertsService.js";
 import { initTransmissionService } from "./services/transmissionService.js";
+import { initLiveAnalysisRunner } from "./services/liveAnalysisRunner.js";
 import { registerTransmissionSocketHandlers } from "./services/transmissionSocketService.js";
 import { disconnectDb } from "./db/index.js";
 import { registerAllFonts } from "./services/fontService.js";
@@ -272,6 +273,7 @@ app.use("/api/live", liveRouter);
 initNotificationService(io);
 initLiveAlertsService(io);
 initTransmissionService(io);
+initLiveAnalysisRunner(io);
 initJobScheduler(io);
 // TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
 // este scheduler no debe arrancar en el proceso que sólo sirve API.
