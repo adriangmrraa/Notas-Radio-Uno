@@ -62,6 +62,38 @@ vi.mock('../src/server/middleware/auth.js', async (io) => {
     return { ...actual, requireAuth: fakeRequireAuth };
 });
 
+describe('PG-02 asset AI actions', () => {
+    let server: Server; let baseUrl: string; let state: MemoryAssetState;
+    const post = (path: string, body: unknown, tenant = T_A) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-test-tenant': tenant }, body: JSON.stringify(body) });
+    beforeEach(async () => {
+        const memory = createMemoryAssetsStore(); state = memory.state; assetsRouteDeps.store = memory.store;
+        seedAssetClip(state, { id: CLIP_1, tenantId: T_A }); seedAssetPublication(state, { id: PUB_1, tenantId: T_A, status: 'approved' });
+        await syncAssets({ tenantId: T_A }, { store: memory.store });
+        const app = express(); app.use(express.json()); app.use('/api/assets', assetsRouter);
+        server = await new Promise<Server>(resolve => { const s = app.listen(0, () => resolve(s)); }); baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+    afterEach(async () => { assetsRouteDeps.store = undefined; Object.assign(assetsAiRouteDeps, { proposeText: undefined, enqueueClipRegeneration: undefined, regenerateImage: undefined, getClip: undefined }); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+    it('enforces tenant/type/configuration guards for text edits', async () => {
+        const note = state.assets.find(a => a.kind === 'note')!; const clip = state.assets.find(a => a.kind === 'clip')!;
+        expect((await post(`/api/assets/${note.id}/edit-text`, {}, T_A)).status).toBe(400);
+        expect((await post(`/api/assets/${note.id}/edit-text`, { instruction: 'x' }, T_B)).status).toBe(404);
+        expect((await post(`/api/assets/${clip.id}/edit-text`, { instruction: 'x' }, T_A)).status).toBe(422);
+        assetsAiRouteDeps.proposeText = async () => { throw new AppError('No provider configured', 503, 'no_provider_configured'); };
+        expect((await post(`/api/assets/${note.id}/edit-text`, { instruction: 'x' }, T_A)).status).toBe(503);
+    });
+    it('delegates text, clip queue and flyer generation only after tenant-safe checks', async () => {
+        const note = state.assets.find(a => a.kind === 'note')!; const clip = state.assets.find(a => a.kind === 'clip')!;
+        const flyer = await assetsRouteDeps.store!.upsertAsset({ tenantId: T_A, kind: 'flyer', sourceTable: 'publications', refId: '00000000-0000-4000-8000-0000000000f1', status: 'approved' });
+        const propose = vi.fn(async () => ({ text: 'edited', provider: 'test' })); assetsAiRouteDeps.proposeText = propose;
+        expect((await post(`/api/assets/${note.id}/edit-text`, { instruction: 'x' })).status).toBe(200); expect(propose).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T_A }));
+        const enqueue = vi.fn(async () => ({ id: 'job-1', status: 'pending' } as any)); assetsAiRouteDeps.enqueueClipRegeneration = enqueue; assetsAiRouteDeps.getClip = async (_id, tenant) => tenant === T_A ? {} : null;
+        expect((await post(`/api/assets/${clip.id}/regenerate`, { prompt: 'x' })).status).toBe(202); expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T_A, clipId: CLIP_1 }));
+        assetsAiRouteDeps.getClip = async () => null; expect((await post(`/api/assets/${clip.id}/regenerate`, { prompt: 'x' })).status).toBe(404);
+        const image = vi.fn(async () => ({ path: '/tmp/x.png', model: 'test', attempts: [], generatedAt: new Date() })); assetsAiRouteDeps.regenerateImage = image;
+        expect((await post(`/api/assets/${flyer.id}/regenerate`, { prompt: 'x' })).status).toBe(202); expect(image).toHaveBeenCalledWith({ tenantId: T_A, prompt: 'x' });
+    });
+});
+
 import {
     ASSET_STATES,
     ASSET_TRANSITIONS,
@@ -75,7 +107,8 @@ import {
     transitionAsset,
     type AssetState,
 } from '../src/server/services/assetsService';
-import { assetsRouter, assetsRouteDeps } from '../src/server/routes/assets';
+import { assetsRouter, assetsRouteDeps, assetsAiRouteDeps } from '../src/server/routes/assets';
+import { AppError } from '../src/server/lib/errors';
 import {
     createMemoryAssetsStore,
     seedAssetClip,

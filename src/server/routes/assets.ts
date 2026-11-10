@@ -38,6 +38,7 @@ import { getAvailableProviders } from '../services/aiProviders.js';
 import { generateTextWithFallback } from '../services/aiSdkService.js';
 import { clipRenderQueueService, type ClipRenderJob } from '../services/clipRenderQueueService.js';
 import { generateImage, type GenerateImageResult } from '../services/imageModelService.js';
+import { getClipById } from '../services/clipService.js';
 
 export const assetsRouter = Router();
 
@@ -49,6 +50,7 @@ export const assetsAiRouteDeps: {
     proposeText?: (input: { tenantId: string; sourceText: string; instruction: string }) => Promise<{ text: string; provider: string }>;
     enqueueClipRegeneration?: (input: { tenantId: string; clipId: string; assetId: string; prompt: string }) => Promise<ClipRenderJob>;
     regenerateImage?: (input: { tenantId: string; prompt: string }) => Promise<GenerateImageResult>;
+    getClip?: (clipId: string, tenantId: string) => Promise<unknown | null>;
 } = {};
 
 const UUID_RE =
@@ -284,6 +286,13 @@ assetsRouter.post('/:id/regenerate', requireAuth, async (req: Request, res: Resp
             return;
         }
         if (asset.kind === 'clip' && asset.sourceTable === 'clips') {
+            const clip = await (assetsAiRouteDeps.getClip ?? getClipById)(asset.refId, tenantId);
+            if (!clip) {
+                // Do not enqueue a ledger reference unless its source clip is
+                // still accessible in the same tenant.
+                res.status(404).json({ error: 'Clip asociado no encontrado', code: 'clip_not_found' });
+                return;
+            }
             const enqueue = assetsAiRouteDeps.enqueueClipRegeneration ?? ((input: { tenantId: string; clipId: string; assetId: string; prompt: string }) =>
                 clipRenderQueueService.enqueue({ tenantId: input.tenantId, clipId: input.clipId, kind: 'reframe', payload: { clipId: input.clipId, assetId: input.assetId, prompt: input.prompt } }));
             const job = await enqueue({ tenantId, clipId: asset.refId, assetId: asset.id, prompt: body.prompt.trim() });
