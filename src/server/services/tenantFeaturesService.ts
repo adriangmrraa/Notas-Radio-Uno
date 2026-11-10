@@ -104,6 +104,13 @@ export const FEATURE_CATALOG: readonly FeatureDefinition[] = [
     byPlan: { trial: false, creator: false, media: false, network: true, enterprise: true },
     fallback: false,
   },
+  {
+    key: 'ai_image_models',
+    name: 'Modelos de imagen IA',
+    description: 'Generación de imágenes con provider seleccionable y fallback.',
+    byPlan: { trial: false, creator: true, media: true, network: true, enterprise: true },
+    fallback: false,
+  },
 ] as const;
 
 export const FEATURE_KEYS = FEATURE_CATALOG.map((f) => f.key);
