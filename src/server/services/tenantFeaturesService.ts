@@ -111,6 +111,13 @@ export const FEATURE_CATALOG: readonly FeatureDefinition[] = [
     byPlan: { trial: false, creator: true, media: true, network: true, enterprise: true },
     fallback: false,
   },
+  {
+    key: 'auto_publish',
+    name: 'Auto-publicación',
+    description: 'Publicación automática del contenido aprobado según configuración por programa.',
+    byPlan: { trial: false, creator: true, media: true, network: true, enterprise: true },
+    fallback: false,
+  },
 ] as const;
 
 export const FEATURE_KEYS = FEATURE_CATALOG.map((f) => f.key);

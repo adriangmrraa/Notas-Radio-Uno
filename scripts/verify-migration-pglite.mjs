@@ -157,8 +157,9 @@ if (pc02Migration) {
 
 // 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
 //    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
-//    (PD-01 crudo de video) y la 0012 (PD-05 sala en vivo) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012']) {
+//    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo) y la 0016
+//    (PG-03 auto-publicación) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -841,6 +842,170 @@ if (pf10Rows.length !== 1 || pf10Rows[0].status !== 'approved' || pf10Rows[0].ti
   process.exit(1);
 }
 
+// 20) PG-03: auto_publish_configs existe con columnas, FKs, índices y la
+//     UNIQUE (tenant_id, program_key) que también cubre la config global
+//     (program_id NULL + program_key '__all__').
+const { rows: pg03Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename = 'auto_publish_configs'
+`);
+if (pg03Tables.length !== 1) {
+  console.error('PG-03: falta la tabla auto_publish_configs');
+  process.exit(1);
+}
+
+const { rows: pg03Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'auto_publish_configs'
+`);
+const pg03ColInfo = new Map(pg03Cols.map((r) => [r.column_name, r]));
+const checkPg03Col = (col, dataType, nullable, needsDefault) => {
+  const c = pg03ColInfo.get(col);
+  if (!c) return `falta auto_publish_configs.${col}`;
+  if (c.data_type !== dataType) return `auto_publish_configs.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `auto_publish_configs.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `auto_publish_configs.${col} sin DEFAULT`;
+  return null;
+};
+const pg03ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['program_id', 'uuid', 'YES', false],
+  ['program_key', 'character varying', 'NO', false],
+  ['mode', 'character varying', 'NO', true],
+  ['platforms', 'jsonb', 'NO', true],
+  ['publish_days', 'jsonb', 'NO', true],
+  ['publish_time', 'character varying', 'YES', false],
+  ['timezone', 'character varying', 'NO', true],
+  ['is_active', 'boolean', 'NO', true],
+  ['created_at', 'timestamp with time zone', 'NO', true],
+  ['updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPg03Col(c, t, n, d)).filter(Boolean);
+if (pg03ColErrors.length > 0) {
+  console.error(`PG-03 columnas incorrectas:\n  ${pg03ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const modeDef = pg03ColInfo.get('mode')?.column_default ?? '';
+const tzDef = pg03ColInfo.get('timezone')?.column_default ?? '';
+if (!modeDef.includes("'off'") || !tzDef.includes('America/Argentina/Buenos_Aires')) {
+  console.error(`PG-03: defaults de mode/timezone incorrectos (mode=${modeDef}, timezone=${tzDef})`);
+  process.exit(1);
+}
+
+// FKs: tenant cascade; program cascade (borrar el programa borra su config).
+const { rows: pg03Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'auto_publish_configs'
+`);
+const pg03FkMap = new Map(pg03Fks.map((r) => [r.column_name, r]));
+const expectedPg03Fks = [
+  ['tenant_id', 'tenants'],
+  ['program_id', 'programs'],
+];
+const badPg03Fks = expectedPg03Fks.filter(([col, target]) => {
+  const row = pg03FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== 'c';
+});
+if (badPg03Fks.length > 0) {
+  console.error(`PG-03: faltan FKs, apuntan mal o no son ON DELETE CASCADE: ${badPg03Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+
+// Índices + la UNIQUE (tenant_id, program_key) — el contrato de dedupe que
+// cubre la config global (un UNIQUE sobre program_id no deduplicaría NULLs).
+const { rows: pg03Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'auto_publish_configs'
+`);
+const pg03IdxMap = new Map(pg03Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPg03Idx = [
+  'auto_publish_configs_tenant_id_idx',
+  'auto_publish_configs_program_id_idx',
+  'auto_publish_configs_tenant_program_unique',
+];
+const missingPg03Idx = expectedPg03Idx.filter((name) => !pg03IdxMap.has(name));
+if (missingPg03Idx.length > 0) {
+  console.error(`PG-03: faltan índices/unique: ${missingPg03Idx.join(', ')}`);
+  process.exit(1);
+}
+const pg03UniqueDef = pg03IdxMap.get('auto_publish_configs_tenant_program_unique') ?? '';
+if (!/UNIQUE/i.test(pg03UniqueDef)
+  || !pg03UniqueDef.includes('tenant_id')
+  || !pg03UniqueDef.includes('program_key')) {
+  console.error(`PG-03: la unique no cubre (tenant_id, program_key): ${pg03UniqueDef}`);
+  process.exit(1);
+}
+
+// Funcional: la UNIQUE deduplica la config global (program_key='__all__',
+// program_id NULL) y las de programa; el upsert del servicio
+// (ON CONFLICT tenant_id+program_key) es idempotente.
+const pg03Tenant = '00000000-0000-4000-8000-00000000aa03';
+const pg03Program = '00000000-0000-4000-8000-00000000bb03';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pg03Tenant}', 'Tenant pg03', 'tenant-pg03')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO programs (id, tenant_id, name) VALUES
+    ('${pg03Program}', '${pg03Tenant}', 'Programa pg03')
+  ON CONFLICT (id) DO NOTHING;
+`);
+// Dos inserts de la global → una sola fila (la UNIQUE pisa por program_key).
+for (let i = 0; i < 2; i++) {
+  await db.exec(`
+    INSERT INTO auto_publish_configs (tenant_id, program_id, program_key, mode, platforms)
+    VALUES ('${pg03Tenant}', NULL, '__all__', 'on_approval', '["instagram"]'::jsonb)
+    ON CONFLICT (tenant_id, program_key)
+    DO UPDATE SET mode = EXCLUDED.mode, platforms = EXCLUDED.platforms, updated_at = now()
+  `);
+}
+// Upsert de la config del programa — cambia de modo en la segunda corrida.
+await db.exec(`
+  INSERT INTO auto_publish_configs (tenant_id, program_id, program_key, mode, platforms, publish_days, publish_time)
+  VALUES ('${pg03Tenant}', '${pg03Program}', '${pg03Program}', 'scheduled', '["tiktok","youtube"]'::jsonb, '[1,3,5]'::jsonb, '09:30')
+  ON CONFLICT (tenant_id, program_key)
+  DO UPDATE SET mode = EXCLUDED.mode, platforms = EXCLUDED.platforms, publish_days = EXCLUDED.publish_days, publish_time = EXCLUDED.publish_time, updated_at = now()
+`);
+await db.exec(`
+  INSERT INTO auto_publish_configs (tenant_id, program_id, program_key, mode, platforms, publish_days, publish_time)
+  VALUES ('${pg03Tenant}', '${pg03Program}', '${pg03Program}', 'off', '[]'::jsonb, '[]'::jsonb, NULL)
+  ON CONFLICT (tenant_id, program_key)
+  DO UPDATE SET mode = EXCLUDED.mode, platforms = EXCLUDED.platforms, publish_days = EXCLUDED.publish_days, publish_time = EXCLUDED.publish_time, updated_at = now()
+`);
+const { rows: pg03Rows } = await db.query(`
+  SELECT program_key, mode, jsonb_array_length(platforms) AS n_platforms
+  FROM auto_publish_configs WHERE tenant_id = '${pg03Tenant}'
+`);
+const pg03ByKey = new Map(pg03Rows.map((r) => [r.program_key, r]));
+const pg03Global = pg03ByKey.get('__all__');
+const pg03Prog = pg03ByKey.get(pg03Program);
+if (pg03Rows.length !== 2
+  || !pg03Global || pg03Global.mode !== 'on_approval' || Number(pg03Global.n_platforms) !== 1
+  || !pg03Prog || pg03Prog.mode !== 'off') {
+  console.error(`PG-03: la UNIQUE (tenant_id, program_key) no deduplicó global/programa: ${JSON.stringify(pg03Rows)}`);
+  process.exit(1);
+}
+// Un INSERT directo duplicando la global debe fallar (dedupe real, no upsert).
+let pg03DupRejected = false;
+try {
+  await db.exec(`
+    INSERT INTO auto_publish_configs (tenant_id, program_id, program_key, mode)
+    VALUES ('${pg03Tenant}', NULL, '__all__', 'off')
+  `);
+} catch {
+  pg03DupRejected = true;
+}
+if (!pg03DupRejected) {
+  console.error('PG-03: la UNIQUE permitió duplicar la config global (__all__)');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -857,5 +1022,6 @@ console.log('fks PD-05:', expectedPd05Fks.map(([c, t, d]) => `${c}->${t}(${d})`)
 console.log('índices PD-05:', expectedPd05Idx.join(', '));
 console.log('tabla PF-04: clip_render_jobs (14 columnas) + FKs cascade + índice del claim (status, run_at)');
 console.log('tabla PF-10: assets (12 columnas) + UNIQUE (tenant_id,source_table,ref_id) idempotente + FKs (tenant cascade, parent/tx set null)');
+console.log('tabla PG-03: auto_publish_configs (12 columnas) + UNIQUE (tenant_id,program_key) cubre global (__all__) + FKs cascade');
 await db.close();
 process.exit(0);

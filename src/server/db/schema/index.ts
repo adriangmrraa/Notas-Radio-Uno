@@ -26,6 +26,7 @@ export * from './recordings.js';
 export * from './live.js';
 export * from './renderJobs.js';
 export * from './assets.js';
+export * from './autoPublish.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -61,6 +62,7 @@ import { streamRecordings, recordingSegments } from './recordings.js';
 import { transcriptSegments, transmissionMoments } from './live.js';
 import { clipRenderJobs } from './renderJobs.js';
 import { assets } from './assets.js';
+import { autoPublishConfigs } from './autoPublish.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -108,6 +110,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   transmissionMoments: many(transmissionMoments),
   clipRenderJobs: many(clipRenderJobs),
   assets: many(assets),
+  autoPublishConfigs: many(autoPublishConfigs),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -257,6 +260,7 @@ export const programsRelations = relations(programs, ({ one, many }) => ({
   editorialProfiles: many(editorialProfiles),
   transmissions: many(transmissions),
   scheduledTransmissions: many(scheduledTransmissions),
+  autoPublishConfigs: many(autoPublishConfigs),
 }));
 
 export const programUrlsRelations = relations(programUrls, ({ one }) => ({
@@ -455,4 +459,10 @@ export const assetsRelations = relations(assets, ({ one, many }) => ({
     fields: [assets.transmissionId],
     references: [transmissions.id],
   }),
+}));
+
+// ── auto_publish_configs relations (PG-03) ──────────────────────────────────
+export const autoPublishConfigsRelations = relations(autoPublishConfigs, ({ one }) => ({
+  tenant: one(tenants, { fields: [autoPublishConfigs.tenantId], references: [tenants.id] }),
+  program: one(programs, { fields: [autoPublishConfigs.programId], references: [programs.id] }),
 }));

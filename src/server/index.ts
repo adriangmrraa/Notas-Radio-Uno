@@ -50,6 +50,7 @@ import { liveRouter } from "./routes/live.js";
 import { notesRouter } from "./routes/notes.js";
 import { publicationsRouter } from "./routes/publications.js";
 import { assetsRouter } from "./routes/assets.js";
+import { autoPublishRouter } from "./routes/autoPublish.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
@@ -278,6 +279,8 @@ app.use("/api/live", liveRouter);
 app.use("/api/publications", publicationsRouter);
 // PF-10: ledger editorial unificado — GET /api/assets, POST /sync, POST /:id/transition.
 app.use("/api/assets", assetsRouter);
+// PG-03: config de auto-publicación por tenant/programa — GET/PUT/DELETE.
+app.use("/api/auto-publish", autoPublishRouter);
 
 // Initialize background services
 initNotificationService(io);

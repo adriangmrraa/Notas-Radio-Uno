@@ -113,6 +113,13 @@
       "when": 1794288289697,
       "tag": "0015_equal_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794339334620,
+      "tag": "0016_neat_warbound",
+      "breakpoints": true
     }
   ]
 }

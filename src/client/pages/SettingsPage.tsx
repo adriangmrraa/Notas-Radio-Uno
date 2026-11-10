@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff, Bell } from 'lucide-react';
+import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff, Bell, Send } from 'lucide-react';
 import { TeamSettings } from '../components/team/TeamSettings';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 import { AlertKeywordsSettings } from '../components/alerts/AlertKeywordsSettings';
+import { AutoPublishSettings } from '../components/AutoPublishSettings';
 
 interface BrandingData {
     platformName: string;
@@ -43,7 +44,7 @@ const DEFAULT_TEMPLATES: TemplateOption[] = [
 export function SettingsPage() {
     const { fetchApi } = useApi();
     const { user } = useAuth();
-    const [activeTab, setActiveTab] = useState<'general' | 'webhooks' | 'apikeys' | 'team' | 'branding' | 'alertas'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'webhooks' | 'apikeys' | 'team' | 'branding' | 'alertas' | 'autopublish'>('general');
     const [webhooks, setWebhooks] = useState({ webhook_pipeline: '', webhook_nuevo_boton: '', webhook_viejo_boton: '', webhook_tercer_boton: '' });
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -161,6 +162,7 @@ export function SettingsPage() {
         { key: 'branding' as const, label: 'Marca', icon: Palette },
         { key: 'webhooks' as const, label: 'Webhooks', icon: Webhook },
         { key: 'alertas' as const, label: 'Alertas', icon: Bell },
+        { key: 'autopublish' as const, label: 'Auto-publicación', icon: Send },
         { key: 'apikeys' as const, label: 'API Keys', icon: Key },
         { key: 'team' as const, label: 'Equipo', icon: Users },
     ];
@@ -419,6 +421,20 @@ export function SettingsPage() {
                                 Requiere <span className="font-mono text-cyan-400/50">GEMINI_API_KEY</span> configurado en el servidor.
                             </p>
                         </div>
+                    </div>
+                )}
+
+                {/* Auto-publicación */}
+                {activeTab === 'autopublish' && (
+                    <div className="glass-card-static p-6">
+                        <h3 className="text-sm font-semibold text-white/70 mb-1 flex items-center gap-2">
+                            <Send className="w-4 h-4 text-cyan-400" />
+                            Auto-publicación
+                        </h3>
+                        <p className="text-xs text-white/30 mb-5">
+                            Elegí cuándo y a qué plataformas se publica automáticamente el contenido aprobado. Podés definir una config global y una por programa.
+                        </p>
+                        <AutoPublishSettings />
                     </div>
                 )}
 
