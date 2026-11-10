@@ -58,6 +58,13 @@ import {
     listAutoPublishConfigs,
     type AutoPublishConfigRow,
 } from './autoPublishService.js';
+import {
+    LEGACY_PLATFORMS,
+    planPublishChannels,
+    type PublishChannelMode,
+    type PublishChannelPlan,
+    type PublishChannelStore,
+} from './publishChannelService.js';
 import { createZernioApi, type ZernioApi, type ZernioPublishResult } from './zernioService.js';
 
 // ---------------------------------------------------------------------------
@@ -739,6 +746,16 @@ export interface PublishJobDeps {
         tenantId: string,
         personIds: string[],
     ) => Promise<PersonSocialLinks[]>;
+    /**
+     * PG-07: store del plan de canales (modo en `settings` + assets legacy
+     * en `business_assets`). Default: drizzle.
+     */
+    channelStore?: PublishChannelStore;
+    /**
+     * PG-07: bot de Twitter legacy configurado por env (tenant-agnóstico).
+     * Default: variables TWITTER_* completas.
+     */
+    envTwitterBot?: boolean;
     /** Reloj inyectable — los tests corren en tiempo falso. */
     now?: () => Date;
 }
@@ -1080,11 +1097,18 @@ export async function getPublishJob(
  * (mode='on_approval' significa literalmente "publicar al aprobar" — el
  * union de plataformas de esas configs es el filtro; sin config activa el
  * approve manual publica en todas las cuentas conectadas).
+ *
+ * PG-07: este paso sólo produce CANDIDATOS Zernio — qué plataforma usa qué
+ * canal lo decide `planPublishChannels` dentro de `enqueueForApproval`.
  */
 export async function resolvePublishTargets(
     tenantId: string,
     deps?: PublishJobDeps,
-): Promise<{ connections: SocialConnectionRow[]; targets: PublishTarget[] }> {
+): Promise<{
+    connections: SocialConnectionRow[];
+    targets: PublishTarget[];
+    onApproval: { active: boolean; platforms: Set<string> };
+}> {
     const listConnectionsFn =
         deps?.listConnections ?? ((t: string) => listSocialConnections(t));
     const listConfigsFn =
@@ -1111,28 +1135,117 @@ export async function resolvePublishTargets(
     const targets = connected
         .filter((c) => !hasOnApproval || onApprovalPlatforms.has(c.platform))
         .map((c) => ({ platform: c.platform, accountId: c.accountId, connectionId: c.id }));
-    return { connections: connected, targets };
+    return {
+        connections: connected,
+        targets,
+        onApproval: { active: hasOnApproval, platforms: onApprovalPlatforms },
+    };
 }
 
 export interface EnqueueForApprovalResult {
     /**
-     * false ⇒ el tenant no tiene conexiones Zernio → la ruta sigue con el
-     * flujo legacy (publishToChannels) EXACTAMENTE como antes.
+     * El circuito Zernio participa del approve: hay al menos una conexión
+     * cuya plataforma resolvió 'zernio' (PG-07). false ⇒ la ruta sigue el
+     * flujo legacy con `publishToChannels` — filtrado a `legacyPlatforms`
+     * cuando hay alguna, o completo cuando no hay ninguna (exactamente el
+     * comportamiento previo para un tenant sin config).
      */
     usedZernio: boolean;
     /** Conexiones 'connected' encontradas (antes del filtro de config). */
     connectionCount: number;
+    /** Destinos Zernio efectivos (los que resolvieron canal 'zernio'). */
     targets: PublishTarget[];
     jobs: PublishJob[];
     createdCount: number;
     deduplicatedCount: number;
+    /** PG-07: modo de canal efectivo del tenant ('hybrid' si no configuró). */
+    channelMode: PublishChannelMode;
+    /** PG-07: el request pidió explícitamente el canal legacy (Meta/Twitter). */
+    forceLegacy: boolean;
+    /**
+     * PG-07: plataformas Meta/Twitter que deben publicar por el canal
+     * directo (publishToChannels filtrado). Vacío ⇒ no hay tramo legacy.
+     */
+    legacyPlatforms: string[];
+    /**
+     * PG-07: plataformas con camino legacy que no tienen canal para esta
+     * publicación (p.ej. modo 'zernio' sin conexión y sin forceLegacy) —
+     * la ruta las informa, no las publica.
+     */
+    skipped: { platform: string; reason: string }[];
 }
 
 /**
- * Circuito de aprobación real: si el tenant tiene conexiones Zernio encola
- * los jobs (uno por cuenta destino según la config on_approval de PG-03) y
- * devuelve el detalle. Sin conexiones → `usedZernio:false` y la ruta decide
- * legacy. NUNCA toca canales directos — eso queda afuera.
+ * Partición de la resolución: qué targets van por Zernio, qué plataformas
+ * quedan en el canal legacy y qué candidatas no tienen camino. Compartida
+ * por `enqueueForApproval` y `previewPublishEnqueue`.
+ */
+async function planApprovalChannels(
+    tenantId: string,
+    connections: SocialConnectionRow[],
+    targets: PublishTarget[],
+    onApproval: { active: boolean; platforms: Set<string> },
+    input: { forceLegacy?: boolean },
+    deps?: PublishJobDeps,
+): Promise<{
+    plan: PublishChannelPlan;
+    zernioTargets: PublishTarget[];
+    usedZernio: boolean;
+    legacyPlatforms: string[];
+    skipped: { platform: string; reason: string }[];
+}> {
+    const plan = await planPublishChannels(
+        tenantId,
+        {
+            store: deps?.channelStore,
+            // Reusa las conexiones ya resueltas — mismo set 'connected',
+            // sin doble query.
+            listConnections: async () => connections,
+            envTwitterBot: deps?.envTwitterBot,
+        },
+        { forceLegacy: input.forceLegacy === true },
+    );
+
+    const zernioTargets = targets.filter(
+        (t) => plan.resolve(t.platform).channel === 'zernio',
+    );
+    // engaged = alguna conexión conectada resolvió 'zernio' — aunque la
+    // config on_approval después filtre sus targets (igual que antes).
+    const usedZernio = connections.some(
+        (c) => plan.resolve(c.platform).channel === 'zernio',
+    );
+
+    // La config on_approval (PG-03) también filtra el tramo legacy cuando
+    // el circuito Zernio está en juego — nunca en modo 'legacy' (ahí la
+    // publicación directa es la regla, como hoy) ni cuando no hay Zernio
+    // (la config siempre fue del circuito Zernio).
+    const legacyPlatforms =
+        usedZernio && onApproval.active && plan.mode !== 'legacy'
+            ? plan.legacyPlatforms.filter((p) => onApproval.platforms.has(p))
+            : plan.legacyPlatforms;
+
+    // Candidatas sin canal en esta publicación: plataformas legacy-capable
+    // con camino que el modo deja fuera (modo 'zernio' sin conexión →
+    // legacy sólo bajo demanda) y —bajo forceLegacy— las sin camino legacy
+    // (el usuario pidió el canal directo y no existe).
+    const skipped = LEGACY_PLATFORMS.map((p) => plan.resolve(p))
+        .filter(
+            (r) =>
+                r.channel === 'none' &&
+                (r.hasLegacyPath || plan.forceLegacy),
+        )
+        .map((r) => ({ platform: r.platform, reason: r.reason ?? '' }));
+
+    return { plan, zernioTargets, usedZernio, legacyPlatforms, skipped };
+}
+
+/**
+ * Circuito de aprobación real (PG-07): el plan de canales del tenant decide
+ * qué va por Zernio (encola jobs) y qué queda en el tramo legacy
+ * (`legacyPlatforms` → publishToChannels filtrado en la ruta). Sin camino
+ * Zernio NI plataformas legacy resueltas → `usedZernio:false` +
+ * `legacyPlatforms:[]` ⇒ la ruta hace el publishToChannels completo de
+ * siempre (cero regresión para un tenant sin config).
  */
 export async function enqueueForApproval(
     input: {
@@ -1148,30 +1261,40 @@ export async function enqueueForApproval(
         excludePersonIds?: string[];
         /** PG-06: etiquetas explícitas del request de aprobación. */
         hashtags?: string[];
+        /**
+         * PG-07: fuerza el canal legacy para Meta/Twitter en ESTA
+         * publicación (la única vía legacy en modo 'zernio').
+         */
+        forceLegacy?: boolean;
     },
     deps?: PublishJobDeps,
 ): Promise<EnqueueForApprovalResult> {
-    const { connections, targets } = await resolvePublishTargets(input.tenantId, deps);
-    if (connections.length === 0) {
+    const { connections, targets, onApproval } = await resolvePublishTargets(
+        input.tenantId,
+        deps,
+    );
+    const { plan, zernioTargets, usedZernio, legacyPlatforms, skipped } =
+        await planApprovalChannels(
+            input.tenantId,
+            connections,
+            targets,
+            onApproval,
+            input,
+            deps,
+        );
+
+    if (zernioTargets.length === 0) {
         return {
-            usedZernio: false,
-            connectionCount: 0,
-            targets: [],
-            jobs: [],
-            createdCount: 0,
-            deduplicatedCount: 0,
-        };
-    }
-    if (targets.length === 0) {
-        // Hay conexiones pero la config on_approval no habilita ninguna
-        // plataforma conectada → approve sin publish (queda observable).
-        return {
-            usedZernio: true,
+            usedZernio,
             connectionCount: connections.length,
             targets: [],
             jobs: [],
             createdCount: 0,
             deduplicatedCount: 0,
+            channelMode: plan.mode,
+            forceLegacy: plan.forceLegacy,
+            legacyPlatforms,
+            skipped,
         };
     }
     const enqueued = await enqueuePublishJobs(
@@ -1179,7 +1302,7 @@ export async function enqueueForApproval(
             tenantId: input.tenantId,
             assetId: input.assetId ?? null,
             publicationId: input.publicationId ?? null,
-            targets,
+            targets: zernioTargets,
             content: input.content,
             mediaUrls: input.mediaUrls,
             scheduledFor: input.scheduledFor,
@@ -1190,12 +1313,16 @@ export async function enqueueForApproval(
         deps,
     );
     return {
-        usedZernio: true,
+        usedZernio,
         connectionCount: connections.length,
-        targets,
+        targets: zernioTargets,
         jobs: enqueued.jobs,
         createdCount: enqueued.createdCount,
         deduplicatedCount: enqueued.deduplicatedCount,
+        channelMode: plan.mode,
+        forceLegacy: plan.forceLegacy,
+        legacyPlatforms,
+        skipped,
     };
 }
 
@@ -1220,15 +1347,23 @@ export interface PublishPreviewItem {
 }
 
 export interface PublishPreviewResult {
-    /** false ⇒ sin conexiones Zernio — la ruta sigue el flujo legacy. */
+    /** false ⇒ sin tramo Zernio — la ruta sigue el flujo legacy. */
     usedZernio: boolean;
     connectionCount: number;
     previews: PublishPreviewItem[];
+    /** PG-07: modo de canal efectivo del tenant. */
+    channelMode: PublishChannelMode;
+    /** PG-07: plataformas Meta/Twitter que publicarían por el canal directo. */
+    legacyPlatforms: string[];
+    /** PG-07: candidatas con camino legacy sin canal en esta publicación. */
+    skipped: { platform: string; reason: string }[];
 }
 
 /**
  * Previsualización del circuito de aprobación: resuelve los targets como
- * `enqueueForApproval` y compone el texto por red SIN encolar nada. La UI
+ * `enqueueForApproval` (mismo plan de canales PG-07 — los previews sólo
+ * cubren los destinos Zernio; las plataformas legacy se informan en
+ * `legacyPlatforms`) y compone el texto por red SIN encolar nada. La UI
  * lo llama antes de aprobar (con los `excludePersonIds` del toggle) para
  * mostrar menciones, etiquetas y el texto final por red.
  */
@@ -1241,18 +1376,36 @@ export async function previewPublishEnqueue(
         personIds?: string[];
         excludePersonIds?: string[];
         hashtags?: string[];
+        /** PG-07: fuerza el canal legacy para Meta/Twitter en el preview. */
+        forceLegacy?: boolean;
     },
     deps?: PublishJobDeps,
 ): Promise<PublishPreviewResult> {
-    const { connections, targets } = await resolvePublishTargets(
+    const { connections, targets, onApproval } = await resolvePublishTargets(
         input.tenantId,
         deps,
     );
-    if (connections.length === 0) {
-        return { usedZernio: false, connectionCount: 0, previews: [] };
+    const { plan, zernioTargets, usedZernio, legacyPlatforms, skipped } =
+        await planApprovalChannels(
+            input.tenantId,
+            connections,
+            targets,
+            onApproval,
+            input,
+            deps,
+        );
+    if (zernioTargets.length === 0) {
+        return {
+            usedZernio,
+            connectionCount: connections.length,
+            previews: [],
+            channelMode: plan.mode,
+            legacyPlatforms,
+            skipped,
+        };
     }
     const compositions = await composeForTargets(
-        { ...input, targets },
+        { ...input, targets: zernioTargets },
         deps,
     );
     const labelOf = (target: PublishTarget): string | null => {
@@ -1265,7 +1418,7 @@ export async function previewPublishEnqueue(
         return conn?.username ?? conn?.displayName ?? null;
     };
     return {
-        usedZernio: true,
+        usedZernio,
         connectionCount: connections.length,
         previews: compositions.map((c) => ({
             platform: c.target.platform,
@@ -1280,6 +1433,9 @@ export async function previewPublishEnqueue(
                 null,
             truncated: c.truncated,
         })),
+        channelMode: plan.mode,
+        legacyPlatforms,
+        skipped,
     };
 }
 
@@ -1294,7 +1450,9 @@ const UUID_RE =
  * Opciones de publicación del body (approve / publish-preview / POST
  * /publish-jobs): `personIds` y `excludePersonIds` deben ser arrays de
  * uuid; `hashtags` un array de strings (máx 30, ≤100 chars c/u — se
- * normalizan a '#tag' y los que no dejan nada usable se descartan).
+ * normalizan a '#tag' y los que no dejan nada usable se descartan);
+ * `forceLegacy` (PG-07) un booleano — el "publicar por canal legacy" bajo
+ * demanda del modo 'zernio'.
  * Devuelve los campos presentes ya saneados; tira AppError 400 si vienen
  * mal tipados.
  */
@@ -1302,11 +1460,13 @@ export function validatePublishOptions(body: Record<string, unknown>): {
     personIds?: string[];
     excludePersonIds?: string[];
     hashtags?: string[];
+    forceLegacy?: boolean;
 } {
     const out: {
         personIds?: string[];
         excludePersonIds?: string[];
         hashtags?: string[];
+        forceLegacy?: boolean;
     } = {};
     for (const field of ['personIds', 'excludePersonIds'] as const) {
         const value = body[field];
@@ -1343,6 +1503,17 @@ export function validatePublishOptions(body: Record<string, unknown>): {
         out.hashtags = normalizePublishHashtags(
             hashtags as readonly unknown[],
         );
+    }
+    const forceLegacy = body.forceLegacy;
+    if (forceLegacy !== undefined && forceLegacy !== null) {
+        if (typeof forceLegacy !== 'boolean') {
+            throw new AppError(
+                'forceLegacy debe ser booleano',
+                400,
+                'invalid_channel',
+            );
+        }
+        if (forceLegacy) out.forceLegacy = true;
     }
     return out;
 }

@@ -138,6 +138,7 @@ import type { PersonSocialLinks } from '../src/server/services/networkVariantSer
 import type { SocialConnectionRow } from '../src/server/services/socialConnectionsService';
 import { registerReviewRoutes, reviewPublishDeps } from '../src/server/routes/review';
 import { createMemoryPublishJobStore } from './helpers/memoryPublishJobStore';
+import { createMemoryPublishChannelStore } from './helpers/memoryPublishChannelStore';
 
 const T_A = 'tenant-a';
 const T_B = 'tenant-b';
@@ -717,6 +718,9 @@ describe('enqueueForApproval + previewPublishEnqueue', () => {
             {
                 store,
                 now: () => T0,
+                // PG-07: canal en memoria — default híbrido, sin assets legacy.
+                channelStore: createMemoryPublishChannelStore().store,
+                envTwitterBot: false,
                 listConnections: async () => conns,
                 listAutoPublishConfigs: async () => [],
                 ...mentionDeps,
@@ -736,6 +740,9 @@ describe('enqueueForApproval + previewPublishEnqueue', () => {
             {
                 store,
                 now: () => T0,
+                // PG-07: canal en memoria — default híbrido, sin assets legacy.
+                channelStore: createMemoryPublishChannelStore().store,
+                envTwitterBot: false,
                 listConnections: async () => conns,
                 listAutoPublishConfigs: async () => [],
                 ...mentionDeps,
@@ -767,6 +774,9 @@ describe('enqueueForApproval + previewPublishEnqueue', () => {
             {
                 store,
                 now: () => T0,
+                // PG-07: canal en memoria — default híbrido, sin assets legacy.
+                channelStore: createMemoryPublishChannelStore().store,
+                envTwitterBot: false,
                 listConnections: async () => conns,
                 listAutoPublishConfigs: async () => [],
                 ...mentionDeps,
@@ -783,6 +793,9 @@ describe('enqueueForApproval + previewPublishEnqueue', () => {
             {
                 store,
                 now: () => T0,
+                // PG-07: canal en memoria — default híbrido, sin assets legacy.
+                channelStore: createMemoryPublishChannelStore().store,
+                envTwitterBot: false,
                 listConnections: async () => [],
                 listAutoPublishConfigs: async () => [],
             },
@@ -791,6 +804,9 @@ describe('enqueueForApproval + previewPublishEnqueue', () => {
             usedZernio: false,
             connectionCount: 0,
             previews: [],
+            channelMode: 'hybrid',
+            legacyPlatforms: [],
+            skipped: [],
         });
     });
 });
@@ -892,6 +908,9 @@ describe('POST /api/review/:id/publish-preview y approve — opciones PG-06', ()
     const zernioDeps = (store: PublishJobDeps['store']): PublishJobDeps => ({
         store,
         now: () => T0,
+        // PG-07: canal en memoria — default híbrido, sin assets legacy.
+        channelStore: createMemoryPublishChannelStore().store,
+        envTwitterBot: false,
         listConnections: async () => [
             makeConn({
                 tenantId: T_A,

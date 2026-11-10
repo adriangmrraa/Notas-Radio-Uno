@@ -119,6 +119,7 @@ vi.mock('../src/server/services/editorialPromptService.js', () => ({
 import { registerReviewRoutes, reviewPublishDeps } from '../src/server/routes/review';
 import type { SocialConnectionRow } from '../src/server/services/socialConnectionsService';
 import { createMemoryPublishJobStore } from './helpers/memoryPublishJobStore';
+import { createMemoryPublishChannelStore } from './helpers/memoryPublishChannelStore';
 
 const T_A = 'tenant-a';
 const PUB_1 = '11111111-1111-4111-8111-111111111111';
@@ -204,6 +205,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
         const { store, state } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
                 makeConn({ tenantId: T_A, platform: 'tiktok', accountId: 'zacc_2' }),
@@ -250,6 +255,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
         const { store } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
@@ -269,6 +278,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
         const { store, state } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [],
             listAutoPublishConfigs: async () => [],
             // PG-06: estos tests no ejercitan la composición por red —
@@ -292,6 +305,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
         const { store, state } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
@@ -337,6 +354,10 @@ describe('POST /api/review/batch — approve encola por publicación', () => {
         const { store, state } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
@@ -369,6 +390,10 @@ describe('POST /api/review/batch — approve encola por publicación', () => {
         const { store, state } = createMemoryPublishJobStore({ now: () => T0 });
         reviewPublishDeps.publishJobDeps = {
             store,
+            // PG-07: modo/assets de canal en memoria — default híbrido,
+            // sin assets legacy → todo lo conectado resuelve 'zernio'.
+            channelStore: createMemoryPublishChannelStore().store,
+            envTwitterBot: false,
             listConnections: async () => [],
             listAutoPublishConfigs: async () => [],
             // PG-06: estos tests no ejercitan la composición por red —

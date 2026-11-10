@@ -205,8 +205,14 @@ async function waitForContainerReady(
 /**
  * Publica en todas las plataformas Meta conectadas.
  * Usa los assets guardados en la DB.
+ *
+ * `channels` (PG-07): limita qué plataformas publican por el canal directo.
+ * Ausente = ambas (comportamiento de siempre).
  */
-export async function publishToAllMeta({ title, content, imageUrl, imagePath }: PublishAllParams): Promise<MetaPublishResults> {
+export async function publishToAllMeta(
+  { title, content, imageUrl, imagePath }: PublishAllParams,
+  channels?: { facebook?: boolean; instagram?: boolean },
+): Promise<MetaPublishResults> {
   const results: MetaPublishResults = {
     facebook: [],
     instagram: [],
@@ -217,7 +223,7 @@ export async function publishToAllMeta({ title, content, imageUrl, imagePath }: 
   const caption = `${title}\n\n${content}`;
 
   // Publish to all active Facebook Pages
-  const pages = await getAssetsByType("facebook_page");
+  const pages = channels?.facebook === false ? [] : await getAssetsByType("facebook_page");
   for (const page of pages) {
     try {
       const fbResult = await publishToFacebookPage(page.external_id, {
@@ -239,7 +245,7 @@ export async function publishToAllMeta({ title, content, imageUrl, imagePath }: 
   }
 
   // Publish to all active Instagram accounts
-  const igAccounts = await getAssetsByType("instagram_account");
+  const igAccounts = channels?.instagram === false ? [] : await getAssetsByType("instagram_account");
   for (const ig of igAccounts) {
     try {
       // Instagram requires a public URL (no direct upload)

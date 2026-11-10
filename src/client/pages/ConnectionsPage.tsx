@@ -67,6 +67,62 @@ const SOCIAL_ERROR_MESSAGES: Record<string, string> = {
 const platformLabel = (id: string): string =>
     SOCIAL_PLATFORMS.find((p) => p.id === id)?.label ?? id;
 
+// ------------------------------------------------------------------
+// Canal de publicación por tenant (PG-07)
+// ------------------------------------------------------------------
+
+type PublishChannelMode = 'hybrid' | 'zernio' | 'legacy';
+
+interface ChannelPlatformStatus {
+    platform: string;
+    channel: 'zernio' | 'legacy' | 'none';
+    reason: string | null;
+    legacyCapable: boolean;
+    hasLegacyPath: boolean;
+    zernioConnections: { id: string; username: string | null; displayName: string | null; accountId: string; status: string }[];
+    legacyAssets: { id: string; name: string | null; assetType: string; externalId: string; legacyOnly: boolean }[];
+    pendingMigration: boolean;
+}
+
+interface PublishChannelsResponse {
+    mode: PublishChannelMode;
+    defaultMode: PublishChannelMode;
+    configured: boolean;
+    platforms: ChannelPlatformStatus[];
+}
+
+const MODE_OPTIONS: { id: PublishChannelMode; label: string; description: string }[] = [
+    {
+        id: 'hybrid',
+        label: 'Híbrido',
+        description: 'Zernio para las redes conectadas; Meta/Twitter directo para los portfolios que todavía no migraste. Es el modo por defecto — se comporta como siempre.',
+    },
+    {
+        id: 'zernio',
+        label: 'Zernio',
+        description: 'Todo publica por Zernio. El canal directo de Meta/Twitter queda sólo bajo demanda explícita en cada publicación ("publicar por canal legacy").',
+    },
+    {
+        id: 'legacy',
+        label: 'Legacy',
+        description: 'Meta/Twitter siguen por el canal directo. Las redes nuevas (TikTok, YouTube, LinkedIn…) publican por Zernio cuando están conectadas.',
+    },
+];
+
+/** Asset types que pueden marcarse como legacy-only (Meta/Twitter directo). */
+const LEGACY_ONLY_ASSET_TYPES = new Set(['facebook_page', 'instagram_account', 'twitter_account']);
+
+const channelBadge = (channel: ChannelPlatformStatus['channel']) => {
+    switch (channel) {
+        case 'zernio':
+            return <span className="badge badge-success">Conectado por Zernio</span>;
+        case 'legacy':
+            return <span className="badge badge-warning">Legacy (Meta/Twitter directo)</span>;
+        default:
+            return <span className="badge badge-info">Sin conectar</span>;
+    }
+};
+
 export function ConnectionsPage() {
     const { fetchApi } = useApi();
     const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -82,6 +138,14 @@ export function ConnectionsPage() {
     const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
     const [syncing, setSyncing] = useState(false);
     const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+    // PG-07: canal de publicación — modo del tenant + estado por plataforma.
+    const [channels, setChannels] = useState<PublishChannelsResponse | null>(null);
+    const [channelsLoading, setChannelsLoading] = useState(true);
+    const [channelsError, setChannelsError] = useState<string | null>(null);
+    const [modeDraft, setModeDraft] = useState<PublishChannelMode>('hybrid');
+    const [savingMode, setSavingMode] = useState(false);
+    const [togglingAsset, setTogglingAsset] = useState<string | null>(null);
 
     const loadPortfolios = useCallback(async () => {
         try {
@@ -100,9 +164,22 @@ export function ConnectionsPage() {
         setSocialLoading(false);
     }, []);
 
+    const loadChannels = useCallback(async () => {
+        try {
+            const data = await fetchApi<PublishChannelsResponse>('/publish-channels');
+            setChannels(data);
+            setModeDraft(data.mode);
+            setChannelsError(null);
+        } catch (err: any) {
+            setChannelsError(err?.message || 'No se pudo leer el estado de canales.');
+        }
+        setChannelsLoading(false);
+    }, []);
+
     useEffect(() => {
         loadPortfolios();
         loadSocial();
+        loadChannels();
 
         // Resultado del callback OAuth de Zernio (redirect con
         // ?social_connected=<platform> o ?social_error=<code>).
@@ -298,6 +375,36 @@ export function ConnectionsPage() {
         setSyncing(false);
     };
 
+    // PG-07 — modo de canal del tenant.
+    const saveChannelMode = async () => {
+        setSavingMode(true);
+        setFeedback(null);
+        try {
+            await fetchApi('/publish-channels', { method: 'PUT', body: { mode: modeDraft } });
+            await loadChannels();
+            setFeedback({ kind: 'ok', text: 'Modo de publicación guardado.' });
+        } catch (err: any) {
+            setFeedback({ kind: 'error', text: err.message || 'No se pudo guardar el modo.' });
+        }
+        setSavingMode(false);
+    };
+
+    // PG-07 — marca un asset legacy como "siempre por canal directo".
+    const toggleLegacyOnly = async (asset: Asset) => {
+        const next = asset.metadata?.legacyOnly !== true;
+        setTogglingAsset(asset.id);
+        try {
+            await fetchApi(`/publish-channels/assets/${asset.id}/legacy-only`, {
+                method: 'PUT',
+                body: { legacyOnly: next },
+            });
+            await Promise.all([loadPortfolios(), loadChannels()]);
+        } catch (err: any) {
+            setFeedback({ kind: 'error', text: err.message || 'No se pudo actualizar el asset.' });
+        }
+        setTogglingAsset(null);
+    };
+
     const statusBadge = (status: string) => {
         switch (status) {
             case 'connected':
@@ -417,6 +524,108 @@ export function ConnectionsPage() {
                 )}
             </div>
 
+            {/* Canal de publicación (PG-07): modo del tenant + migración por red */}
+            <div className="glass-card p-6 mb-8">
+                <h2 className="text-lg font-semibold flex items-center gap-2 mb-1">
+                    <Share2 className="w-4 h-4 text-cyan-400" />
+                    Canal de publicación
+                </h2>
+                <p className="text-white/30 text-xs mb-4">
+                    Elegí cómo publica tu organización: por Zernio, por el canal directo de siempre, o mezclado.
+                    {!channelsLoading && channels && !channels.configured && (
+                        <> No elegiste un modo todavía — está activo el default <span className="text-white/50">híbrido</span>.</>
+                    )}
+                </p>
+
+                {channelsLoading ? (
+                    <div className="space-y-2">
+                        <div className="skeleton h-10" />
+                        <div className="skeleton h-10" />
+                    </div>
+                ) : channelsError ? (
+                    <div className="px-4 py-3 rounded-xl text-sm border bg-red-500/[0.06] border-red-500/15 text-red-300">
+                        {channelsError}
+                    </div>
+                ) : channels ? (
+                    <>
+                        {/* Modo del tenant */}
+                        <div className="space-y-2 mb-5">
+                            {MODE_OPTIONS.map((opt) => (
+                                <label
+                                    key={opt.id}
+                                    className={`flex items-start gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-all duration-300 ${
+                                        modeDraft === opt.id
+                                            ? 'bg-cyan-500/[0.07] border-cyan-500/25'
+                                            : 'bg-white/[0.03] border-white/[0.05] hover:border-white/[0.12]'
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="publish-channel-mode"
+                                        className="mt-1 accent-cyan-400"
+                                        checked={modeDraft === opt.id}
+                                        onChange={() => setModeDraft(opt.id)}
+                                    />
+                                    <span>
+                                        <span className="block text-sm font-medium">{opt.label}</span>
+                                        <span className="block text-xs text-white/35 mt-0.5">{opt.description}</span>
+                                    </span>
+                                </label>
+                            ))}
+                        </div>
+                        <div className="mb-6">
+                            <button
+                                onClick={saveChannelMode}
+                                disabled={savingMode || modeDraft === channels.mode}
+                                className="btn-secondary inline-flex items-center gap-2 text-xs !py-2"
+                            >
+                                {savingMode ? 'Guardando...' : 'Guardar modo'}
+                            </button>
+                        </div>
+
+                        {/* Estado de migración por plataforma */}
+                        <h3 className="text-sm font-semibold text-white/60 mb-3">Estado por red</h3>
+                        <div className="space-y-2">
+                            {channels.platforms.map((p) => (
+                                <div
+                                    key={p.platform}
+                                    className="flex items-start justify-between gap-3 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.05]"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-sm font-medium">{platformLabel(p.platform)}</span>
+                                            {channelBadge(p.channel)}
+                                            {p.pendingMigration && (
+                                                <span className="text-[10px] text-amber-300/80 uppercase tracking-wider">
+                                                    pendiente de migración
+                                                </span>
+                                            )}
+                                        </div>
+                                        {p.reason && (
+                                            <p className="text-xs text-white/30 mt-1">{p.reason}</p>
+                                        )}
+                                        {p.channel === 'zernio' && p.zernioConnections.length > 0 && (
+                                            <p className="text-xs text-white/30 mt-1 truncate">
+                                                {p.zernioConnections
+                                                    .map((c) => c.displayName || c.username || c.accountId)
+                                                    .join(' · ')}
+                                            </p>
+                                        )}
+                                        {p.legacyAssets.length > 0 && (
+                                            <p className="text-xs text-white/30 mt-1 truncate">
+                                                {p.legacyAssets
+                                                    .map((a) => `${a.name || a.externalId}${a.legacyOnly ? ' (sólo legacy)' : ''}`)
+                                                    .join(' · ')}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </>
+                ) : null}
+            </div>
+
             {/* Create Portfolio */}
             <div className="flex flex-col sm:flex-row gap-3 mb-8">
                 <div className="relative flex-1 group">
@@ -477,9 +686,25 @@ export function ConnectionsPage() {
                                             <span className="text-sm font-medium">{asset.name || asset.externalId}</span>
                                             <span className="text-[10px] text-white/20 uppercase tracking-wider">{asset.assetType.replace('_', ' ')}</span>
                                         </div>
-                                        <button onClick={() => disconnectAsset(asset.id)} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all duration-300" title="Desconectar">
-                                            <Unplug className="w-3.5 h-3.5" />
-                                        </button>
+                                        <div className="flex items-center gap-3 shrink-0">
+                                            {LEGACY_ONLY_ASSET_TYPES.has(asset.assetType) && (
+                                                <button
+                                                    onClick={() => toggleLegacyOnly(asset)}
+                                                    disabled={togglingAsset === asset.id}
+                                                    className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-md border transition-all duration-300 ${
+                                                        asset.metadata?.legacyOnly === true
+                                                            ? 'border-amber-400/40 text-amber-300 bg-amber-500/10'
+                                                            : 'border-white/10 text-white/30 hover:border-white/25 hover:text-white/60'
+                                                    }`}
+                                                    title="Si está activo, esta red publica siempre por el canal directo aunque haya conexión Zernio"
+                                                >
+                                                    {asset.metadata?.legacyOnly === true ? 'Sólo legacy' : 'Marcar sólo legacy'}
+                                                </button>
+                                            )}
+                                            <button onClick={() => disconnectAsset(asset.id)} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all duration-300" title="Desconectar">
+                                                <Unplug className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>

@@ -84,6 +84,12 @@ export interface PublishInput {
   content: string;
   imagePath?: string | null;
   imageUrl?: string | null;
+  /**
+   * PG-07: cuando viene, limita los canales legacy a estas plataformas
+   * ('facebook' | 'instagram' | 'twitter'). Ausente = todos los canales,
+   * como siempre. Drive/webhook no son plataformas — corren igual.
+   */
+  legacyPlatforms?: readonly string[];
 }
 
 export interface PublishResult {
@@ -104,6 +110,10 @@ export async function publishToChannels(input: PublishInput): Promise<PublishRes
   let webhookSent = false;
   let twitterSent = false;
   let metaResults: MetaPublishResults | null = null;
+  // PG-07: filtro del canal legacy — ausente = todos los canales (comportamiento previo).
+  const legacyFilter = input.legacyPlatforms ? new Set(input.legacyPlatforms) : null;
+  const legacyOn = (platform: 'facebook' | 'instagram' | 'twitter') =>
+    legacyFilter === null || legacyFilter.has(platform);
 
   // 1. Google Drive (opcional)
   if (input.imagePath) {
@@ -140,7 +150,7 @@ export async function publishToChannels(input: PublishInput): Promise<PublishRes
   }
 
   // 3. Twitter (opcional)
-  if (driveUrl) {
+  if (driveUrl && legacyOn('twitter')) {
     try {
       await postTweetNuevoBoton(input.title, driveUrl);
       twitterSent = true;
@@ -153,12 +163,15 @@ export async function publishToChannels(input: PublishInput): Promise<PublishRes
 
   // 4. Meta API — Facebook + Instagram (opcional)
   try {
-    if (await isMetaConnected(input.tenantId)) {
+    if ((legacyOn('facebook') || legacyOn('instagram')) && (await isMetaConnected(input.tenantId))) {
       metaResults = await publishToAllMeta({
         title: input.title,
         content: input.content,
         imageUrl: driveUrl,
         imagePath: input.imagePath || undefined,
+      }, {
+        facebook: legacyOn('facebook'),
+        instagram: legacyOn('instagram'),
       });
       if (metaResults.errors.length > 0) {
         metaResults.errors.forEach((e: { platform?: string; pageName?: string; accountName?: string; error?: string }) => {

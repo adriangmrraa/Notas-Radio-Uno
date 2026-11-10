@@ -75,6 +75,8 @@ export const reviewPublishDeps: {
       personIds?: string[];
       excludePersonIds?: string[];
       hashtags?: string[];
+      /** PG-07: publicar por canal legacy bajo demanda (modo 'zernio'). */
+      forceLegacy?: boolean;
     },
     deps?: PublishJobDeps,
   ) => Promise<EnqueueForApprovalResult>;
@@ -88,6 +90,7 @@ export const reviewPublishDeps: {
       personIds?: string[];
       excludePersonIds?: string[];
       hashtags?: string[];
+      forceLegacy?: boolean;
     },
     deps?: PublishJobDeps,
   ) => Promise<PublishPreviewResult>;
@@ -191,16 +194,22 @@ export function registerReviewRoutes(app: Express): void {
       return;
     }
 
-    // PG-05: con conexiones Zernio el approve encola publish jobs (un job
-    // por cuenta destino) y la publicación queda 'approved' — el worker la
-    // pasa a 'published' cuando todos los jobs publican (queda 'approved'
-    // si alguno queda partial/failed). Sin conexiones → legacy intacto.
+    // PG-07: el plan de canales del tenant decide — Zernio para lo
+    // conectado/migrado (encola jobs y queda 'approved'), canal directo
+    // para Meta/Twitter con camino legacy (`legacyPlatforms` →
+    // publishToChannels filtrado), o ambos (mixto). `forceLegacy` en el
+    // body fuerza el canal legacy en esta publicación (la única vía
+    // legacy del modo 'zernio'). Sin ningún camino resuelto el publish
+    // completo de siempre corre igual (tenant sin config = cero
+    // regresión); en modo 'zernio' sin forceLegacy no se publica nada y
+    // `skipped` informa el motivo.
     // PG-06: el body puede traer personIds/excludePersonIds/hashtags — se
     // validan y componen el texto final por red dentro del enqueue.
+    let enq: EnqueueForApprovalResult;
     try {
       const opts = validatePublishOptions((req.body ?? {}) as Record<string, unknown>);
       const enqueueFn = reviewPublishDeps.enqueueForApproval ?? enqueueForApproval;
-      const enq = await enqueueFn(
+      enq = await enqueueFn(
         {
           tenantId,
           publicationId: id,
@@ -210,33 +219,6 @@ export function registerReviewRoutes(app: Express): void {
         },
         reviewPublishDeps.publishJobDeps,
       );
-
-      if (enq.usedZernio) {
-        await updatePublicationStatus(id, tenantId, 'approved');
-
-        const entry: EditHistoryEntry = {
-          action: 'approved',
-          timestamp: now(),
-          by: req.auth!.userId,
-        };
-        await addEditHistoryEntry(id, tenantId, entry);
-
-        void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
-          entityType: 'publication',
-          entityId: id,
-          metadata: { publishJobs: enq.jobs.length, targets: enq.targets.length },
-        });
-
-        res.json({
-          success: true,
-          publish: 'zernio',
-          enqueued: enq.createdCount,
-          deduplicated: enq.deduplicatedCount,
-          targetCount: enq.targets.length,
-          jobs: enq.jobs,
-        });
-        return;
-      }
     } catch (err) {
       const e = err as Error;
       void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH_FAILED, {
@@ -249,16 +231,119 @@ export function registerReviewRoutes(app: Express): void {
       return;
     }
 
-    // Sin conexiones Zernio: publicar en todos los canales configurados (legacy).
-    let publishResults;
+    const legacyFilter =
+      enq.legacyPlatforms.length > 0 ? { legacyPlatforms: enq.legacyPlatforms } : {};
+    // Tramo legacy: filtrado a las plataformas resueltas; o el publish
+    // completo de siempre cuando NO hay Zernio en juego y no estamos en
+    // modo 'zernio' (o el usuario lo pidió explícito con forceLegacy).
+    const canPublishLegacy =
+      enq.legacyPlatforms.length > 0 ||
+      (!enq.usedZernio && (enq.channelMode !== 'zernio' || enq.forceLegacy));
+
     try {
-      publishResults = await publishToChannels({
-        id,
-        tenantId,
-        title: pub.title ?? "",
-        content: pub.content ?? "",
-        imagePath: pub.imagePath ?? null,
-        imageUrl: pub.imageUrl ?? null,
+      if (enq.usedZernio || canPublishLegacy) {
+        // Tramo legacy: filtrado a las plataformas resueltas, o completo
+        // cuando ninguna resolvió (comportamiento previo) — nunca en modo
+        // 'zernio' sin forceLegacy.
+        let publishResults = null;
+        if (canPublishLegacy) {
+          publishResults = await publishToChannels({
+            id,
+            tenantId,
+            title: pub.title ?? "",
+            content: pub.content ?? "",
+            imagePath: pub.imagePath ?? null,
+            imageUrl: pub.imageUrl ?? null,
+            ...legacyFilter,
+          });
+        }
+
+        // Con Zernio engaged la publicación queda 'approved' (el worker la
+        // pasa a 'published' al cerrar los jobs; publishToChannels la dejó
+        // 'published' y se corrige después del tramo legacy).
+        if (enq.usedZernio) {
+          await updatePublicationStatus(id, tenantId, 'approved');
+        }
+
+        const entry: EditHistoryEntry = {
+          action: 'approved',
+          timestamp: now(),
+          by: req.auth!.userId,
+        };
+        await addEditHistoryEntry(id, tenantId, entry);
+
+        if (enq.usedZernio) {
+          void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
+            entityType: 'publication',
+            entityId: id,
+            metadata: {
+              publishJobs: enq.jobs.length,
+              targets: enq.targets.length,
+              channelMode: enq.channelMode,
+              legacyPlatforms: enq.legacyPlatforms,
+              forceLegacy: enq.forceLegacy,
+            },
+          });
+
+          res.json({
+            success: true,
+            publish: enq.legacyPlatforms.length > 0 ? 'mixed' : 'zernio',
+            enqueued: enq.createdCount,
+            deduplicated: enq.deduplicatedCount,
+            targetCount: enq.targets.length,
+            jobs: enq.jobs,
+            channelMode: enq.channelMode,
+            legacyPlatforms: enq.legacyPlatforms,
+            skipped: enq.skipped,
+            publishResults,
+          });
+          return;
+        }
+
+        void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH, {
+          entityType: 'publication',
+          entityId: id,
+          metadata: { results: publishResults },
+        });
+        void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
+          entityType: 'publication',
+          entityId: id,
+        });
+
+        res.json({
+          success: true,
+          publish: 'legacy',
+          publishResults,
+          channelMode: enq.channelMode,
+          legacyPlatforms: enq.legacyPlatforms,
+          skipped: enq.skipped,
+        });
+        return;
+      }
+
+      // Modo 'zernio' sin camino y sin forceLegacy: la publicación queda
+      // aprobada y `skipped` informa qué plataformas no tienen canal.
+      await updatePublicationStatus(id, tenantId, 'approved');
+      await addEditHistoryEntry(id, tenantId, {
+        action: 'approved',
+        timestamp: now(),
+        by: req.auth!.userId,
+      });
+      void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
+        entityType: 'publication',
+        entityId: id,
+        metadata: { channelMode: enq.channelMode, skipped: enq.skipped },
+      });
+      res.json({
+        success: true,
+        publish: 'none',
+        enqueued: 0,
+        deduplicated: 0,
+        targetCount: 0,
+        jobs: [],
+        channelMode: enq.channelMode,
+        legacyPlatforms: enq.legacyPlatforms,
+        skipped: enq.skipped,
       });
     } catch (err) {
       const e = err as Error;
@@ -268,29 +353,8 @@ export function registerReviewRoutes(app: Express): void {
         entityId: id,
         metadata: { error: e.message },
       });
-      res.status(500).json({ error: `Error al publicar: ${e.message}` });
-      return;
+      routePublishError(res, err, 'Error al publicar la publicación');
     }
-
-    // Agregar entrada al historial (publishToChannels ya actualizó el status a 'published')
-    const entry: EditHistoryEntry = {
-      action: 'approved',
-      timestamp: now(),
-      by: req.auth!.userId,
-    };
-    await addEditHistoryEntry(id, tenantId, entry);
-
-    void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH, {
-      entityType: 'publication',
-      entityId: id,
-      metadata: { results: publishResults },
-    });
-    void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
-      entityType: 'publication',
-      entityId: id,
-    });
-
-    res.json({ success: true, publishResults });
   });
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -603,9 +667,11 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
         if (!pub) { errors++; continue; }
 
         if (action === 'approve') {
-          // PG-05: mismo branch que /:id/approve — con conexiones Zernio
-          // encola jobs y la publicación queda 'approved'; sin conexiones
-          // el publishToChannels legacy corre como antes.
+          // PG-07: mismo branch que /:id/approve — el plan de canales
+          // decide Zernio (jobs, 'approved') y/o el tramo legacy
+          // (publishToChannels filtrado a legacyPlatforms; completo cuando
+          // ninguna resolvió — comportamiento previo). En modo 'zernio'
+          // sin camino queda 'approved' sin publicar (skipped informado).
           const enqueueFn = reviewPublishDeps.enqueueForApproval ?? enqueueForApproval;
           const enq = await enqueueFn(
             {
@@ -616,9 +682,12 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
             },
             reviewPublishDeps.publishJobDeps,
           );
-          if (enq.usedZernio) {
-            await updatePublicationStatus(id, tenantId, 'approved');
-          } else {
+          // Misma regla que el approve: el publish completo sólo corre sin
+          // Zernio engaged y fuera del modo 'zernio' (o bajo demanda).
+          const canPublishLegacy =
+            enq.legacyPlatforms.length > 0 ||
+            (!enq.usedZernio && (enq.channelMode !== 'zernio' || enq.forceLegacy));
+          if (canPublishLegacy) {
             await publishToChannels({
               id,
               tenantId,
@@ -626,7 +695,15 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
               content: pub.content ?? "",
               imagePath: pub.imagePath ?? null,
               imageUrl: pub.imageUrl ?? null,
+              ...(enq.legacyPlatforms.length > 0
+                ? { legacyPlatforms: enq.legacyPlatforms }
+                : {}),
             });
+          }
+          // 'approved' sólo cuando hay Zernio en juego (jobs en curso) o
+          // no hubo canal — el publishToChannels puro ya deja 'published'.
+          if (enq.usedZernio || !canPublishLegacy) {
+            await updatePublicationStatus(id, tenantId, 'approved');
           }
           await addEditHistoryEntry(id, tenantId, {
             action: 'approved',

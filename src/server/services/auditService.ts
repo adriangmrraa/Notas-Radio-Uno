@@ -51,6 +51,8 @@ export const AUDIT_ACTIONS = {
   PUBLISH_FAILED: 'publication.publish_failed',
   PUBLICATION_APPROVED: 'publication.approved',
   PUBLICATION_REJECTED: 'publication.rejected',
+  PUBLISH_CHANNEL_MODE_CHANGED: 'publish_channel.mode_changed',
+  PUBLISH_CHANNEL_LEGACY_ONLY_CHANGED: 'publish_channel.legacy_only_changed',
 
   BILLING_PLAN_CHANGED: 'billing.plan_changed',
   BILLING_CHECKOUT: 'billing.checkout',

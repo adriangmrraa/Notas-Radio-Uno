@@ -53,6 +53,7 @@ import { assetsRouter } from "./routes/assets.js";
 import { autoPublishRouter } from "./routes/autoPublish.js";
 import { socialConnectionsRouter } from "./routes/socialConnections.js";
 import { publishJobsRouter } from "./routes/publishJobs.js";
+import { publishChannelsRouter } from "./routes/publishChannels.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initPublishWorker } from "./services/publishWorker.js";
@@ -288,6 +289,9 @@ app.use("/api/auto-publish", autoPublishRouter);
 app.use("/api/social-connections", socialConnectionsRouter);
 // PG-05: cola de publicación vía Zernio — list/detail/enqueue/retry/cancel.
 app.use("/api/publish-jobs", publishJobsRouter);
+// PG-07: canal de publicación por tenant — modo, estado de migración,
+// marca legacy-only de assets.
+app.use("/api/publish-channels", publishChannelsRouter);
 
 // Initialize background services
 initNotificationService(io);

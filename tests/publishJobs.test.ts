@@ -102,6 +102,7 @@ import {
     createMemoryPublishJobStore,
     makeMemoryPublishJob,
 } from './helpers/memoryPublishJobStore';
+import { createMemoryPublishChannelStore } from './helpers/memoryPublishChannelStore';
 
 const T_A = 'tenant-a';
 const T_B = 'tenant-b';
@@ -159,6 +160,9 @@ const makeDeps = (
     // PG-05; la composición por red se cubre en publishMentions.test.ts.
     getMentionSource: async () => null,
     listMentionPersons: async () => [],
+    // PG-07: canal en memoria — default híbrido, sin assets legacy.
+    channelStore: createMemoryPublishChannelStore().store,
+    envTwitterBot: false,
     ...extra,
 });
 
