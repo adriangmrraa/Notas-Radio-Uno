@@ -1,64 +1,68 @@
-# PE-03 — Identidad de personas: diarización → matching rostro en frames contra embeddings
+# PE-05 — Citas atribuidas a persona (nombre + foto)
 
 KANBAN_TASK_ID: t_d2f3cad5
 Slice de: ÉPICA E — Motor de análisis en vivo
 Ejecutor: devin-swe-2-max (agente delegado en worktree Orca)
-Base: aa3b6ad (master tip — incluye PE-01/02/06/07)
+Base: 3a5d97e (master tip — incluye PE-01/02/03/06/07)
 
 ## Objetivo
 
-Resolver `speaker_label` → `person_id`: por cada speaker de la diarización en
-`transcript_segments`, samplear frames del video en SUS ventanas temporales,
-detectar rostros (SCRFD+ArcFace) y matchear los embeddings contra
-`face_embeddings` (pgvector). Escribir `person_id` con confianza. **AC:
-corrección manual persiste** — la resolución automática sólo escribe donde
-`person_id IS NULL`, y hay un método explícito de corrección.
+Las citas ya quedan persistidas por PE-02 en `transmission_moments`
+(`kind='detected'`, `reason='quote'`, `title` = texto de la cita, ventana
+`start_ms/end_ms`). PE-05 las **atribuye a persona con nombre + foto** —
+computed-on-read, SIN cambios de schema y SIN persistir la atribución:
+
+> cita → utterance de `transcript_segments` que la cubre (mayor overlap, misma
+> transmisión) → `speaker_label` + `person_id` → `persons` + foto primaria.
+
+**Por qué computed-on-read**: una corrección manual de `person_id` (PE-03
+`correctSpeakerPerson`) re-atribuye las citas automáticamente — si la
+atribución estuviera persistida quedaría stale. El contrato "corrección
+manual persiste" de PE-03 se extiende acá gratis.
 
 ## Contratos heredados (NO reimplementar)
 
 | Pieza | Dónde | Uso |
 |---|---|---|
-| `getFaceDetector()` | `src/server/services/faceDetectionService.ts` | `detect(imageBuffer) → {faces:[{bbox,detScore,embedding:number[512]}]}`. Modelo `insightface-buffalo_l`. **`FakeFaceDetector` ya existe** — usalo en tests. |
-| `face_embeddings` | `src/server/db/schema/persons.ts` | `tenant_id, person_id, embedding vector(512), det_score`. Matching = pgvector cosine distance (`<=>` via `sql` tag de drizzle) — umbral recomendado ~0.35 (ArcFace normalizado); exponerlo como constante configurable. |
-| `persons` | `persons.ts` | `id, name, role_label, role, face_status`. |
-| `transcript_segments` | `live.ts` | `speaker_label`, `person_id` (NULL), `start_ms/end_ms` — PE-02 ya los puebla. |
-| `recording_segments` + `stream_recordings` | `recordings.ts` | frames vienen de `${storagePrefix}/${fileRef}` via `getRawStorage()` — igual que PE-02. |
-| `transmissionSegmentsService.setSegmentSpeakers` | `transmissionSegmentsService.ts` (PE-06) | Propagar la resolución al jsonb `speakers` de los segmentos temáticos cuando apliquen (opcional pero deseable: update solo de labels que coincidaan). |
-| ffmpeg | `src/server/lib/binaries.ts` | `ffmpeg -ss <ms> -i <mp4> -frames:v 1 -f image2pipe -vcodec mjpeg -` → Buffer del frame. |
+| `transmission_moments` | `src/server/db/schema/live.ts` | citas: `kind='detected'` AND `reason='quote'`; `title` = texto, ventana `start_ms`/`end_ms`. Leer, no escribir. |
+| `transcript_segments` | `live.ts` | `speaker_label`, `person_id`, `start_ms/end_ms` — PE-02 las puebla, PE-03 las resuelve. |
+| `persons` + `person_photos` | `persons.ts` | `persons.name`; foto = `person_photos.is_primary` (fallback: la más antigua — **misma regla que `liveRoomService`/`faceEnrollmentService`: revisar `findPrimaryPhoto`**). |
+| photoUrl | `liveRoomService.ts` | formato ya establecido: `/api/persons/${personId}/photos/${photoId}` — replicar el mismo path (la ruta GET existe en `routes/persons.ts`). |
+| Offsets | convención repo | `start_ms`/`end_ms` relativos a `transmissions.started_at` — misma convención para matching temporal. |
 
 ## Arquitectura pedida (patrón del repo)
 
-`src/server/services/personIdentityService.ts`:
+`src/server/services/attributedQuotesService.ts`:
 
-- `PersonIdentityStore` + `createDrizzlePersonIdentityStore` + `createPersonIdentityService(store, deps)`.
+- `AttributedQuotesStore` + `createDrizzleAttributedQuotesStore` + `createAttributedQuotesService(store)`.
 - Store (TODA query con `tenant_id`):
-  - `listUnresolvedSpeakers(tenantId, transmissionId)` → speaker_labels distintos con `person_id IS NULL` + su rango temporal (min/max start_ms).
-  - `matchEmbedding(tenantId, embedding, limit)` → `[{personId, personName, distance}]` por distancia coseno `<=>` ASC.
-  - `assignPersonToSpeaker(tenantId, transmissionId, speakerLabel, personId)` → UPDATE `transcript_segments` SET person_id **WHERE person_id IS NULL** (así la corrección manual persiste).
-  - `overrideSpeakerPerson(tenantId, transmissionId, speakerLabel, personId|null)` → UPDATE forzado (corrección manual: pisa lo que haya, incluido null para desasignar).
-- Deps inyectables: `detectFaces(buf)`, `extractFrame(fileRef, atMs)→Buffer`, `storage`/`fileRefFor(segment)`.
-- `resolveTransmissionSpeakers({tenantId, transmissionId})` → por cada speaker sin resolver: samplea N frames dentro de su ventana (elegir recording_segment que cubre cada ms vía `listRecordingSegments`), detecta rostros, matchea embeddings, vota/agrupa → `{personId, confidence, evidence}` y escribe la asignación. Devuelve el mapa de resoluciones.
-- `correctSpeakerPerson(...)` → override manual.
-- Un frame sin rostro, un rostro sin match bajo umbral, o speaker sin frames → `personId=null` con razón; nunca rompe el loop.
+  - `listQuoteMoments(tenantId, transmissionId)` → moments `reason='quote'` ordenados por `start_ms`.
+  - `listUtterances(tenantId, transmissionId)` → transcript_segments ordenados (o un overlap query por ventana si preferís menos datos — decidir por claridad).
+  - `listPersonsPhotos(tenantId, personIds[])` → `{personId, name, primaryPhotoId}` — una query, foto primaria o más antigua como fallback.
+- Servicio: `listAttributedQuotes(tenantId, transmissionId)` → `AttributedQuote[]`:
+  `{ momentId, text, startMs, endMs, speakerLabel, personId, personName, personPhotoUrl, attribution: 'person' | 'speaker' | 'unattributed' }`
+  - utterance elegida = la de MAYOR overlap temporal con la ventana de la cita (empate → la que contiene el punto medio).
+  - `attribution='person'` cuando hay personId; `'speaker'` cuando sólo hay speaker_label; `'unattributed'` sin utterance.
+  - Devolver también `score`/`reason` del momento si aplica (el momento es detected).
+- Sin endpoints ni socket — la Sala/UI lo consume cuando corresponda.
 
-## Tests (`tests/personIdentity.test.ts` + `tests/helpers/memoryPersonIdentityStore.ts`)
+## Tests (`tests/attributedQuotes.test.ts` + `tests/helpers/memoryAttributedQuotesStore.ts`)
 
-Deterministas (FakeFaceDetector + embeddings sintéticos normalizados):
-- speaker resuelto cuando el match supera el umbral (distancia < umbral)
-- sin match → person_id queda NULL con razón registrada
-- auto-resolve NO pisa un person_id ya asignado (manual persiste) — el test lo verifica en el memory store replicando el WHERE
-- `correctSpeakerPerson` pisa asignaciones previas y admite desasignar (null)
-- aislamiento por tenant en queries del store
-- múltiples speakers independientes
+Deterministas:
+- cita con utterance que la cubre y person_id resuelto → `attribution='person'` con name + photoUrl correcto
+- utterance sin person_id → `attribution='speaker'` con speakerLabel
+- cita sin utterance solapada → `attribution='unattributed'`
+- mayor overlap gana cuando hay 2 utterances candidatas
+- persona sin foto primaria → fallback a más antigua (o null si no hay fotos)
+- aislamiento por tenant
 
 ## Constraints
 
-- `tenant_id` en TODA query. Distancia pgvector parametrizada (no interpolar el array a mano — `sql`${embedding}`` con cast `::vector` o array literal, como prefiera drizzle; revisar cómo `faceEnrollmentService` inserta el vector para el formato).
-- NO tocar: `faceDetectionService.ts`, `faceEnrollmentService.ts`, `analysisEngineService.ts`, `streamRecorderService.ts`, schemas.
-- No crear endpoints ni scheduler — el servicio es el contrato (el loop en vivo lo llama después).
+- `tenant_id` en TODA query. NO schema changes. NO persistir atribución.
+- NO tocar: `liveRoomService.ts`, `personIdentityService.ts`, `analysisEngineService.ts`, `transmissionSegmentsService.ts`, schemas.
 
 ## Gates
 
 `npx tsc --noEmit` EXIT 0 · `npx vitest run` verde · `npm run build` verde.
 `npm ci --ignore-scripts` primero si no hay node_modules.
-Commit conventional en `pe-03-person-identity`, paths explícitos, sin atribución IA. NO push, NO PR.
+Commit conventional en `pe-05-attributed-quotes`, paths explícitos, sin atribución IA. NO push, NO PR.
