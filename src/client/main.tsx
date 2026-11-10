@@ -26,6 +26,7 @@ import { ReviewPage } from './pages/ReviewPage';
 import { ClipsPage } from './pages/ClipsPage';
 import { LiveRoomPage } from './pages/LiveRoomPage';
 import { AssetsInboxPage } from './pages/AssetsInboxPage';
+import { Landing } from './pages/Landing';
 import PipelineEditor from './editor/PipelineEditor';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { AdminTenants } from './pages/admin/AdminTenants';
@@ -91,8 +92,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="plans" element={<AdminPlans />} />
             </Route>
 
-            {/* Redirect root to dashboard */}
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<Landing />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </PipelineProvider>
