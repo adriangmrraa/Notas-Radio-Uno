@@ -14,6 +14,19 @@
  *   200 { asset } / 400 (id o to mal formados) / 404 asset_not_found /
  *   409 invalid_transition / 422 invalid_state.
  *
+ *   POST /:id/edit-text { instruction } → propone un texto editado por IA
+ *   (note/post). 200 { proposal, provider } / 503 sin proveedor. El
+ *   proposal NO se persiste: lo muestra la UI y se aplica con apply-text.
+ *
+ *   POST /:id/apply-text { text } → persiste la edición: merge en
+ *   `assets.payload` (content para note, copy para post) + write-through
+ *   a `publications.content`. 200 { asset } / 404 / 422.
+ *
+ *   POST /:id/regenerate { instruction? } → flyer: regenera la imagen con
+ *   el modelo configurado y guarda `payload.flyerPath`; clip: encola el
+ *   REPROCESO del clip (kind 'reframe' — ver comentario inline).
+ *   202 / 400 / 404 / 422.
+ *
  * Aislamiento: el tenant sale SIEMPRE de `req.auth!.tenantId` — un asset
  * ajeno ⇒ 404 (no se distingue "no existe" de "es de otro").
  *
@@ -39,6 +52,7 @@ import { generateTextWithFallback } from '../services/aiSdkService.js';
 import { clipRenderQueueService, type ClipRenderJob } from '../services/clipRenderQueueService.js';
 import { generateImage, type GenerateImageResult } from '../services/imageModelService.js';
 import { getClipById } from '../services/clipService.js';
+import { updatePublicationContent } from '../services/databaseService.js';
 
 export const assetsRouter = Router();
 
@@ -48,9 +62,15 @@ export const assetsRouteDeps: AssetServiceDeps = {};
 /** Injectable AI/queue boundaries: route tests never call external providers. */
 export const assetsAiRouteDeps: {
     proposeText?: (input: { tenantId: string; sourceText: string; instruction: string }) => Promise<{ text: string; provider: string }>;
-    enqueueClipRegeneration?: (input: { tenantId: string; clipId: string; assetId: string; prompt: string }) => Promise<ClipRenderJob>;
+    /**
+     * REPROCESO del clip, no "regeneración por prompt": encola el job que el
+     * worker despacha como re-encuadre (kind 'reframe', ver /:id/regenerate).
+     */
+    enqueueClipReprocess?: (input: { tenantId: string; clipId: string; assetId: string }) => Promise<ClipRenderJob>;
     regenerateImage?: (input: { tenantId: string; prompt: string }) => Promise<GenerateImageResult>;
     getClip?: (clipId: string, tenantId: string) => Promise<unknown | null>;
+    /** Write-through de la edición aplicada a la fila fuente (`publications`). */
+    updatePublicationContent?: (id: string, tenantId: string, updates: { content?: string }) => Promise<unknown | null>;
 } = {};
 
 const UUID_RE =
@@ -268,6 +288,58 @@ assetsRouter.post('/:id/edit-text', requireAuth, async (req: Request, res: Respo
     }
 });
 
+// ------------------------------------------------------------------
+// POST /:id/apply-text — aplica el texto (propuesto por IA y/o revisado
+// por el usuario) al asset y a su fila fuente. La edición es real, no
+// una propuesta descartable: merge en payload + write-through.
+// ------------------------------------------------------------------
+assetsRouter.post('/:id/apply-text', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const tenantId = req.auth!.tenantId;
+        if (!UUID_RE.test(req.params.id)) {
+            res.status(400).json({ error: 'id invalido (uuid)' });
+            return;
+        }
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        if (typeof body.text !== 'string' || body.text.trim().length === 0) {
+            res.status(400).json({ error: 'text es obligatorio' });
+            return;
+        }
+        const store = assetsRouteDeps.store ?? createDrizzleAssetStore();
+        const asset = await store.getAsset(req.params.id, tenantId);
+        if (!asset) {
+            res.status(404).json({ error: 'Asset no encontrado', code: 'asset_not_found' });
+            return;
+        }
+        // Sólo note/post anclados a publications tienen write-through.
+        if ((asset.kind !== 'note' && asset.kind !== 'post') || asset.sourceTable !== 'publications') {
+            res.status(422).json({ error: 'Este tipo de asset no admite edicion de texto', code: 'text_edit_unsupported' });
+            return;
+        }
+        const text = body.text.trim();
+        // Write-through PRIMERO: `publications` es la fuente de verdad del
+        // contenido. Si ref_id no casa con una publicación DEL MISMO tenant
+        // no se toca el ledger — fail honesto, nada queda a medias (el
+        // próximo sync igual refrescaría payload desde la fuente).
+        const updatePub = assetsAiRouteDeps.updatePublicationContent ?? updatePublicationContent;
+        const publication = await updatePub(asset.refId, tenantId, { content: text });
+        if (!publication) {
+            res.status(404).json({ error: 'Publicacion asociada no encontrada', code: 'publication_not_found' });
+            return;
+        }
+        const payloadKey = asset.kind === 'post' ? 'copy' : 'content';
+        const updated = await store.updateAssetPayload(asset.id, tenantId, { [payloadKey]: text });
+        if (!updated) {
+            // Carrera: existía en el getAsset y ya no — se reporta como 404.
+            res.status(404).json({ error: 'Asset no encontrado', code: 'asset_not_found' });
+            return;
+        }
+        res.status(200).json({ asset: updated });
+    } catch (error) {
+        handleError(res, error, 'Error al aplicar la edicion del asset');
+    }
+});
+
 assetsRouter.post('/:id/regenerate', requireAuth, async (req: Request, res: Response) => {
     try {
         const tenantId = req.auth!.tenantId;
@@ -276,11 +348,12 @@ assetsRouter.post('/:id/regenerate', requireAuth, async (req: Request, res: Resp
             return;
         }
         const body = (req.body ?? {}) as Record<string, unknown>;
-        if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
-            res.status(400).json({ error: 'prompt es obligatorio' });
-            return;
-        }
-        const asset = await (assetsRouteDeps.store ?? createDrizzleAssetStore()).getAsset(req.params.id, tenantId);
+        // `instruction` sólo la consume el path de flyer (es el prompt real
+        // del modelo de imagen). El path de clip NO usa instrucciones: el
+        // worker re-encuadra el clip existente, no regenera por prompt.
+        const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : '';
+        const store = assetsRouteDeps.store ?? createDrizzleAssetStore();
+        const asset = await store.getAsset(req.params.id, tenantId);
         if (!asset) {
             res.status(404).json({ error: 'Asset no encontrado', code: 'asset_not_found' });
             return;
@@ -293,15 +366,29 @@ assetsRouter.post('/:id/regenerate', requireAuth, async (req: Request, res: Resp
                 res.status(404).json({ error: 'Clip asociado no encontrado', code: 'clip_not_found' });
                 return;
             }
-            const enqueue = assetsAiRouteDeps.enqueueClipRegeneration ?? ((input: { tenantId: string; clipId: string; assetId: string; prompt: string }) =>
-                clipRenderQueueService.enqueue({ tenantId: input.tenantId, clipId: input.clipId, kind: 'reframe', payload: { clipId: input.clipId, assetId: input.assetId, prompt: input.prompt } }));
-            const job = await enqueue({ tenantId, clipId: asset.refId, assetId: asset.id, prompt: body.prompt.trim() });
-            res.status(202).json({ jobId: job.id, status: job.status });
+            // kind 'reframe': es la única operación REAL del worker sobre un
+            // clip existente (`reframeClip` — detector de caras + layout
+            // 9:16). NO existe regeneración dirigida por prompt: el payload
+            // no lleva texto porque el worker no lo consumiría.
+            const enqueue = assetsAiRouteDeps.enqueueClipReprocess ?? ((input: { tenantId: string; clipId: string; assetId: string }) =>
+                clipRenderQueueService.enqueue({ tenantId: input.tenantId, clipId: input.clipId, kind: 'reframe', payload: { clipId: input.clipId, assetId: input.assetId } }));
+            const job = await enqueue({ tenantId, clipId: asset.refId, assetId: asset.id });
+            res.status(202).json({ jobId: job.id, status: job.status, kind: 'reframe' });
             return;
         }
         if (asset.kind === 'flyer') {
+            if (!instruction) {
+                res.status(400).json({ error: 'instruction es obligatoria para regenerar una imagen' });
+                return;
+            }
             const regenerate = assetsAiRouteDeps.regenerateImage ?? ((input: { tenantId: string; prompt: string }) => generateImage(input));
-            const result = await regenerate({ tenantId, prompt: body.prompt.trim() });
+            const result = await regenerate({ tenantId, prompt: instruction });
+            // El servicio escribe el archivo real; el ledger tiene que
+            // referenciarlo o la imagen queda huérfana del asset.
+            const updated = await store.updateAssetPayload(asset.id, tenantId, { flyerPath: result.path });
+            if (!updated) {
+                throw new AppError('Asset no encontrado', 404, 'asset_not_found');
+            }
             // The image service writes the real result; do not fabricate a public URL.
             res.status(202).json({ status: 'generated', path: result.path, model: result.model });
             return;

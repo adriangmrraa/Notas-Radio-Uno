@@ -40,7 +40,7 @@
  * Patrón del repo: `AssetStore` + `createDrizzleAssetStore` + memory store
  * en tests — TODA query filtra por `tenant_id`.
  */
-import { and, count, desc, eq, exists } from 'drizzle-orm';
+import { and, count, desc, eq, exists, sql } from 'drizzle-orm';
 import { v5 as uuidv5 } from 'uuid';
 
 import { db, type Database } from '../db/index.js';
@@ -293,6 +293,17 @@ export interface AssetStore {
         pageSize: number,
     ): Promise<{ assets: AssetRow[]; total: number }>;
     /**
+     * UPDATE de `payload` con MERGE shallow del patch (jsonb `||`): la
+     * edición aplicada y la regeneración de flyer cambian UNA clave del
+     * payload sin pisar el resto (videoPath, quoteIndex, error...).
+     * Devuelve la fila actualizada o null si no existe/es ajena.
+     */
+    updateAssetPayload(
+        id: string,
+        tenantId: string,
+        patch: Record<string, unknown>,
+    ): Promise<AssetRow | null>;
+    /**
      * UPDATE del status canónico (la máquina validó antes). Devuelve la
      * fila actualizada o null si no existe/es ajena.
      */
@@ -438,6 +449,18 @@ export function createDrizzleAssetStore(
                     .limit(pageSize).offset((page - 1) * pageSize),
             ]);
             return { assets: pageRows, total: Number(totalRow?.value ?? 0) };
+        },
+
+        async updateAssetPayload(id, tenantId, patch) {
+            const [row] = await executor
+                .update(assets)
+                .set({
+                    payload: sql`${assets.payload} || ${JSON.stringify(patch)}::jsonb`,
+                    updatedAt: new Date(),
+                })
+                .where(and(eq(assets.id, id), eq(assets.tenantId, tenantId)))
+                .returning();
+            return row ?? null;
         },
 
         async setAssetStatus(id, tenantId, status) {

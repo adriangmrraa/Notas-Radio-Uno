@@ -151,6 +151,17 @@ export function createMemoryAssetsStore(): {
             return { assets: rows.slice(start, start + pageSize).map(clone), total: rows.length };
         },
 
+        async updateAssetPayload(id, tenantId, patch) {
+            const row = state.assets.find(
+                (a) => a.id === id && a.tenantId === tenantId,
+            );
+            if (!row) return null;
+            // Merge shallow — igual que `payload || patch::jsonb` en PG.
+            row.payload = { ...row.payload, ...clone(patch) };
+            row.updatedAt = new Date();
+            return clone(row);
+        },
+
         async setAssetStatus(id, tenantId, status) {
             const row = state.assets.find(
                 (a) => a.id === id && a.tenantId === tenantId,

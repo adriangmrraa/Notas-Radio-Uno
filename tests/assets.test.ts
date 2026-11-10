@@ -72,7 +72,7 @@ describe('PG-02 asset AI actions', () => {
         const app = express(); app.use(express.json()); app.use('/api/assets', assetsRouter);
         server = await new Promise<Server>(resolve => { const s = app.listen(0, () => resolve(s)); }); baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     });
-    afterEach(async () => { assetsRouteDeps.store = undefined; Object.assign(assetsAiRouteDeps, { proposeText: undefined, enqueueClipRegeneration: undefined, regenerateImage: undefined, getClip: undefined }); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+    afterEach(async () => { assetsRouteDeps.store = undefined; Object.assign(assetsAiRouteDeps, { proposeText: undefined, enqueueClipReprocess: undefined, regenerateImage: undefined, getClip: undefined, updatePublicationContent: undefined }); vi.restoreAllMocks(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
     it('enforces tenant/type/configuration guards for text edits', async () => {
         const note = state.assets.find(a => a.kind === 'note')!; const clip = state.assets.find(a => a.kind === 'clip')!;
         expect((await post(`/api/assets/${note.id}/edit-text`, {}, T_A)).status).toBe(400);
@@ -81,16 +81,106 @@ describe('PG-02 asset AI actions', () => {
         assetsAiRouteDeps.proposeText = async () => { throw new AppError('No provider configured', 503, 'no_provider_configured'); };
         expect((await post(`/api/assets/${note.id}/edit-text`, { instruction: 'x' }, T_A)).status).toBe(503);
     });
+    it('apply-text persists the edit in the asset payload and writes through to the publication', async () => {
+        const note = state.assets.find(a => a.kind === 'note')!;
+        const updatePub = vi.fn(async (id: string, tenantId: string, updates: { content?: string }) => {
+            const pub = state.publications.find((p) => p.id === id && p.tenantId === tenantId);
+            if (!pub) return null;
+            if (updates.content !== undefined) pub.content = updates.content;
+            return pub;
+        });
+        assetsAiRouteDeps.updatePublicationContent = updatePub;
+
+        const res = await post(`/api/assets/${note.id}/apply-text`, { text: 'Texto editado.' });
+        expect(res.status).toBe(200);
+        const json = await res.json();
+        expect(json.asset.payload.content).toBe('Texto editado.');
+        expect(updatePub).toHaveBeenCalledWith(PUB_1, T_A, { content: 'Texto editado.' });
+        expect(state.publications.find((p) => p.id === PUB_1)!.content).toBe('Texto editado.');
+        expect(state.assets.find((a) => a.id === note.id)!.payload.content).toBe('Texto editado.');
+    });
+    it('apply-text writes payload.copy for post assets and preserves other payload keys', async () => {
+        // El post cuelga de OTRA publicación: ref_id es la fila fuente y la
+        // UNIQUE (tenant, source_table, ref_id) ya la ocupa la nota de PUB_1.
+        const PUB_2 = '00000000-0000-4000-8000-0000000000d3';
+        seedAssetPublication(state, { id: PUB_2, tenantId: T_A });
+        const postAsset = await assetsRouteDeps.store!.upsertAsset({ tenantId: T_A, kind: 'post', sourceTable: 'publications', refId: PUB_2, status: 'approved', payload: { copy: 'copy viejo', network: 'instagram' } });
+        const updatePub = vi.fn(async () => ({}));
+        assetsAiRouteDeps.updatePublicationContent = updatePub;
+
+        const res = await post(`/api/assets/${postAsset.id}/apply-text`, { text: 'Copy nuevo' });
+        expect(res.status).toBe(200);
+        expect(updatePub).toHaveBeenCalledWith(PUB_2, T_A, { content: 'Copy nuevo' });
+        // Merge shallow: `network` sobrevive, `copy` se actualizó.
+        expect(state.assets.find((a) => a.id === postAsset.id)!.payload).toEqual({ copy: 'Copy nuevo', network: 'instagram' });
+    });
+    it('apply-text is tenant-safe and validates kind/source before writing', async () => {
+        const note = state.assets.find(a => a.kind === 'note')!;
+        const clip = state.assets.find(a => a.kind === 'clip')!;
+        // 400: body sin text.
+        expect((await post(`/api/assets/${note.id}/apply-text`, {}, T_A)).status).toBe(400);
+        // 404: asset ajeno (sin leak).
+        expect((await post(`/api/assets/${note.id}/apply-text`, { text: 'x' }, T_B)).status).toBe(404);
+        // 404: ref_id no casa con una publicación del tenant → no se toca el ledger.
+        assetsAiRouteDeps.updatePublicationContent = async () => null;
+        expect((await post(`/api/assets/${note.id}/apply-text`, { text: 'x' }, T_A)).status).toBe(404);
+        // 422: clip no admite edición de texto.
+        assetsAiRouteDeps.updatePublicationContent = async () => ({});
+        expect((await post(`/api/assets/${clip.id}/apply-text`, { text: 'x' }, T_A)).status).toBe(422);
+        expect(state.publications.find((p) => p.id === PUB_1)!.content).toBe('Contenido de la nota.');
+    });
     it('delegates text, clip queue and flyer generation only after tenant-safe checks', async () => {
         const note = state.assets.find(a => a.kind === 'note')!; const clip = state.assets.find(a => a.kind === 'clip')!;
         const flyer = await assetsRouteDeps.store!.upsertAsset({ tenantId: T_A, kind: 'flyer', sourceTable: 'publications', refId: '00000000-0000-4000-8000-0000000000f1', status: 'approved' });
         const propose = vi.fn(async () => ({ text: 'edited', provider: 'test' })); assetsAiRouteDeps.proposeText = propose;
         expect((await post(`/api/assets/${note.id}/edit-text`, { instruction: 'x' })).status).toBe(200); expect(propose).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T_A }));
-        const enqueue = vi.fn(async () => ({ id: 'job-1', status: 'pending' } as any)); assetsAiRouteDeps.enqueueClipRegeneration = enqueue; assetsAiRouteDeps.getClip = async (_id, tenant) => tenant === T_A ? {} : null;
-        expect((await post(`/api/assets/${clip.id}/regenerate`, { prompt: 'x' })).status).toBe(202); expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T_A, clipId: CLIP_1 }));
-        assetsAiRouteDeps.getClip = async () => null; expect((await post(`/api/assets/${clip.id}/regenerate`, { prompt: 'x' })).status).toBe(404);
+        const enqueue = vi.fn(async () => ({ id: 'job-1', status: 'pending' } as never)); assetsAiRouteDeps.enqueueClipReprocess = enqueue; assetsAiRouteDeps.getClip = async (_id, tenant) => tenant === T_A ? {} : null;
+        expect((await post(`/api/assets/${clip.id}/regenerate`, {})).status).toBe(202); expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T_A, clipId: CLIP_1 }));
+        assetsAiRouteDeps.getClip = async () => null; expect((await post(`/api/assets/${clip.id}/regenerate`, {})).status).toBe(404);
         const image = vi.fn(async () => ({ path: '/tmp/x.png', model: 'test', attempts: [], generatedAt: new Date() })); assetsAiRouteDeps.regenerateImage = image;
-        expect((await post(`/api/assets/${flyer.id}/regenerate`, { prompt: 'x' })).status).toBe(202); expect(image).toHaveBeenCalledWith({ tenantId: T_A, prompt: 'x' });
+        expect((await post(`/api/assets/${flyer.id}/regenerate`, { instruction: 'x' })).status).toBe(202); expect(image).toHaveBeenCalledWith({ tenantId: T_A, prompt: 'x' });
+    });
+    it('clip reprocess enqueues kind reframe (no prompt) — the worker can dispatch it', async () => {
+        const clip = state.assets.find(a => a.kind === 'clip')!;
+        assetsAiRouteDeps.getClip = async (_id, tenant) => tenant === T_A ? {} : null;
+        // Sin dep inyectada: espía el enqueue real del service para verificar
+        // el kind/payload que efectivamente se encolaría.
+        const enqueue = vi.spyOn(clipRenderQueueService, 'enqueue').mockImplementation(async (input) =>
+            makeMemoryJob({ tenantId: input.tenantId, clipId: input.clipId ?? null, kind: input.kind, payload: input.payload }));
+        const res = await post(`/api/assets/${clip.id}/regenerate`, {});
+        expect(res.status).toBe(202);
+        const json = await res.json();
+        expect(json.kind).toBe('reframe');
+        const jobInput = enqueue.mock.calls[0][0];
+        expect(jobInput).toMatchObject({ tenantId: T_A, clipId: CLIP_1, kind: 'reframe' });
+        expect(jobInput.payload).toEqual({ clipId: CLIP_1, assetId: clip.id });
+
+        // El worker reconoce el kind encolado: claim → reframeClip → done.
+        const jobs = createMemoryRenderJobsStore({ jobs: [{ tenantId: T_A, clipId: CLIP_1, kind: jobInput.kind, payload: jobInput.payload }] });
+        const reframeClip = vi.fn(async () => ({ clipId: CLIP_1, videoPath: 'out.mp4', layout: 'single' as const, samples: 0, facesDetected: 0 }));
+        const worker = createClipRenderWorker({ store: jobs.store, reframeClip });
+        await worker.tick();
+        expect(reframeClip).toHaveBeenCalledWith({ tenantId: T_A, clipId: CLIP_1 });
+        expect(jobs.state.jobs[0].status).toBe('done');
+    });
+    it('flyer regenerate writes the generated path back to payload.flyerPath', async () => {
+        const flyer = await assetsRouteDeps.store!.upsertAsset({ tenantId: T_A, kind: 'flyer', sourceTable: 'publications', refId: '00000000-0000-4000-8000-0000000000f1', status: 'approved', payload: { flyerPath: 'flyers/viejo.png', quoteIndex: 0 } });
+        const image = vi.fn(async () => ({ path: '/tmp/nuevo.png', model: 'test', attempts: [], generatedAt: new Date() }));
+        assetsAiRouteDeps.regenerateImage = image;
+        const res = await post(`/api/assets/${flyer.id}/regenerate`, { instruction: 'nuevo estilo' });
+        expect(res.status).toBe(202);
+        expect(image).toHaveBeenCalledWith({ tenantId: T_A, prompt: 'nuevo estilo' });
+        // El path real generado queda referenciado por el asset (merge).
+        expect(state.assets.find((a) => a.id === flyer.id)!.payload).toEqual({ flyerPath: '/tmp/nuevo.png', quoteIndex: 0 });
+        // Sin instruction → 400 (el modelo de imagen sí necesita prompt).
+        expect((await post(`/api/assets/${flyer.id}/regenerate`, {})).status).toBe(400);
+    });
+    it('flyer regenerate propagates the real provider error (no fabricated result)', async () => {
+        const flyer = await assetsRouteDeps.store!.upsertAsset({ tenantId: T_A, kind: 'flyer', sourceTable: 'publications', refId: '00000000-0000-4000-8000-0000000000f1', status: 'approved' });
+        assetsAiRouteDeps.regenerateImage = async () => { throw new AppError('Todos los modelos de imagen fallaron', 502, 'all_providers_failed'); };
+        const res = await post(`/api/assets/${flyer.id}/regenerate`, { instruction: 'x' });
+        expect(res.status).toBe(502);
+        expect(state.assets.find((a) => a.id === flyer.id)!.payload.flyerPath).toBeUndefined();
     });
 });
 
@@ -109,6 +199,12 @@ import {
 } from '../src/server/services/assetsService';
 import { assetsRouter, assetsRouteDeps, assetsAiRouteDeps } from '../src/server/routes/assets';
 import { AppError } from '../src/server/lib/errors';
+import { clipRenderQueueService } from '../src/server/services/clipRenderQueueService';
+import { createClipRenderWorker } from '../src/server/services/clipRenderWorker';
+import {
+    createMemoryRenderJobsStore,
+    makeMemoryJob,
+} from './helpers/memoryRenderJobsStore';
 import {
     createMemoryAssetsStore,
     seedAssetClip,
