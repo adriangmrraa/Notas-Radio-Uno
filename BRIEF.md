@@ -1,123 +1,112 @@
-# BRIEF — PF-04 Cola de render de clips (jobs) + estados por clip + reintento
+# BRIEF — PF-02 Re-encuadre 9:16 inteligente (crop por rostro activo / split 2 personas)
 
-**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-04, 3 pts)
-**Base**: `b481548` (master tip, incluye PF-01 clipCutterService)
-**Branch**: `pf-04-render-queue`
-**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-04-render-queue`
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-02, 8 pts)
+**Base**: `64996bb` (master tip: PF-01 cutter + PF-04 cola de render)
+**Branch**: `pf-02-reframe`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-02-reframe`
 
 ## Contexto
 
-PF-01 (`clipCutterService.cutRawWindow`) corta ventanas del crudo y deja el `clips` row en
-`generating → pending_review | error`. ÉPICA F necesita una **cola de render** que desacople
-"pedir un clip" de "renderizarlo", con estados persistentes por job y reintento automático.
+PF-01 produce el clip crudo 16:9 (`clips.videoPath` → MP4 en `output/`). PF-04 tiene la
+cola `clip_render_jobs` + worker con dispatch por `kind`. Este slice agrega el re-encuadre
+vertical inteligente: detectar rostros en frames del clip y cropear 9:16 centrado en el
+rostro activo — o layout split (dos mitades verticales) si hay 2 personas.
 
-`scheduled_jobs`/`job_executions` existen pero son para jobs recurrentes de programación de
-transmisiones — NO reutilizar. Necesitamos tabla propia para jobs de render ad-hoc.
-
-Patrones del repo a seguir OBLIGATORIAMENTE:
-- Store pattern: interface `XStore` + `createDrizzleXStore(db)` + memory store en tests
-  (ver `src/server/services/transmissionSegmentsService.ts`, `clipCutterService.ts`)
-- `tenant_id` en TODA query de DB (verificación automática)
-- Worker init como `initJobScheduler(io)` en `src/server/index.ts:277`
-- Timestamps `timestamp('x', { withTimezone: true })`, `updatedAt` con `$onUpdateFn`
-- Índices por tenant + por la query del claim (status, run_at)
+Contratos existentes (verificados):
+- `getFaceDetector()` → `detect(Buffer)` → `{faces: [{bbox: [x,y,w,h], embedding}]}` —
+  `src/server/services/faceDetectionService.ts`. Lazy, descarga modelos ONNX.
+- `FakeFaceDetector` ya existe en tests (`tests/personIdentity.test.ts` lo usa).
+- `clipCutterService`: convención `outputDir` (default `<repo>/output`), ffmpeg runner
+  inyectable `createFfmpegRunner`, `msToSec`, patrones de args — reutilizar estilo.
+- `clipRenderWorker.dispatch`: `if (job.kind !== 'cut') → markFailed(unknown kind)`. Hay
+  que extender el dispatch con 'reframe' (deps inyectables como `cutRawWindow`).
+- `clips` schema: `videoPath`, `status` ('generating'|'pending_review'|'error'|...),
+  `metadata` jsonb, `duration`. PF-01 guarda `metadata.window` + `metadata.sourceSegments`.
+- `clip_render_jobs.payload` para 'reframe': `{ clipId }` (el tenant va en la fila).
 
 ## Alcance
 
-### 1) Schema — `clip_render_jobs` (nueva tabla, migración drizzle)
+### 1) `clipReframeService.ts` — Store pattern (obligatorio)
 
-Archivo nuevo `src/server/db/schema/renderJobs.ts` + export en `schema/index.ts`.
+`ReframeStore` (load/update clip tenant-scoped) + `createDrizzleReframeStore` + memory store.
+Función principal `reframeClip({tenantId, clipId})`:
 
-Columnas:
-- `id` uuid PK defaultRandom
-- `tenant_id` uuid NOT NULL FK tenants cascade + index
-- `clip_id` uuid NULL FK clips cascade + index (nullable: para kind='cut' el clip lo crea el cutter durante el render; el worker lo rellena al terminar)
-- `kind` varchar(32) NOT NULL — 'cut' ahora; diseñar extensible (PF-02 'reframe', PF-03 'subtitles' vendrán)
-- `status` varchar(20) NOT NULL default 'pending' — 'pending' | 'running' | 'done' | 'error' | 'cancelled'
-- `payload` jsonb NOT NULL default {} — para 'cut': `{ transmissionId, startMs, endMs }`
-- `attempts` integer NOT NULL default 0
-- `max_attempts` integer NOT NULL default 3
-- `last_error` text NULL
-- `run_at` timestamptz NOT NULL defaultNow — cuándo puede correr (backoff mueve esto)
-- `started_at` timestamptz NULL, `finished_at` timestamptz NULL
-- `created_at`, `updated_at` (patrón jobs.ts)
-- Índice compuesto `(status, run_at)` para el claim del worker
+1. Load clip (tenant-scoped, 404 si no). Requiere `videoPath` no-null → si no, error
+   `missing_source_video`.
+2. Probar dimensiones del video fuente (ffprobe inyectable o dims en deps — NO hardcodear).
+3. Samplear M frames uniformes sobre `clip.duration` (default ~8-10 samples, constante
+   `SAMPLE_COUNT`): ffmpeg extrae frame a temp jpg → `detector.detect(buf)` por frame.
+   Frames sin caras no aportan centro pero cuentan como sample.
+4. Timeline de centros: por frame, rostro dominante = mayor área de bbox → centerX
+   fracción (0-1). Colectar `{t, centerX, faceCount}`.
+5. **Decisión de layout** (función pura testeable `decideLayout(samples)`):
+   - `single` (default): un rostro dominante → crop width `ih*9/16`, x = clamp(
+     mediana(centerX)*iw − cropW/2, 0, iw−cropW ), y=0, alto completo.
+   - `split`: 2 clusters de rostros estables — criterio: ≥2 posiciones x distintas con
+     ≥30% de frames con cara cada una y separación > 25% del ancho. Dos crops
+     horizontales (izq/der) centrados en cada cluster → apilados verticalmente.
+   - `center` (fallback): 0 caras detectadas → crop centrado estándar.
+6. Render ffmpeg:
+   - single/center: `crop=cropW:ih:x:0,scale=1080:1920` + `-c:a copy`
+   - split: filter_complex `[0:v]crop=w1:ih:x1:0,scale=1080:960[t];[0:v]crop=w2:ih:x2:0,scale=1080:960[b];[t][b]vstack` + `-c:a copy`
+   - Una sola invocación ffmpeg, temps limpios en `finally`.
+7. Output: `output/<clipId>_916.mp4`. Update clip: `videoPath` → archivo nuevo,
+   `metadata.sourceVideoPath` = path anterior, `metadata.reframe` =
+   `{layout, samples: n, facesDetected: n, centerX}`; status → 'pending_review'
+   (o 'generating' al empezar + 'error' si falla — mismos estados que PF-01).
 
-Generar migración con `npm run db:generate` (o `npx drizzle-kit generate` según package.json)
-y verificar que aplica limpio contra pglite como hizo PE-06 (ver script de verificación en
-drizzle/ o tests previos — reproducir el patrón usado para transmission_segments).
+Deps inyectables: `{store, detector, ffmpegRunner, frameExtractor, probe, tempDir, outputDir,
+sampleCount, now}` con defaults reales. `detector` default = `getFaceDetector()` LAZY
+(no resolver en import — solo cuando reframeClip corre).
 
-### 2) `clipRenderQueueService.ts` — Store pattern
+### 2) Wiring en `clipRenderWorker.ts` (MODIFICAR — es el punto de extensión)
 
-Interface `ClipRenderQueueStore` + drizzle impl + export. Métodos:
-- `enqueue({tenantId, clipId?, kind, payload, maxAttempts?})` → job (status 'pending', run_at now)
-- `claimNext(now)` → job | null — atómico: status 'pending' AND run_at <= now → 'running',
-  attempts+1, started_at=now. Tenant-agnóstico OK SOLO aquí (la cola es global; el job ya
-  lleva tenant_id). Documentar esa excepción con comentario.
-- `markDone(jobId, {clipId?})` → status 'done', finished_at, rellena clip_id si viene
-- `markFailed(jobId, error, {retryAt})` → si attempts < max_attempts: status vuelve a
-  'pending' con run_at=retryAt + last_error; si no: status 'error' terminal + finished_at
-- `retry(jobId, tenantId)` → manual: status→'pending', run_at→now, attempts→0, last_error→null.
-  Permitido desde 'error' o 'cancelled'.
-- `listByClip(clipId, tenantId)`, `getById(jobId, tenantId)`, `listPending(tenantId?)`
+- Agregar dep inyectable `reframeClip` (default → `clipReframeService.reframeClip`).
+- Dispatch: `kind === 'reframe'` → `reframeClip({tenantId: job.tenantId, clipId:
+  job.payload.clipId})` → `markDone(jobId)` (el clip ya existe — clip_id ya viene en la
+  fila si el enqueue lo puso; payload.clipId es la fuente de verdad).
+- Mantener contrato: error → `markFailed` con backoff, eventos socket igual que 'cut'.
 
-### 3) `clipRenderWorker.ts` — loop de dispatch
+### 3) Helper de encolado
 
-`initClipRenderWorker(io?)` siguiendo el patrón de `initJobScheduler`:
-- `setInterval` cada ~10s (constante `POLL_MS`, env-overridable `RENDER_WORKER_POLL_MS`)
-- Por tick: `store.claimNext(now)` → si hay job, dispatch por `kind`:
-  - `'cut'` → `clipCutterService.cutRawWindow({tenantId: job.tenantId, ...job.payload})`
-    → devuelve clip → `markDone(jobId, {clipId: clip.id})`
-  - kind desconocido → `markFailed` con error 'unknown kind' (sin reintento: markFailed
-    directo a terminal — pasar flag o retryAt far-future NO; mejor: markFailed con
-    retry:false → terminal)
-- Error del render → `markFailed(jobId, err.message, {retryAt: now + attempts*60_000})`
-  (backoff lineal 1min por intento)
-- Fire-and-forget por tick: un job no bloquea el siguiente claim del próximo tick
-- Un solo worker por proceso (flag de guard si se llama 2 veces)
-- `io` opcional: emit `clip:render:done`/`clip:render:error` al room `tenant:{tenantId}`
-  si io presente (mismo contrato de rooms que transmission:moments — ver index.ts)
+`clipRenderQueueService` ya tiene `enqueue` genérico — NO modificarlo. Documentar en el
+servicio de reframe (o en BRIEF de API futura) que encolar reframe =
+`enqueue({tenantId, clipId, kind:'reframe', payload:{clipId}})`.
 
-Dependencias inyectables para test: `{store, cutRawWindow, now, backoffMs}` con defaults reales.
+### 4) Tests deterministas
 
-### 4) Wiring — `src/server/index.ts`
-
-`initClipRenderWorker(io)` junto a `initJobScheduler(io)` (línea ~277), env-guarded igual que
-los otros schedulers si ellos lo están (revisar cómo se guardan; si no hay guard, agregar
-`if (process.env.RENDER_WORKER_ENABLED !== '0')`).
-
-### 5) Tests deterministas
-
-`tests/helpers/memoryRenderJobsStore.ts` + `tests/clipRenderQueue.test.ts`:
-- enqueue → claimNext devuelve job (status running, attempts=1)
-- claimNext respeta run_at futuro (no lo toma)
-- markFailed con attempts < max → vuelve 'pending' con run_at=retryAt
-- markFailed con attempts = max → 'error' terminal
-- retry() manual desde 'error' → 'pending', attempts 0
-- worker tick con cutRawWindow fake → markDone con clipId rellenado
-- worker tick con cutter que tira → markFailed + backoff
-- tenant isolation en getById/listByClip/retry
-- cancel (si lo implementás) o al menos listPending
+`tests/helpers/memoryReframeStore.ts` + `tests/clipReframe.test.ts` con FakeFaceDetector +
+ffmpeg runner fake que captura args:
+- `decideLayout`: single (1 cluster), split (2 clusters estables), center (0 caras),
+  single si el 2do rostro es minoritario (<30% frames)
+- crop args single: `crop=<ih*9/16>:<ih>:<x>:0` con x clampeado a bordes (rostro en borde
+  izquierdo → x=0; borde derecho → x=iw-cropW)
+- split: filter_complex con vstack + 2 scales 1080x960
+- reframeClip completo: clip→'generating'→'pending_review', videoPath nuevo,
+  metadata.sourceVideoPath + metadata.reframe.layout
+- ffmpeg failure → status 'error' + last metadata
+- missing videoPath → error tipado, sin tocar ffmpeg
+- tenant isolation (clip de otro tenant → 404)
+- worker dispatch: kind 'reframe' llama reframeClip con el clipId del payload
 
 ## NO TOCAR
 
-- `clipCutterService.ts` (es el target del dispatch, se consume vía dep inyectable)
-- `clipService.ts`, `streamRecorderService.ts`, `analysisEngineService.ts`, `liveAnalysisRunner.ts`
-- Schemas existentes (solo AGREGAR `renderJobs.ts`)
-- No implementar reframe/subtitles (PF-02/03) — solo el kind 'cut' funcional
+- `clipCutterService.ts`, `clipRenderQueueService.ts` (consume, no modifica)
+- `faceDetectionService.ts`, `personIdentityService.ts` (solo consume `detect`)
+- `clipService.ts`, `streamRecorderService.ts`, schemas existentes
+- NO persistir `metadata.reframe` en columna nueva — va en el jsonb `metadata`
+- NO animación de crop (crop x fijo por clip en v1 — panning dinámico es post-v1)
 
 ## Gates obligatorios
 
 ```bash
 npm ci --ignore-scripts   # si node_modules no está
-npx drizzle-kit generate  # migración
-# verificar migración aplica limpio (patrón pglite usado en PE-06)
 npx tsc --noEmit          # EXIT 0
-npx vitest run            # todos verdes (471 base + nuevos)
-npm run build             # verde
+npx vitest run            # todos verdes (488 base + nuevos)
+npm run build             # verde — NO debe haber schema changes
 ```
 
 ## Reporte
 
-`DONE: PF-04 → <SHA>` + archivos + gates + decisiones (p.ej. si clip_id nullable, política
-de retry, índice de claim). Si bloqueado: `BLOCKED: <razón>` + qué falta.
+`DONE: PF-02 → <SHA>` + archivos + gates + decisiones (umbrales de split, sample count,
+manejo de clips sin caras). Si bloqueado: `BLOCKED: <razón>`.
