@@ -35,10 +35,17 @@ export interface MemoryPublicationSeed extends LedgerPublicationRow {
     tenantId: string;
 }
 
+export interface MemoryTransmissionSeed {
+    id: string;
+    tenantId: string;
+    programId: string | null;
+}
+
 export interface MemoryAssetState {
     assets: AssetRow[];
     clips: MemoryClipSeed[];
     publications: MemoryPublicationSeed[];
+    transmissions: MemoryTransmissionSeed[];
 }
 
 let seq = 0;
@@ -55,6 +62,7 @@ export function createMemoryAssetsStore(): {
         assets: [],
         clips: [],
         publications: [],
+        transmissions: [],
     };
 
     const findAsset = (
@@ -112,18 +120,35 @@ export function createMemoryAssetsStore(): {
         },
 
         async listAssets(tenantId, filters: AssetListFilters = {}) {
-            return state.assets
-                .filter(
-                    (a) =>
-                        a.tenantId === tenantId &&
-                        (filters.kind === undefined ||
-                            a.kind === filters.kind) &&
-                        (filters.status === undefined ||
-                            a.status === filters.status) &&
-                        (filters.transmissionId === undefined ||
-                            a.transmissionId === filters.transmissionId),
-                )
-                .map(clone);
+            const page = await store.listAssetsPage(tenantId, filters, 1, Number.MAX_SAFE_INTEGER);
+            return page.assets;
+        },
+
+        async listAssetsPage(tenantId, filters, page, pageSize) {
+            const rows = state.assets
+                .filter((a) => {
+                    if (a.tenantId !== tenantId) return false;
+                    if (filters.kind !== undefined && a.kind !== filters.kind) return false;
+                    if (filters.status !== undefined && a.status !== filters.status) return false;
+                    if (filters.transmissionId !== undefined) {
+                        const transmission = state.transmissions.find((t) =>
+                            t.id === filters.transmissionId && t.tenantId === tenantId,
+                        );
+                        if (!transmission || a.transmissionId !== filters.transmissionId) return false;
+                    }
+                    if (filters.programId !== undefined) {
+                        const transmission = state.transmissions.find((t) =>
+                            t.id === a.transmissionId &&
+                            t.tenantId === tenantId &&
+                            t.programId === filters.programId,
+                        );
+                        if (!transmission) return false;
+                    }
+                    return true;
+                })
+                .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+            const start = (page - 1) * pageSize;
+            return { assets: rows.slice(start, start + pageSize).map(clone), total: rows.length };
         },
 
         async setAssetStatus(id, tenantId, status) {
@@ -202,6 +227,14 @@ export function seedAssetClip(
         ...v,
     };
     state.clips.push(row);
+    return row;
+}
+
+export function seedAssetTransmission(
+    state: MemoryAssetState,
+    row: MemoryTransmissionSeed,
+): MemoryTransmissionSeed {
+    state.transmissions.push({ ...row });
     return row;
 }
 

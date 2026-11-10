@@ -40,13 +40,14 @@
  * Patrón del repo: `AssetStore` + `createDrizzleAssetStore` + memory store
  * en tests — TODA query filtra por `tenant_id`.
  */
-import { and, desc, eq, exists } from 'drizzle-orm';
+import { and, count, desc, eq, exists } from 'drizzle-orm';
 import { v5 as uuidv5 } from 'uuid';
 
 import { db, type Database } from '../db/index.js';
 import { assets } from '../db/schema/assets.js';
 import { clips } from '../db/schema/clips.js';
 import { publications } from '../db/schema/publications.js';
+import { programs } from '../db/schema/programs.js';
 import { transmissions } from '../db/schema/transmissions.js';
 import { AppError } from '../lib/errors.js';
 
@@ -284,6 +285,13 @@ export interface AssetStore {
         tenantId: string,
         filters?: AssetListFilters,
     ): Promise<AssetRow[]>;
+    /** Ordered, tenant-scoped page and its total. Pagination is executed by the store. */
+    listAssetsPage(
+        tenantId: string,
+        filters: AssetListFilters,
+        page: number,
+        pageSize: number,
+    ): Promise<{ assets: AssetRow[]; total: number }>;
     /**
      * UPDATE del status canónico (la máquina validó antes). Devuelve la
      * fila actualizada o null si no existe/es ajena.
@@ -386,6 +394,10 @@ export function createDrizzleAssetStore(
                         eq(transmissions.id, assets.transmissionId),
                         eq(transmissions.tenantId, tenantId),
                         eq(transmissions.programId, filters.programId),
+                        exists(executor.select({ id: programs.id }).from(programs).where(and(
+                            eq(programs.id, filters.programId),
+                            eq(programs.tenantId, tenantId),
+                        ))),
                     )),
                 ));
             }
@@ -394,6 +406,38 @@ export function createDrizzleAssetStore(
                 .from(assets)
                 .where(and(...conds))
                 .orderBy(desc(assets.createdAt), desc(assets.id));
+        },
+
+        async listAssetsPage(tenantId, filters, page, pageSize) {
+            const conds = [eq(assets.tenantId, tenantId)];
+            if (filters.kind) conds.push(eq(assets.kind, filters.kind));
+            if (filters.status) conds.push(eq(assets.status, filters.status));
+            if (filters.transmissionId) conds.push(
+                eq(assets.transmissionId, filters.transmissionId),
+                exists(executor.select({ id: transmissions.id }).from(transmissions).where(and(
+                    eq(transmissions.id, filters.transmissionId),
+                    eq(transmissions.tenantId, tenantId),
+                ))),
+            );
+            if (filters.programId) conds.push(exists(
+                executor.select({ id: transmissions.id }).from(transmissions).where(and(
+                    eq(transmissions.id, assets.transmissionId),
+                    eq(transmissions.tenantId, tenantId),
+                    eq(transmissions.programId, filters.programId),
+                    exists(executor.select({ id: programs.id }).from(programs).where(and(
+                        eq(programs.id, filters.programId),
+                        eq(programs.tenantId, tenantId),
+                    ))),
+                )),
+            ));
+            const where = and(...conds);
+            const [totalRow, pageRows] = await Promise.all([
+                executor.select({ value: count() }).from(assets).where(where),
+                executor.select().from(assets).where(where)
+                    .orderBy(desc(assets.createdAt), desc(assets.id))
+                    .limit(pageSize).offset((page - 1) * pageSize),
+            ]);
+            return { assets: pageRows, total: Number(totalRow?.value ?? 0) };
         },
 
         async setAssetStatus(id, tenantId, status) {
@@ -544,9 +588,13 @@ export async function listAssetsPage(
     input: ListAssetsPageInput,
     deps: AssetServiceDeps = {},
 ): Promise<AssetPage> {
-    const rows = await listAssets(input, deps);
-    const start = (input.page - 1) * input.pageSize;
-    return { assets: rows.slice(start, start + input.pageSize), total: rows.length, page: input.page, pageSize: input.pageSize };
+    const result = await resolveStore(deps).listAssetsPage(input.tenantId, {
+        kind: input.kind,
+        status: input.status,
+        transmissionId: input.transmissionId,
+        programId: input.programId,
+    }, input.page, input.pageSize);
+    return { ...result, page: input.page, pageSize: input.pageSize };
 }
 
 // ---------------------------------------------------------------------------

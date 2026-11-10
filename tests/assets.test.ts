@@ -80,6 +80,7 @@ import {
     createMemoryAssetsStore,
     seedAssetClip,
     seedAssetPublication,
+    seedAssetTransmission,
     type MemoryAssetState,
 } from './helpers/memoryAssetsStore';
 import type { AssetStore } from '../src/server/services/assetsService';
@@ -88,6 +89,9 @@ const T_A = 'tenant-a';
 const T_B = 'tenant-b';
 const TX_1 = '00000000-0000-4000-8000-0000000000a1';
 const TX_2 = '00000000-0000-4000-8000-0000000000a2';
+const TX_B = '00000000-0000-4000-8000-0000000000a3';
+const PROGRAM_A = '00000000-0000-4000-8000-0000000000b1';
+const PROGRAM_B = '00000000-0000-4000-8000-0000000000b2';
 const CLIP_1 = '00000000-0000-4000-8000-0000000000c1';
 const CLIP_2 = '00000000-0000-4000-8000-0000000000c2';
 const CLIP_ERR = '00000000-0000-4000-8000-0000000000c3';
@@ -641,6 +645,9 @@ describe('API /api/assets', () => {
     beforeEach(async () => {
         const mem = createMemoryAssetsStore();
         state = mem.state;
+        seedAssetTransmission(state, { id: TX_1, tenantId: T_A, programId: PROGRAM_A });
+        seedAssetTransmission(state, { id: TX_2, tenantId: T_A, programId: PROGRAM_B });
+        seedAssetTransmission(state, { id: TX_B, tenantId: T_B, programId: PROGRAM_A });
         seedAssetClip(state, {
             id: CLIP_1,
             tenantId: T_A,
@@ -775,13 +782,20 @@ describe('API /api/assets', () => {
         }
     });
 
-    it('GET / pagina el resultado y valida programId/paginacion', async () => {
+    it('GET / pagina, ordena y aplica filtros tenant-scoped de programa/transmision', async () => {
         await postJson('/api/assets/sync', {}, T_A);
         const paged = await (await getJson('/api/assets?page=1&pageSize=2', T_A)).json();
         expect(paged.assets).toHaveLength(2);
         expect(paged.total).toBe(5);
         expect(paged.page).toBe(1);
         expect(paged.pageSize).toBe(2);
+        expect(new Date(paged.assets[0].createdAt).getTime()).toBeGreaterThanOrEqual(new Date(paged.assets[1].createdAt).getTime());
+
+        const programAssets = await (await getJson(`/api/assets?programId=${PROGRAM_A}`, T_A)).json();
+        expect(programAssets.assets).toHaveLength(1);
+        expect(programAssets.assets[0].refId).toBe(CLIP_1);
+        const foreignTransmission = await (await getJson(`/api/assets?transmissionId=${TX_B}`, T_A)).json();
+        expect(foreignTransmission.assets).toEqual([]);
 
         for (const q of ['?programId=ajeno', '?page=0', '?pageSize=101']) {
             expect((await getJson(`/api/assets${q}`, T_A)).status).toBe(400);
