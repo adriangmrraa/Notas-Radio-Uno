@@ -1,55 +1,59 @@
-# PE-04 — Detección de momentos clipables en tiempo real (score + razón + ventana)
+# PF-01 — Clip-cutter: cortar ventana del crudo con ffmpeg
 
-KANBAN_TASK_ID: t_d2f3cad5
-Slice de: ÉPICA E — Motor de análisis en vivo
+KANBAN_TASK_ID: t_682756fa
+Slice de: ÉPICA F — Fábrica de contenido desde el crudo
 Ejecutor: devin-swe-2-max (agente delegado en worktree Orca)
-Base: ba557ae (master tip — incluye PE-01/02/03/05/06/07)
+Base: f1b5899 (master tip — ÉPICA E completa)
 
 ## Objetivo
 
-**Wiring en vivo**: cuando un segmento de grabación CIERRA en
-`streamRecorderService`, correr `analysisEngineService.processRecordingSegment`
-sobre ese segmento y notificar a la Sala "En vivo" que hay momentos nuevos
-(score + razón + ventana ya los produce el analyzer de PE-02).
+`cutRawWindow({tenantId, transmissionId, startMs, endMs})` → corta la ventana
+del **video crudo real** (decisión D-1: NUNCA clips sintéticos) y registra el
+clip en `clips`. La ventana es en la convención de offsets relativos a
+`transmissions.started_at` (misma que `transcript_segments`/momentos).
 
-⚠️ Este slice **SÍ toca `streamRecorderService.ts`** — está autorizado por el
-handoff de ÉPICA D siempre que sea UN HOOK EXPLÍCITO declarado acá: es exactamente
-eso (ver "Hook" abajo). Nada más se modifica de ese archivo.
+El punto no trivial: **la ventana puede cubrir varios `recording_segments`**
+— hay que resolver por cada tramo qué segmento lo contiene, extraer cada
+parte con `-ss` relativo al archivo y concatenarlas en UN MP4.
 
 ## Contratos heredados (NO reimplementar)
 
 | Pieza | Dónde | Uso |
 |---|---|---|
-| `analysisEngineService.processRecordingSegment` | `analysisEngineService.ts` (PE-02) | `{tenantId, transmissionId, recordingId, sequence}` → escribe transcript_segments, transmission_segments, transmission_moments, quotes y dispara alertas. Devuelve `{utterancesInserted, segmentsWritten, momentsWritten, quotesWritten}`. |
-| Punto de cierre del segmento | `streamRecorderService.ts` `pollSegments()` (~línea 38) | Cuando aparece un `seg-XXXXX.mp4` nuevo, el anterior cierra: `prevPending.closed = true`. También en `finalizeRecording` el último pending cierra. Esos son los DOS puntos de hook. |
-| Socket rooms | `transmissionService.ts` | rooms `transmission:{id}` y `tenant:{id}`; `serializeTransmission(row)` y el patrón `ioRef` (`initTransmissionService`) ya exportados. El cliente (`useTransmissionEvents`/`LiveRoomPage`) **refetchea la sala entera** en `transmission:status`/`transmission:updated` — emitir `transmission:updated` alcanza para que momentos/segmentos nuevos aparezcan solos. |
-| `streamRecordings`/`recordingSegments` | `recordings.ts` | el hook recibe recordingId+sequence; el engine resuelve el resto. |
+| `recording_segments` + `stream_recordings` | `recordings.ts` | `sequence, startMs, endMs(nullable si aún graba), fileRef, status`. fileRef relativo a `stream_recordings.storage_prefix` → key RawStorage `${storagePrefix}/${fileRef}` (mismo que PE-02/03). |
+| `clips` | `clips.ts` | `title, hookText(notNull!), videoPath, duration(s), status, transmissionId, metadata jsonb`. `createClip`/`updateClipVideoPath` existen en `clipService.ts` — reusarlos como store/wrapper si encajan (status final sugerido: `'pending_review'` como ya hace `updateClipVideoPath`). |
+| `getRawStorage()` | `rawStorageService.ts` | `publicPath(ref)` → ruta local del MP4 fuente. Salida del clip: misma convención que el pipeline actual (`output/` del proyecto — ver `clipService.generateClipVideo`) O un prefix RawStorage `clips/` — elegir lo más consistente con cómo se sirven los clips hoy (`videoPath` es path de archivo local). |
+| ffmpeg | `findBinary('ffmpeg')` + `src/server/lib/binaries.ts` | Precisión de frames SIN re-encode completo: `-ss <rel> -t <dur>` por tramo con re-encode corto por tramo (accuracy) o `-c copy` si el tramo arranca en keyframe — elegir y justificar en código; concat via demuxer (`-f concat -safe 0`) o un solo input si la ventana cae en UN segmento (camino rápido obligatorio). |
+| `transmission_moments` | `live.ts` | consumidor natural del cutter (moment clipable → clip) — pero el cutter NO escribe moments; acepta window explícita. |
 
-## Arquitectura pedida
+## Arquitectura pedida (patrón del repo)
 
-1. **Hook explícito en `streamRecorderService.ts`** (único cambio al archivo):
-   - Exportar `setSegmentFinalizedHook(fn | null)` + tipo `SegmentFinalizedInfo {tenantId, transmissionId, recordingId, sequence}`.
-   - Llamarlo fire-and-forget (`.catch` logueado, NUNCA await que rompa el recorder) en los dos puntos de cierre: `prevPending.closed = true` en pollSegments y el cierre del último pending en finalize/stop path.
-   - Default null → comportamiento idéntico a hoy (los ~22 tests existentes del recorder no deben romperse).
-2. **`src/server/services/liveAnalysisRunner.ts`**:
-   - `initLiveAnalysisRunner(io)` (patrón ioRef como `initNotificationService`) + `setSegmentFinalizedHook(handleSegmentFinalized)` en `index.ts` junto a los otros init.
-   - `handleSegmentFinalized(info)` → `await engine.processRecordingSegment(info)` → si `momentsWritten`/`quotesWritten`/`segmentsWritten` > 0: emitir `transmission:updated` al room `tenant:{id}` con `serializeTransmission` de la fila fresca **y** `transmission:moments` a `transmission:{id}` + `tenant:{id}` con `{transmissionId, summary}` (evento nuevo, semántico — el cliente de hoy no lo escucha pero queda el contrato para UI futura/sin refetch completo).
-   - Runner con store propio (`RunnerStore.getTransmission` → fila completa) o reutilizar el del engine; deps inyectables (`engine`, `io`/emit, `store`).
-   - Error del engine → log `[live-analysis]`, NUNCA propaga.
-3. Tests (`tests/liveAnalysisRunner.test.ts` + `tests/helpers/memoryRunnerStore.ts` si aplica):
-   - segmento cerrado → engine llamado con los 4 ids correctos → emits a ambos rooms
-   - engine que devuelve todo en 0 → no emite
-   - engine que rechaza → no propaga, no emite
-   - hook en recorder: con hook seteado, un fake de segmento cerrado lo invoca (sin romper tests existentes)
+`src/server/services/clipCutterService.ts`:
+
+- `ClipCutterStore` + `createDrizzleClipCutterStore` + `createClipCutterService(store, deps)`.
+- Store (TODA query `tenant_id`): `getTransmission`, `listRecordingsWithSegments(tenantId, transmissionId)` (recordings + segments 'active' ordenados por startMs/sequence), `createClipRow`, `setClipResult(tenantId, clipId, {videoPath, duration, status, metadata})`.
+- Deps inyectables: `runFfmpeg(args)`/exec, `storage` (RawStorage), `tempDir`/`outputDir`.
+- `cutRawWindow(input)` → valida ventana (endMs > startMs, duración máx. configurable ~120s default, dentro del rango grabado) → resuelve tramos por segmento → por cada tramo `-ss (tramo.start - segment.startMs)` → concat → MP4 único → `clips` row con `transmissionId`, `duration`, `videoPath`, `metadata: {window:{startMs,endMs}, sourceSegments:[refs]}` → `{clipId, videoPath, durationSec, segmentsUsed}`.
+- Errores: ventana fuera de rango / sin segmentos que la cubran / ffmpeg falla → error tipado con razón; nada queda a medias (clip row en estado 'error' o sin crear — elegir y documentar).
+- Temp files siempre se limpian (finally).
+
+## Tests (`tests/clipCutter.test.ts` + `tests/helpers/memoryClipCutterStore.ts`)
+
+Deterministas (ffmpeg stubbed — capturar args y producir "archivo" falso):
+- ventana dentro de UN segmento → 1 tramo, args ffmpeg correctos (`-ss` relativo al archivo), clip registrado
+- ventana que cruza 2 segmentos → 2 tramos + concat, offsets relativos correctos por tramo
+- ventana fuera de rango → error, no crea clip
+- ffmpeg que falla → error controlado
+- aislamiento por tenant en queries del store
 
 ## Constraints
 
-- `tenant_id` en TODA query. El hook no debe bloquear el loop de grabación (siempre fire-and-forget).
-- NO tocar: `analysisEngineService.ts`, `personIdentityService.ts`, `transmissionService.ts`, `transmissionSocketService.ts`, `pipelineService.ts`, schemas, ni código cliente (el refetch por `transmission:updated` ya existe).
-- No crear workers/schedulers — el trigger es el cierre de segmento, punto.
+- `tenant_id` en TODA query. NUNCA clip sintético — siempre del crudo real.
+- NO tocar: `clipService.ts` (reusar de afuera), `streamRecorderService.ts`, `analysisEngineService.ts`, `liveAnalysisRunner.ts`, schemas.
+- No crop 9:16 ni subtítulos acá — PF-02/03 vienen después sobre este MP4.
 
 ## Gates
 
 `npx tsc --noEmit` EXIT 0 · `npx vitest run` verde · `npm run build` verde.
 `npm ci --ignore-scripts` primero si no hay node_modules.
-Commit conventional en `pe-04-live-moments`, paths explícitos, sin atribución IA. NO push, NO PR.
+Commit conventional en `pf-01-clip-cutter`, paths explícitos, sin atribución IA. NO push, NO PR.
