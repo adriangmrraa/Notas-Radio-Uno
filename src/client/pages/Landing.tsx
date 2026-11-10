@@ -9,7 +9,7 @@ const capabilities = [
   ['Publishing flow', 'Prepare each approved piece for its next channel.'],
 ];
 
-const plans = [
+const plans: Array<[string, string, string[]]> = [
   ['Start', 'For teams getting their live workflow in one place.', ['Live operation workspace', 'Editorial review flow']],
   ['Newsroom', 'For programs that coordinate a recurring production rhythm.', ['Everything in Start', 'Shared content pipeline', 'Publishing preparation']],
   ['Media', 'For organizations that need a tailored operating model.', ['Everything in Newsroom', 'Organization support', 'Custom workflow conversation']],
