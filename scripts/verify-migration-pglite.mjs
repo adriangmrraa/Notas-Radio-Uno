@@ -157,9 +157,9 @@ if (pc02Migration) {
 
 // 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
 //    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
-//    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo) y la 0016
-//    (PG-03 auto-publicación) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016']) {
+//    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo), la 0016
+//    (PG-03 auto-publicación) y la 0017 (PG-04 Zernio) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -1006,6 +1006,204 @@ if (!pg03DupRejected) {
   process.exit(1);
 }
 
+// ============================================================================
+// PG-04: zernio_profiles + social_connections (0017)
+// ============================================================================
+const { rows: pg04Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename IN ('zernio_profiles', 'social_connections')
+  ORDER BY tablename
+`);
+if (pg04Tables.length !== 2) {
+  console.error(`PG-04: faltan tablas (encontradas: ${pg04Tables.map((r) => r.tablename).join(', ') || 'ninguna'})`);
+  process.exit(1);
+}
+
+// Columnas: tipo, nullabilidad y DEFAULT.
+const { rows: pg04Cols } = await db.query(`
+  SELECT table_name, column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name IN ('zernio_profiles', 'social_connections')
+  ORDER BY table_name, column_name
+`);
+const pg04ColInfo = new Map(pg04Cols.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const checkPg04Col = (fqcol, dataType, nullable, needsDefault) => {
+  const c = pg04ColInfo.get(fqcol);
+  if (!c) return `falta ${fqcol}`;
+  if (c.data_type !== dataType) return `${fqcol} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `${fqcol} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `${fqcol} sin DEFAULT`;
+  return null;
+};
+const pg04ColErrors = [
+  ['social_connections.id', 'uuid', 'NO', true],
+  ['social_connections.tenant_id', 'uuid', 'NO', false],
+  ['social_connections.platform', 'character varying', 'NO', false],
+  ['social_connections.account_id', 'character varying', 'NO', false],
+  ['social_connections.username', 'character varying', 'YES', false],
+  ['social_connections.display_name', 'character varying', 'YES', false],
+  ['social_connections.status', 'character varying', 'NO', true],
+  ['social_connections.zernio_profile_id', 'character varying', 'NO', false],
+  ['social_connections.last_synced_at', 'timestamp with time zone', 'YES', false],
+  ['social_connections.created_at', 'timestamp with time zone', 'NO', true],
+  ['social_connections.updated_at', 'timestamp with time zone', 'NO', true],
+  ['zernio_profiles.id', 'uuid', 'NO', true],
+  ['zernio_profiles.tenant_id', 'uuid', 'NO', false],
+  ['zernio_profiles.profile_id', 'character varying', 'NO', false],
+  ['zernio_profiles.name', 'character varying', 'YES', false],
+  ['zernio_profiles.created_at', 'timestamp with time zone', 'NO', true],
+  ['zernio_profiles.updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPg04Col(c, t, n, d)).filter(Boolean);
+if (pg04ColErrors.length > 0) {
+  console.error(`PG-04 columnas incorrectas:\n  ${pg04ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const statusDef = pg04ColInfo.get('social_connections.status')?.column_default ?? '';
+if (!statusDef.includes("'connected'")) {
+  console.error(`PG-04: default de status incorrecto (${statusDef})`);
+  process.exit(1);
+}
+
+// FKs: tenant cascade en ambas tablas.
+const { rows: pg04Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f'
+    AND con.conrelid::regclass::text IN ('zernio_profiles', 'social_connections')
+`);
+const pg04FkMap = new Map(pg04Fks.map((r) => [`${r.table_name}.${r.column_name}`, r]));
+const expectedPg04Fks = [
+  ['social_connections.tenant_id', 'tenants'],
+  ['zernio_profiles.tenant_id', 'tenants'],
+];
+const badPg04Fks = expectedPg04Fks.filter(([fqcol, target]) => {
+  const row = pg04FkMap.get(fqcol);
+  return !row || row.foreign_table !== target || row.confdeltype !== 'c';
+});
+if (badPg04Fks.length > 0) {
+  console.error(`PG-04: faltan FKs, apuntan mal o no son ON DELETE CASCADE: ${badPg04Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+
+// Índices + UNIQUEs: (tenant_id, platform, account_id) es el contrato de
+// dedupe del callback/sync; UNIQUE(tenant_id) en zernio_profiles = un
+// perfil por tenant.
+const { rows: pg04Idx } = await db.query(`
+  SELECT tablename, indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename IN ('zernio_profiles', 'social_connections')
+`);
+const pg04IdxMap = new Map(pg04Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPg04Idx = [
+  'social_connections_tenant_id_idx',
+  'social_connections_tenant_id_status_idx',
+  'social_connections_tenant_platform_account_unique',
+  'zernio_profiles_tenant_id_unique',
+];
+const missingPg04Idx = expectedPg04Idx.filter((name) => !pg04IdxMap.has(name));
+if (missingPg04Idx.length > 0) {
+  console.error(`PG-04: faltan índices/unique: ${missingPg04Idx.join(', ')}`);
+  process.exit(1);
+}
+const pg04ConnUnique = pg04IdxMap.get('social_connections_tenant_platform_account_unique') ?? '';
+if (!/UNIQUE/i.test(pg04ConnUnique)
+  || !pg04ConnUnique.includes('tenant_id')
+  || !pg04ConnUnique.includes('platform')
+  || !pg04ConnUnique.includes('account_id')) {
+  console.error(`PG-04: la unique no cubre (tenant_id, platform, account_id): ${pg04ConnUnique}`);
+  process.exit(1);
+}
+const pg04ProfUnique = pg04IdxMap.get('zernio_profiles_tenant_id_unique') ?? '';
+if (!/UNIQUE/i.test(pg04ProfUnique) || !pg04ProfUnique.includes('tenant_id')) {
+  console.error(`PG-04: la unique de zernio_profiles no cubre tenant_id: ${pg04ProfUnique}`);
+  process.exit(1);
+}
+
+// Funcional: (a) el upsert ON CONFLICT (tenant_id,platform,account_id) es
+// idempotente; (b) un INSERT crudo duplicado falla; (c) el mismo account_id
+// en OTRO tenant no colisiona; (d) borrar el tenant borra perfil+conexiones
+// (cascade); (e) un perfil por tenant.
+const pg04TenantA = '00000000-0000-4000-8000-00000000aa04';
+const pg04TenantB = '00000000-0000-4000-8000-00000000bb04';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pg04TenantA}', 'Tenant pg04a', 'tenant-pg04a'),
+    ('${pg04TenantB}', 'Tenant pg04b', 'tenant-pg04b')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO zernio_profiles (tenant_id, profile_id, name) VALUES
+    ('${pg04TenantA}', 'zprof_a', 'Tenant pg04a'),
+    ('${pg04TenantB}', 'zprof_b', 'Tenant pg04b')
+  ON CONFLICT (tenant_id) DO NOTHING;
+`);
+// (a) upsert idempotente — mismo (tenant, platform, account) dos veces.
+for (let i = 0; i < 2; i++) {
+  await db.exec(`
+    INSERT INTO social_connections (tenant_id, platform, account_id, username, status, zernio_profile_id)
+    VALUES ('${pg04TenantA}', 'instagram', 'zacc_1', 'radio.uno', 'connected', 'zprof_a')
+    ON CONFLICT (tenant_id, platform, account_id)
+    DO UPDATE SET username = EXCLUDED.username, status = EXCLUDED.status, updated_at = now()
+  `);
+}
+// (c) misma account_id en otro tenant — permitido (aislamiento, no choque).
+await db.exec(`
+  INSERT INTO social_connections (tenant_id, platform, account_id, username, status, zernio_profile_id)
+  VALUES ('${pg04TenantB}', 'instagram', 'zacc_1', 'otra.radio', 'connected', 'zprof_b')
+`);
+const { rows: pg04ConnRows } = await db.query(`
+  SELECT tenant_id, platform, account_id, username FROM social_connections
+  WHERE tenant_id IN ('${pg04TenantA}', '${pg04TenantB}') ORDER BY tenant_id
+`);
+if (pg04ConnRows.length !== 2) {
+  console.error(`PG-04: dedupe (tenant_id,platform,account_id) incorrecto: ${JSON.stringify(pg04ConnRows)}`);
+  process.exit(1);
+}
+// (b) INSERT crudo duplicado debe fallar.
+let pg04DupRejected = false;
+try {
+  await db.exec(`
+    INSERT INTO social_connections (tenant_id, platform, account_id, zernio_profile_id)
+    VALUES ('${pg04TenantA}', 'instagram', 'zacc_1', 'zprof_a')
+  `);
+} catch {
+  pg04DupRejected = true;
+}
+if (!pg04DupRejected) {
+  console.error('PG-04: la UNIQUE permitió duplicar (tenant_id, platform, account_id)');
+  process.exit(1);
+}
+// (e) un segundo perfil para el mismo tenant debe fallar.
+let pg04ProfDupRejected = false;
+try {
+  await db.exec(`
+    INSERT INTO zernio_profiles (tenant_id, profile_id) VALUES ('${pg04TenantA}', 'zprof_otro')
+  `);
+} catch {
+  pg04ProfDupRejected = true;
+}
+if (!pg04ProfDupRejected) {
+  console.error('PG-04: la UNIQUE de zernio_profiles permitió dos perfiles por tenant');
+  process.exit(1);
+}
+// (d) cascade: borrar el tenant B borra su perfil y su conexión.
+await db.exec(`DELETE FROM tenants WHERE id = '${pg04TenantB}'`);
+const { rows: pg04AfterCascade } = await db.query(`
+  SELECT
+    (SELECT COUNT(*)::int FROM zernio_profiles WHERE tenant_id = '${pg04TenantB}') AS profiles,
+    (SELECT COUNT(*)::int FROM social_connections WHERE tenant_id = '${pg04TenantB}') AS connections,
+    (SELECT COUNT(*)::int FROM zernio_profiles WHERE tenant_id = '${pg04TenantA}') AS profiles_a,
+    (SELECT COUNT(*)::int FROM social_connections WHERE tenant_id = '${pg04TenantA}') AS connections_a
+`);
+const casc = pg04AfterCascade[0];
+if (casc.profiles !== 0 || casc.connections !== 0 || casc.profiles_a !== 1 || casc.connections_a !== 1) {
+  console.error(`PG-04: el cascade por tenant falló: ${JSON.stringify(casc)}`);
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -1023,5 +1221,6 @@ console.log('índices PD-05:', expectedPd05Idx.join(', '));
 console.log('tabla PF-04: clip_render_jobs (14 columnas) + FKs cascade + índice del claim (status, run_at)');
 console.log('tabla PF-10: assets (12 columnas) + UNIQUE (tenant_id,source_table,ref_id) idempotente + FKs (tenant cascade, parent/tx set null)');
 console.log('tabla PG-03: auto_publish_configs (12 columnas) + UNIQUE (tenant_id,program_key) cubre global (__all__) + FKs cascade');
+console.log('tablas PG-04: zernio_profiles (1/tenant UNIQUE) + social_connections (11 columnas, UNIQUE tenant+platform+account, FKs cascade, idx tenant+status)');
 await db.close();
 process.exit(0);

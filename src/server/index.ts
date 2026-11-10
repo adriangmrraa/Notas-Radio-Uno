@@ -51,6 +51,7 @@ import { notesRouter } from "./routes/notes.js";
 import { publicationsRouter } from "./routes/publications.js";
 import { assetsRouter } from "./routes/assets.js";
 import { autoPublishRouter } from "./routes/autoPublish.js";
+import { socialConnectionsRouter } from "./routes/socialConnections.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
@@ -281,6 +282,8 @@ app.use("/api/publications", publicationsRouter);
 app.use("/api/assets", assetsRouter);
 // PG-03: config de auto-publicación por tenant/programa — GET/PUT/DELETE.
 app.use("/api/auto-publish", autoPublishRouter);
+// PG-04: conexión de cuentas sociales vía Zernio — connect/callback/list/delete/sync.
+app.use("/api/social-connections", socialConnectionsRouter);
 
 // Initialize background services
 initNotificationService(io);

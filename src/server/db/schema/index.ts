@@ -27,6 +27,7 @@ export * from './live.js';
 export * from './renderJobs.js';
 export * from './assets.js';
 export * from './autoPublish.js';
+export * from './socialConnections.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -63,6 +64,7 @@ import { transcriptSegments, transmissionMoments } from './live.js';
 import { clipRenderJobs } from './renderJobs.js';
 import { assets } from './assets.js';
 import { autoPublishConfigs } from './autoPublish.js';
+import { zernioProfiles, socialConnections } from './socialConnections.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -111,6 +113,8 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   clipRenderJobs: many(clipRenderJobs),
   assets: many(assets),
   autoPublishConfigs: many(autoPublishConfigs),
+  zernioProfile: one(zernioProfiles, { fields: [tenants.id], references: [zernioProfiles.tenantId] }),
+  socialConnections: many(socialConnections),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -465,4 +469,13 @@ export const assetsRelations = relations(assets, ({ one, many }) => ({
 export const autoPublishConfigsRelations = relations(autoPublishConfigs, ({ one }) => ({
   tenant: one(tenants, { fields: [autoPublishConfigs.tenantId], references: [tenants.id] }),
   program: one(programs, { fields: [autoPublishConfigs.programId], references: [programs.id] }),
+}));
+
+// ── zernio_profiles / social_connections relations (PG-04) ───────────────────
+export const zernioProfilesRelations = relations(zernioProfiles, ({ one }) => ({
+  tenant: one(tenants, { fields: [zernioProfiles.tenantId], references: [tenants.id] }),
+}));
+
+export const socialConnectionsRelations = relations(socialConnections, ({ one }) => ({
+  tenant: one(tenants, { fields: [socialConnections.tenantId], references: [tenants.id] }),
 }));

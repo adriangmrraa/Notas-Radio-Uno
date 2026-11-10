@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Share2, Plus, Trash2, ExternalLink, Unplug, Globe, MessageCircle, AtSign, FolderOpen } from 'lucide-react';
+import { Share2, Plus, Trash2, ExternalLink, Unplug, Globe, MessageCircle, AtSign, FolderOpen, RefreshCw, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
 interface Asset {
@@ -18,6 +18,55 @@ interface Portfolio {
     assets: Asset[];
 }
 
+// ------------------------------------------------------------------
+// Cuentas sociales vía Zernio (PG-04)
+// El OAuth lo hospeda Zernio — nunca pedimos credenciales de la red.
+// ------------------------------------------------------------------
+
+interface SocialConnection {
+    id: string;
+    platform: string;
+    accountId: string;
+    username: string | null;
+    displayName: string | null;
+    status: string;
+    lastSyncedAt: string | null;
+}
+
+interface SocialConnectionsResponse {
+    connections: SocialConnection[];
+    plan: { maxPlatforms: number | null; usedPlatforms: number };
+}
+
+// Subconjunto editorial del enum de Zernio (mismo criterio que el
+// auto-publish): destinos de contenido, no de mensajería/identidad.
+const SOCIAL_PLATFORMS: { id: string; label: string }[] = [
+    { id: 'instagram', label: 'Instagram' },
+    { id: 'facebook', label: 'Facebook' },
+    { id: 'tiktok', label: 'TikTok' },
+    { id: 'youtube', label: 'YouTube' },
+    { id: 'linkedin', label: 'LinkedIn' },
+    { id: 'twitter', label: 'X (Twitter)' },
+    { id: 'threads', label: 'Threads' },
+    { id: 'pinterest', label: 'Pinterest' },
+    { id: 'reddit', label: 'Reddit' },
+    { id: 'bluesky', label: 'Bluesky' },
+];
+
+const SOCIAL_ERROR_MESSAGES: Record<string, string> = {
+    invalid_state: 'El enlace de conexión expiró o es inválido. Volvé a intentarlo.',
+    invalid_state_platform: 'La plataforma del retorno no coincide con la solicitada.',
+    connect_failed: 'La conexión no se completó en la red social.',
+    connection_not_confirmed: 'La red social no confirmó la conexión.',
+    profile_mismatch: 'La cuenta devuelta no pertenece a tu organización.',
+    missing_account: 'La red social no devolvió la cuenta conectada.',
+    max_connected_platforms: 'Alcanzaste el máximo de plataformas de tu plan.',
+    zernio_not_configured: 'La integración de redes no está configurada.',
+};
+
+const platformLabel = (id: string): string =>
+    SOCIAL_PLATFORMS.find((p) => p.id === id)?.label ?? id;
+
 export function ConnectionsPage() {
     const { fetchApi } = useApi();
     const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -27,6 +76,13 @@ export function ConnectionsPage() {
     const [connectingMeta, setConnectingMeta] = useState<string | null>(null);
     const [connectingTwitter, setConnectingTwitter] = useState<string | null>(null);
 
+    const [social, setSocial] = useState<SocialConnection[]>([]);
+    const [socialPlan, setSocialPlan] = useState<{ maxPlatforms: number | null; usedPlatforms: number } | null>(null);
+    const [socialLoading, setSocialLoading] = useState(true);
+    const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
+    const [syncing, setSyncing] = useState(false);
+    const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
     const loadPortfolios = useCallback(async () => {
         try {
             const data = await fetchApi<Portfolio[]>('/connections/portfolios');
@@ -35,7 +91,40 @@ export function ConnectionsPage() {
         setLoading(false);
     }, []);
 
-    useEffect(() => { loadPortfolios(); }, []);
+    const loadSocial = useCallback(async () => {
+        try {
+            const data = await fetchApi<SocialConnectionsResponse>('/social-connections');
+            setSocial(data.connections);
+            setSocialPlan(data.plan);
+        } catch { /* ignore — el listado legacy sigue funcionando */ }
+        setSocialLoading(false);
+    }, []);
+
+    useEffect(() => {
+        loadPortfolios();
+        loadSocial();
+
+        // Resultado del callback OAuth de Zernio (redirect con
+        // ?social_connected=<platform> o ?social_error=<code>).
+        const params = new URLSearchParams(window.location.search);
+        const connected = params.get('social_connected');
+        const errorCode = params.get('social_error');
+        if (connected) {
+            setFeedback({ kind: 'ok', text: `${platformLabel(connected)} quedó conectada.` });
+        } else if (errorCode) {
+            setFeedback({
+                kind: 'error',
+                text: SOCIAL_ERROR_MESSAGES[errorCode] ?? 'No se pudo completar la conexión.',
+            });
+        }
+        if (connected || errorCode) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('social_connected');
+            url.searchParams.delete('social_error');
+            window.history.replaceState({}, '', url.toString());
+            loadSocial();
+        }
+    }, []);
 
     const createPortfolio = async () => {
         if (!newName.trim()) return;
@@ -163,6 +252,63 @@ export function ConnectionsPage() {
         }
     };
 
+    const connectPlatform = async (platform: string) => {
+        setConnectingPlatform(platform);
+        setFeedback(null);
+        try {
+            const { authUrl } = await fetchApi<{ authUrl: string; state: string }>(
+                '/social-connections/connect',
+                { method: 'POST', body: { platform } },
+            );
+            // El OAuth lo hospeda Zernio: se abre en pestaña nueva y el
+            // callback vuelve a esta página con el resultado en el query.
+            window.open(authUrl, '_blank', 'noopener');
+        } catch (err: any) {
+            setFeedback({ kind: 'error', text: err.message || 'No se pudo iniciar la conexión.' });
+        }
+        setConnectingPlatform(null);
+    };
+
+    const disconnectSocial = async (id: string) => {
+        if (!confirm('Desconectar esta cuenta? Vas a poder volver a conectarla cuando quieras.')) return;
+        try {
+            await fetchApi(`/social-connections/${id}`, { method: 'DELETE' });
+            await loadSocial();
+        } catch (err: any) {
+            setFeedback({ kind: 'error', text: err.message || 'No se pudo desconectar.' });
+        }
+    };
+
+    const syncSocial = async () => {
+        setSyncing(true);
+        setFeedback(null);
+        try {
+            const result = await fetchApi<{ connections: SocialConnection[]; synced: number; markedDisconnected: number }>(
+                '/social-connections/sync',
+                { method: 'POST' },
+            );
+            setSocial(result.connections);
+            setFeedback({
+                kind: 'ok',
+                text: `Sincronización lista: ${result.synced} cuenta${result.synced !== 1 ? 's' : ''} actualizada${result.synced !== 1 ? 's' : ''}.`,
+            });
+        } catch (err: any) {
+            setFeedback({ kind: 'error', text: err.message || 'No se pudo sincronizar.' });
+        }
+        setSyncing(false);
+    };
+
+    const statusBadge = (status: string) => {
+        switch (status) {
+            case 'connected':
+                return <span className="badge badge-success">Conectada</span>;
+            case 'error':
+                return <span className="badge badge-danger">Error</span>;
+            default:
+                return <span className="badge badge-warning">Desconectada</span>;
+        }
+    };
+
     const getAssetIcon = (type: string) => {
         switch (type) {
             case 'facebook_page': return <Globe className="w-4 h-4 text-blue-400" />;
@@ -182,6 +328,95 @@ export function ConnectionsPage() {
 
     return (
         <div className="p-4 md:p-8 max-w-4xl mx-auto">
+            {/* Cuentas sociales — Zernio (PG-04) */}
+            <div className="glass-card p-6 mb-8">
+                <div className="flex items-center justify-between gap-3 mb-1">
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                        <Link2 className="w-4 h-4 text-cyan-400" />
+                        Cuentas sociales
+                    </h2>
+                    <button
+                        onClick={syncSocial}
+                        disabled={syncing || socialLoading}
+                        className="btn-secondary inline-flex items-center gap-2 text-xs !py-2"
+                        title="Releer las cuentas desde Zernio"
+                    >
+                        <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                        {syncing ? 'Sincronizando...' : 'Sincronizar'}
+                    </button>
+                </div>
+                <p className="text-white/30 text-xs mb-4">
+                    La conexión se hace en la pantalla segura de cada red — nunca te pedimos usuario ni contraseña.
+                    {socialPlan?.maxPlatforms != null && (
+                        <> Tu plan permite hasta {socialPlan.maxPlatforms} plataforma{socialPlan.maxPlatforms !== 1 ? 's' : ''} ({socialPlan.usedPlatforms} en uso).</>
+                    )}
+                </p>
+
+                {feedback && (
+                    <div className={`mb-4 px-4 py-3 rounded-xl text-sm border ${
+                        feedback.kind === 'ok'
+                            ? 'bg-emerald-500/[0.06] border-emerald-500/15 text-emerald-300'
+                            : 'bg-red-500/[0.06] border-red-500/15 text-red-300'
+                    }`}>
+                        {feedback.text}
+                    </div>
+                )}
+
+                {/* Connect buttons */}
+                <div className="flex flex-wrap gap-2 mb-5">
+                    {SOCIAL_PLATFORMS.map((p) => (
+                        <button
+                            key={p.id}
+                            onClick={() => connectPlatform(p.id)}
+                            disabled={connectingPlatform !== null}
+                            className="btn-secondary inline-flex items-center gap-2 text-xs !py-2"
+                        >
+                            <Plus className="w-3.5 h-3.5" />
+                            {connectingPlatform === p.id ? 'Conectando...' : `Conectar ${p.label}`}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Connected accounts */}
+                {socialLoading ? (
+                    <div className="space-y-2">
+                        <div className="skeleton h-12" />
+                        <div className="skeleton h-12" />
+                    </div>
+                ) : social.length === 0 ? (
+                    <p className="text-white/25 text-sm">Todavía no conectaste ninguna cuenta.</p>
+                ) : (
+                    <div className="space-y-2">
+                        {social.map((conn) => (
+                            <div key={conn.id} className="flex items-center justify-between px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.05] hover:border-white/[0.1] transition-all duration-300 group">
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <AtSign className="w-4 h-4 text-cyan-400/70 shrink-0" />
+                                    <span className="text-sm font-medium truncate">
+                                        {conn.displayName || conn.username || conn.accountId}
+                                    </span>
+                                    <span className="text-[10px] text-white/20 uppercase tracking-wider shrink-0">
+                                        {platformLabel(conn.platform)}
+                                    </span>
+                                    {conn.username && conn.displayName && (
+                                        <span className="text-xs text-white/25 truncate">@{conn.username}</span>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                    {statusBadge(conn.status)}
+                                    <button
+                                        onClick={() => disconnectSocial(conn.id)}
+                                        className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 transition-all duration-300"
+                                        title="Desconectar"
+                                    >
+                                        <Unplug className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
             {/* Create Portfolio */}
             <div className="flex flex-col sm:flex-row gap-3 mb-8">
                 <div className="relative flex-1 group">
