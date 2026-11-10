@@ -1,122 +1,112 @@
-# BRIEF — PF-03 Subtítulos quemados + progreso + branding (logo, lower-third persona)
+# BRIEF — PF-05 Re-corte manual: selector inicio/fin → re-render vía cola
 
-**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-03, 5 pts)
-**Base**: `75e6f99` (master tip: PF-01 cutter + PF-02 reframe + PF-04 cola)
-**Branch**: `pf-03-subtitles-branding`
-**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-03-subtitles-branding`
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-05, 3 pts)
+**Base**: `6052ef4` (master tip: cut + reframe + subtitles + cola)
+**Branch**: `pf-05-manual-recut`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-05-manual-recut`
 
 ## Contexto
 
-El clip ya pasa por `cut` (16:9 crudo) y `reframe` (9:16). Este slice agrega la pasada de
-**subtítulos quemados con estilo del tenant + barra de progreso + logo + lower-third con el
-nombre de la persona que habla** — se aplica sobre el `videoPath` actual del clip
-(post-reframe si existe, post-cut si no). Dispatch como `kind='subtitles'` en la cola.
+El usuario quiere re-cortar un clip existente: elegir nuevo inicio/fin sobre la línea de
+tiempo grabada y re-renderizar. La UI del live-room YA devuelve `segments`
+(recording_segments) por transmisión (`liveRoomService.ts:354,428`) — el selector se alimenta
+de eso; NO hay que crear endpoint de coverage.
+
+Este slice = servicio de re-corte + endpoints en `routes/clips.ts`. El re-corte crea un
+**clip derivado nuevo** (el original no se destruye mientras se regenera) vía la cola
+`kind='cut'` — el worker ya corta con `cutRawWindow` (PF-01).
 
 Contratos existentes (verificados):
-- `transcript_segments` (schema/live.ts): `transmissionId`, `startMs`, `endMs`,
-  `speakerLabel`, `personId`, `text` — tiempos absolutos vs `transmissions.started_at`.
-- `clips.metadata.window` = `{startMs, endMs}` absolutos vs started_at (PF-01 lo escribe);
-  `clips.transmissionId` también lo escribe PF-01. Las cues = transcript_segments que se
-  solapen con la ventana, tiempo relativo = `seg.startMs − window.startMs`.
-- `brandingService.loadTenantBranding(tenantId)` → `{logoBuffer, platformName,
-  fontFamily, templateId}` — REUSAR como dep inyectable (no re-implementar la query).
-- `fontService`: `FONT_REGISTRY: Record<FontFamilyId,{filename,family}>` + `getFontFamily()`
-  — resuelve familia+archivo real en disco (fonts/ dir). ASS usa `FontName` + `fontsdir`.
-- `persons.name` para el lower-third; `transcript_segments.personId` (PE-03 lo resuelve).
-- Worker dispatch: agregar `kind === 'subtitles'` igual que 'reframe' (dep `burnSubtitles`
-  inyectable, default → servicio nuevo). Payload: `{clipId}`.
-- `clipReframeService` muestra el patrón: probe dims, ffmpegRunner inyectable, temps en
-  `finally`, estados `generating → pending_review | error`, metadata en jsonb.
+- `clips.ts` routes: `req.auth!.tenantId`, patrón try/catch con 404/500, service fns de
+  `clipService` (getClipById, updateClipStatus, deleteClip).
+- `clipRenderQueueService.enqueue({tenantId, clipId?, kind, payload, maxAttempts?})` → job;
+  `listByClip(clipId, tenantId)`, `getById(jobId, tenantId)`, `retry(jobId, tenantId)`.
+- Worker 'cut': payload `{transmissionId, startMs, endMs}` → `cutRawWindow` → crea clip
+  nuevo (metadata.window) y rellena `job.clip_id` al terminar.
+- `clipCutterService` valida cobertura real con recording_segments — el re-corte debe
+  validar ANTES de encolar (feedback inmediato al usuario): re-implementar el chequeo de
+  cobertura consultando `recording_segments` (join `stream_recordings` por
+  transmissionId+tenantId; `end_ms NULL` = segmento abierto vigente).
+- `DEFAULT_MAX_WINDOW_MS` vive en clipCutterService (~120s) — reusar la constante o un
+  `maxWindowMs` inyectable con el mismo default.
 
 ## Alcance
 
-### 1) `clipSubtitleService.ts` — Store pattern
+### 1) `clipRecutService.ts` — Store pattern
 
-`SubtitleStore` + `createDrizzleSubtitleStore`:
-- `getClip(clipId, tenantId)` — con transmissionId, videoPath, metadata.window, duration
-- `listUtterances(tenantId, transmissionId, startMs, endMs)` — transcript_segments con
-  overlap, orden por startMs, incluir speakerLabel + personId
-- `getPersonNames(tenantId, personIds[])` → Map personId→name
-- `updateClip(clipId, tenantId, patch)` — videoPath/status/metadata
+`RecutStore` + `createDrizzleRecutStore`:
+- `getClip(clipId, tenantId)` → id, transmissionId, status, metadata
+- `listCoverage(tenantId, transmissionId)` → `[{startMs, endMs|null}]` de
+  recording_segments ordenados (endMs null → tratar como `now` para coverage; el crudo
+  sigue grabando)
+- `patchClipMetadata(clipId, tenantId, metadata)` — merge jsonb (SQL `||` o read-merge)
 
-### 2) Generación ASS (pura, testeable — el corazón del slice)
+`recutClip({tenantId, clipId, startMs, endMs})`:
+1. Clip tenant-scoped → 404/`clip_not_found`. Requiere `transmissionId` → `no_transmission`.
+2. Validaciones (mismas reglas del cutter): `endMs > startMs`, finitos, duración ≤
+   `maxWindowMs` (default = DEFAULT_MAX_WINDOW_MS del cutter, exportada o duplicada con
+   comentario), `startMs >= 0`.
+3. Cobertura: `[startMs,endMs]` debe estar CONTENIDA en la unión de intervalos de
+   `listCoverage` (sin huecos) → `window_out_of_coverage` si falla.
+4. `enqueue({tenantId, kind:'cut', payload:{transmissionId, startMs, endMs, recutOf:
+   clipId}})` → job.
+5. `patchClipMetadata(clipId, tenantId, {recutJobId: job.id})` — el original queda
+   linkeado al job; el nuevo clip sale con `metadata.window` (lo escribe el cutter).
+6. Return `{job}`.
 
-`buildAssFile({utterances, windowStartMs, style, personNames})` → string ASS:
-- `[V4+ Styles]` con `FontName`/`Fontsize`/`PrimaryColour`/`OutlineColour`/`Outline`/
-  `Shadow`/`Alignment=2` (bottom-center) según `style` derivado del branding
-- Cues `Dialogue: 0,start,end,Default,,0,0,0,,{text}` con tiempos `h:mm:ss.cc`
-  RELATIVOS al clip (clamp a [0, duration], descartar cues fuera)
-- Wrap de líneas largas (~42 chars) con `\N`
-- Escapar `{`,`}` y `\` en texto
-- **Lower-third**: por cambio de speaker con `personId` resuelto (o speakerLabel si no hay
-  person), evento `Dialogue` extra con estilo `LowerThird` (Alignment=7 top-left o 1
-  bottom-left sobre la zona de subs, `\pos`, fondo `\bord`+`3a` alpha) mostrando
-  `NOMBRE PERSONA` los primeros ~3.5s de su turno — función pura `lowerThirdEvents()`.
+Errores tipados: `clip_not_found | no_transmission | invalid_window |
+window_out_of_coverage | clip_rendering` (opcional: rechazar si hay job pending/running
+de kind 'cut' para este clip — check con listByClip si es barato; si complica, omitir y
+documentar).
 
-`resolveSubtitleStyle(branding, dims)` → `{fontName, fontSize, primary, outline, boxAlpha}`
-(pura): fontFamily→FONT_REGISTRY.family; colores por `templateId` (mapear los templates
-existentes de templateService a paletas: dark_gradient→blanco/sombra oscura, etc. — leer
-`templateService.ts` para los colores reales de cada template y reusarlos).
+Deps inyectables: `{store, enqueue, now, maxWindowMs}` con defaults reales
+(`clipRenderQueueService.enqueue`).
 
-### 3) Render ffmpeg — `burnSubtitles({tenantId, clipId})`
+### 2) Rutas — `src/server/routes/clips.ts` (MODIFICAR — superficie API del slice)
 
-1. Load clip tenant-scoped; videoPath requerido (`missing_source_video`), window requerida
-   (`missing_window` si metadata.window no existe — clip viejo sin metadata → error tipado).
-2. Probe dims (dep `probe` como reframe).
-3. Escribir ASS a tempDir; logoBuffer→png temp si hay logo.
-4. filter graph (UNA invocación):
-   - `subtitles=<ass>:fontsdir=<fonts dir>` (escapar `:` y `\` en path Windows → forward
-     slashes + escape `:` con `\:`)
-   - logo: `[1:v]scale=w:-1[lg];[0:v][lg]overlay=W-w-margin:margin` (margin ~3% ancho,
-     logo ancho ~12-15% del video)
-   - progreso: `drawbox=x=0:y=0:w='t/dur*iw':h=<barH>:color=<accent>@0.9:t=fill` — barra
-     fina arriba que avanza con t (función `buildProgressFilter(dur, dims, accent)`)
-   - orden: subtitles → overlay logo → drawbox progreso; `-c:a copy`
-5. Output `output/<clipId>_sub.mp4` → update videoPath, `metadata.sourceVideoPath`,
-   `metadata.subtitles={cues, styled, logo:bool, progressBar:bool}`; status flow igual
-   que reframe.
-6. Temps (ass, logo png) en `finally`.
+Mismo patrón `req.auth!.tenantId` + try/catch:
+- `POST /api/clips/:id/recut` body `{startMs: number, endMs: number}` →
+  `recutClip({tenantId, clipId: id, startMs, endMs})` → `202 {jobId, status: 'pending'}`;
+  400 si body inválido (no números finitos); 404 si clip; 409 si `window_out_of_coverage`
+  o `clip_rendering`; 422 si `invalid_window`.
+- `GET /api/clips/:id/jobs` → `listByClip(id, tenantId)` → `200 {jobs}` (incluye el recut
+  job y su `clip_id` destino cuando termina).
+- `GET /api/render-jobs/:jobId` → `getById(jobId, tenantId)` → `200 {job}` / 404 (para
+  polling del estado del render desde la UI).
+- (Opcional si trivial) `POST /api/render-jobs/:jobId/retry` → `retry(jobId, tenantId)`
+  → 200 {job} / 404 / 409 si no está en error/cancelled.
 
-Deps inyectables: `{store, ffmpegRunner, probe, loadBranding, tempDir, outputDir, fontsDir,
-now}` — `loadBranding` default = `loadTenantBranding`.
+### 3) Tests deterministas
 
-### 4) Worker dispatch `kind='subtitles'`
-
-`clipRenderWorker.ts`: dep `burnSubtitles` (default → clipSubtitleService), dispatch igual
-que reframe: payload.clipId → `burnSubtitles({tenantId, clipId})` → markDone{clipId}.
-
-### 5) Tests deterministas
-
-`tests/helpers/memorySubtitleStore.ts` + `tests/clipSubtitles.test.ts`:
-- `buildAssFile`: cue shift relativo a window, clamp bordes, escape, wrap, estilo por
-  templateId, lower-third por speaker con personName (y sin person → speakerLabel)
-- `resolveSubtitleStyle`: fontFamily→family del registry, paleta por template
-- `buildProgressFilter`: expresión `t/dur*iw`, color accent del template
-- ffmpeg args: subtitles filter con path escapado, overlay logo solo si logoBuffer,
-  `-c:a copy`
-- clip completo: 'generating'→'pending_review', metadata.subtitles; ffmpeg fail → 'error'
-- missing videoPath / missing window → errores tipados sin tocar ffmpeg
-- sin utterances → render igual (clip sin subs, metadata.subtitles.cues=0) NO error
-- tenant isolation
-- worker dispatch kind 'subtitles'
+`tests/helpers/memoryRecutStore.ts` + `tests/clipRecut.test.ts`:
+- recut ok → enqueue con payload exacto {transmissionId,startMs,endMs,recutOf} + metadata
+  recutJobId en el clip origen
+- invalid_window (end≤start, no finitos, > maxWindowMs)
+- window_out_of_coverage: hueco entre segmentos, fuera de rango; segmento abierto
+  (endMs null) cuenta como cubierto hasta `now` inyectado
+- clip_not_found / no_transmission / tenant isolation
+- rutas: 202+jobId, 400 body inválido, 404, 409 coverage, 422 invalid; GET jobs; GET
+  render-jobs/:id 200/404 — seguir el patrón de tests de rutas existente (ver
+  tests/transmissionsVodUpload.test.ts o liveRoomApi.test.ts para el harness de app)
 
 ## NO TOCAR
 
-- `clipCutterService.ts`, `clipReframeService.ts`, `clipRenderQueueService.ts`
-- `brandingService.ts`, `fontService.ts`, `templateService.ts` (solo consumir)
-- Schemas — cero migraciones; todo en `metadata` jsonb
-- No inventar colores: mapear desde los templates REALES de templateService
+- `clipCutterService.ts` (la validación de coverage se re-implementa liviana; NO refactor)
+- `clipRenderWorker.ts`, `clipReframeService.ts`, `clipSubtitleService.ts`
+- `clipService.ts` (las rutas nuevas usan el servicio nuevo, no las fns viejas)
+- Schemas — cero migraciones
+- No hacer UI client-side: el selector ya tiene datos (`liveRoom` devuelve segments)
 
 ## Gates obligatorios
 
 ```bash
 npm ci --ignore-scripts   # si node_modules no está
 npx tsc --noEmit          # EXIT 0
-npx vitest run            # 511 base + nuevos
+npx vitest run            # 547 base + nuevos
 npm run build             # verde — sin schema changes
 ```
 
 ## Reporte
 
-`DONE: PF-03 → <SHA>` + archivos + gates + decisiones (formato ASS vs SRT, paletas por
-template, posición lower-third, tamaño barra progreso). `BLOCKED: <razón>` si aplica.
+`DONE: PF-05 → <SHA>` + archivos + gates + decisiones (códigos HTTP elegidos, política
+anti-duplicado si la implementaste). `BLOCKED: <razón>` si aplica.
