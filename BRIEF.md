@@ -1,97 +1,115 @@
-# BRIEF — PF-07 Flyers/quote-cards con foto REAL de la persona detectada
+# BRIEF — PF-08 Imágenes multi-modelo: provider seleccionable por tenant + fallback
 
-**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-07, 3 pts)
-**Base**: `2221302` (master tip: PF-06 notas con quotes jsonb)
-**Branch**: `pf-07-quote-flyers`
-**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-07-quote-flyers`
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-08, 3 pts)
+**Base**: `1d7a96c` (master tip)
+**Branch**: `pf-08-image-models`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-08-image-models`
 
 ## Contexto
 
-Las notas (PF-06) ya guardan `publications.quotes` jsonb = AttributedQuote[] con
-`personId`/`personName`. Este slice genera **quote-cards 1080x1080 con la foto REAL de la
-persona** (no avatar genérico): la foto sale de `person_photos` (enrolada con
-face_detection, PE-03/PC-04).
+Decisión D de la épica: registry `image_models` con Gemini, GPT Image, Ideogram, FLUX,
+Recraft (+ Grok que YA EXISTE en el pipeline viejo), default por tenant, fallback y
+plan gating. Hoy la generación de imágenes está hardcodeada en
+`pipelineService.generateAIBackground` (gemini + grok inline, línea ~1271-1460).
 
 Contratos existentes (verificados):
-- `processQuoteFlyer(quote, speakerPhotoData: Buffer|null, branding)` → `Promise<string>`
-  en `imageService.ts:141` — canvas 1080x1080, cita centrada, línea separadora dorada,
-  foto circular 100px (¡leer bien sus params: usa `quote.text` y nombre vía campos del
-  objeto — pasarle shape compatible con AttributedQuote), logo top-right, devuelve path
-  del PNG en output/. REUSAR — no re-escribir el canvas.
-- `person_photos` (schema/persons.ts:72): `photoData` bytea, `isPrimary`,
-  `tenantId`, `personId` — la foto real. Query: primary primero, sino la más reciente.
-- `attributedQuotesService.listAttributedQuotes(tenantId, transmissionId)` →
-  AttributedQuote[] con `personId`, `personName`, `personPhotoUrl` (URL API — el
-  BUFFER está en person_photos.photoData).
-- `publications.quoteFlyerPaths` jsonb (default []) — campo destino, YA EXISTE.
-- `publications.quotes` jsonb — array de AttributedQuote serializadas (PF-06 las pone).
-- `loadTenantBranding(tenantId)` → {logoBuffer, platformName, fontFamily, templateId}.
-- `publications` NO tiene transmissionId — los quotes viven en el jsonb; el flyer se
-  genera por publicación, no por transmisión.
+- `pipelineService.ts:1333` `generateWithGemini` — POST
+  `generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview`,
+  soporta reference images como input. `:1433` `generateWithGrok` — POST
+  `api.x.ai/v1/images/generations {model:'grok-2-image', prompt, n:1,
+  response_format:'b64_json'}` (XAI_API_KEY). Patrón fallback: selected model → otro.
+- `isFeatureEnabled(tenantId, key)` (tenantFeaturesService.ts) + `FEATURE_CATALOG`
+  con `byPlan` + `fallback` — agregar key nueva es ADITIVO (sin migración; filas se
+  sincronizan del catálogo).
+- `tenants.config` jsonb — el default del tenant vive ahí (`config.imageModel`,
+  mismo campo que `pipelineConfig.imageModel` usa en el pipeline viejo: 'gemini'|'grok').
+- `limiters.imageGen` existe en pipelineService para rate-limit — opcional reusar.
+- Output convention: `output/` dir, paths servidos como `/output/…`.
 
 ## Alcance
 
-### 1) `quoteFlyerService.ts` — Store pattern
+### 1) `imageModelService.ts` — Store pattern
 
-`QuoteFlyerStore` + `createDrizzleQuoteFlyerStore`:
-- `getPublication(pubId, tenantId)` → {id, quotes}
-- `getPersonPhoto(tenantId, personId)` → {photoData: Buffer} | null — primary primero
-  (`orderBy desc(isPrimary), asc(createdAt)`)
-- `appendFlyerPaths(pubId, tenantId, paths: string[])` — merge jsonb (patrón `||` +
-  COALESCE como patchClipMetadata de PF-05) o read-merge simple
+**Registry** `IMAGE_MODEL_REGISTRY: readonly ImageModelDef[]`:
+```
+gemini    | GEMINI_API_KEY   | gemini-3.1-flash-image-preview | supportsReferenceImages
+grok      | XAI_API_KEY      | grok-2-image                   | text-only
+gpt-image | OPENAI_API_KEY   | gpt-image-1                    | text-only
+ideogram  | IDEOGRAM_API_KEY | ideogram-v3                    | text-only
+flux      | BFL_API_KEY      | flux-1.1-pro                   | text-only
+recraft   | RECRAFT_API_KEY  | recraft-v3                     | text-only
+```
+`ImageModelDef`: `{id, label, envKeys, defaultModel, modelEnvKey, supportsReferenceImages}`.
 
-### 2) `generateQuoteFlyers({tenantId, publicationId, onlyPersonsWithPhotos?})`
+Funciones puras exportadas (el corazón testeable):
+- `isModelConfigured(def, env)` → todas las envKeys presentes
+- `resolveModelChain({requestedModel?, tenantModel?, env, needsReferenceImages})` →
+  `ImageModelDef[]` ordenado: 1) requested si configured, 2) tenantModel si configured,
+  3) resto del registry en orden filtrando configured (+ supportsReferenceImages cuando
+  `needsReferenceImages`). Sin duplicados.
+- `callImageModel(def, {prompt, apiKey, model, referenceImages?})` — dep inyectable con
+  implementaciones REALES solo para `gemini` y `grok` (portar los dos patrones de
+  pipelineService: Gemini generateContent b64 + Grok images/generations b64_json);
+  los demás ids → throw `model_not_implemented` (la chain los salta por no estar
+  configured sin sus API keys de todos modos — el registry queda completo para cuando
+  lleguen las keys).
 
-1. Publication tenant-scoped → `publication_not_found`; `quotes` array → si vacío
-   `no_quotes`.
-2. Por cada quote con `personId` (skip sin personId — cita sin atribuir no lleva foto):
-   - `getPersonPhoto` → si null, marcar `skipped_no_photo` (NO usar placeholder —
-     el AC dice foto REAL; sin foto → flyer sin foto o skip según
-     `onlyPersonsWithPhotos` default false → flyer igual con photoData=null, el canvas
-     ya tolera null).
-   - `processQuoteFlyer(quoteShape, photoData, branding)` → path
-3. `appendFlyerPaths` con los paths generados.
-4. Return `{publicationId, flyers: [{quoteIndex, personId, path}], skipped: n}`.
+### 2) `generateImage({tenantId, prompt, referenceImages?, model?})`
 
-Deps inyectables: `{store, renderFlyer, loadBranding, now}` — `renderFlyer` default =
-processQuoteFlyer (canvas real); en tests, fake que devuelve path sintético y captura
-args (¡NUNCA canvas real en tests!).
+1. Plan gating: `isFeatureEnabled(tenantId, 'ai_image_models')` → off ⇒ `feature_disabled`.
+   Agregar entrada a `FEATURE_CATALOG` (aditiva): `key:'ai_image_models'`, name
+   'Modelos de imagen IA', byPlan creator+ (trial:false, creator:true, media:true,
+   network:true, enterprise:true), fallback:false.
+2. Tenant default: leer `tenants.config.imageModel` (query tenant-scoped en el store —
+   `getTenantImageModel(tenantId)` → string | null).
+3. `resolveModelChain` → vacío ⇒ `no_provider_configured`.
+4. Por cada def: `callImageModel` → éxito ⇒ escribir buffer a `output/<uuid>.png` →
+   return `{path, model: def.id, attempts: [{model, ok|error}]}`; fallo ⇒ registrar y
+   seguir (fallback real).
+5. Todos fallaron ⇒ `all_providers_failed` con attempts.
 
-### 3) Endpoint — `routes/notes.ts` (extender el router de PF-06) o `routes/publications.ts` si existe
+Deps inyectables: `{store, callModel, isEnabled, env, outputDir, newId, now}` —
+`callModel` default = dispatcher real por def.id (lazy import de axios como en
+pipelineService si hace falta; tests inyectan fake siempre).
 
-`POST /api/publications/:id/quote-flyers` → `generateQuoteFlyers` →
-`201 {publicationId, flyers, skipped}`; 404 publication; 422 no_quotes.
-Revisar si ya existe un router de publications para colgarlo ahí (patrón del repo:
-routes/notes.ts se montó en index.ts — seguir el mismo). `req.auth!.tenantId`.
+### 3) Store
+
+`ImageModelStore` + `createDrizzleImageModelStore`:
+- `getTenantImageModel(tenantId)` → `tenants.config->>'imageModel'` | null
+(una sola query — el resto del servicio es puro).
 
 ### 4) Tests deterministas
 
-`tests/helpers/memoryQuoteFlyerStore.ts` + `tests/quoteFlyers.test.ts`:
-- flyer por quote con personId → renderFlyer recibe (quote, photoData buffer, branding)
-- sin personId → skip, no llama renderFlyer
-- person sin foto → photoData null al render (o skip si onlyPersonsWithPhotos)
-- appendFlyerPaths mergea sin pisar paths previos
-- publication_not_found / no_quotes / tenant isolation
-- ruta: 201/404/422
+`tests/helpers/memoryImageModelStore.ts` + `tests/imageModels.test.ts`:
+- `isModelConfigured` por envKeys
+- `resolveModelChain`: requested primero, tenant default segundo, configured-only,
+  needsReferenceImages filtra text-only, sin duplicados, vacío si nada configured
+- `generateImage`: gating off → feature_disabled; chain vacía → no_provider_configured;
+  primer callModel OK → path + model correcto; primero falla → fallback al segundo
+  (attempts registra ambos); todos fallan → all_providers_failed
+- tenant isolation (store query)
+- NO calls HTTP reales — callModel siempre fake en tests
 
 ## NO TOCAR
 
-- `imageService.ts` (processQuoteFlyer se CONSUME — solo verificar su firma real al
-  pasarle el quote shape; si el shape difiere, adaptar en el servicio nuevo, no tocar)
-- `attributedQuotesService.ts`, `noteFactoryService.ts`, schemas (cero migraciones)
-- `pipelineService.ts` (línea vieja — no se toca ni se refactoriza)
-- NO placeholder/silhouette cuando falta foto: photoData=null → el canvas decide
+- `pipelineService.ts` (la línea vieja sigue como está — el registry nuevo es para el
+  camino ÉPICA F; refactor del pipeline viejo es otro slice)
+- `analysisProviders.ts` (registry separado — image_models tiene needs distintas)
+- Schemas — cero migraciones (config va en `tenants.config` jsonb existente)
+- `tenantFeaturesService.ts` — SOLO la entrada aditiva en FEATURE_CATALOG
+- NO implementar HTTP real para ideogram/flux/recraft/gpt-image (registry + contract;
+  solo gemini+grok que YA existen los patrones)
 
 ## Gates obligatorios
 
 ```bash
 npm ci --ignore-scripts   # si node_modules no está
 npx tsc --noEmit          # EXIT 0
-npx vitest run            # 604 base + nuevos
+npx vitest run            # 623 base + nuevos
 npm run build             # verde — sin schema changes
 ```
 
 ## Reporte
 
-`DONE: PF-07 → <SHA>` + archivos + gates + decisiones (dónde colgó la ruta, política
-sin-foto elegida). `BLOCKED: <razón>`.
+`DONE: PF-08 → <SHA>` + archivos + gates + decisiones (key de feature, orden del
+registry, manejo de reference images). `BLOCKED: <razón>`.
