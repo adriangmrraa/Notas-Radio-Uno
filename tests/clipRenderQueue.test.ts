@@ -203,7 +203,7 @@ describe('markFailed', () => {
       jobs: [
         {
           tenantId: TENANT_A,
-          kind: 'subtitles',
+          kind: 'watermark', // kind aún inexistente (subtitles ya es válido PF-03)
           status: 'running',
           attempts: 1,
           maxAttempts: 3,
@@ -212,7 +212,7 @@ describe('markFailed', () => {
     });
     const updated = await store.markFailed(
       state.jobs[0].id,
-      'unknown render job kind: subtitles',
+      'unknown render job kind: watermark',
       { retry: false },
     );
     expect(updated!.status).toBe('error');
@@ -451,7 +451,10 @@ describe('clipRenderWorker', () => {
 
   it('kind desconocido → error terminal sin llamar al cutter ni reintentar', async () => {
     const { store, state } = makeStore({
-      jobs: [{ tenantId: TENANT_A, kind: 'subtitles', payload: {}, maxAttempts: 3 }],
+      jobs: [
+        // 'watermark': kind futuro inexistente — 'subtitles' ya se despacha (PF-03).
+        { tenantId: TENANT_A, kind: 'watermark', payload: {}, maxAttempts: 3 },
+      ],
     });
     const { io, emitted } = makeFakeIo();
     const cutCalls: CutRawWindowInput[] = [];

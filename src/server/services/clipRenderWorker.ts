@@ -12,6 +12,8 @@
  *     (PF-02; `payload.clipId` es la fuente de verdad — `job.clipId` es
  *     fallback si el enqueue no lo rellenó en la fila). Éxito →
  *     `markDone(jobId, { clipId })` (rellena la FK si venía NULL).
+ *   - 'subtitles' → `clipSubtitleService.burnSubtitles({ tenantId, clipId })`
+ *     (PF-03; mismo contrato de clipId que 'reframe' — el clip ya existe).
  *   - kind desconocido → `markFailed(jobId, 'unknown kind', { retry: false })`
  *     directo a `error` terminal: reintentar lo que nadie sabe despachar es
  *     gastar attempts al pedo.
@@ -37,9 +39,9 @@
  * Un solo worker por proceso: `initClipRenderWorker` ignora la segunda
  * llamada (guard) y `stopClipRenderWorker` limpia para tests.
  *
- * Dependencias inyectables: `{ store, cutRawWindow, reframeClip, now,
- * backoffMs }` con defaults reales — los tests corren sin DB, sin ffmpeg y
- * sin timers.
+ * Dependencias inyectables: `{ store, cutRawWindow, reframeClip,
+ * burnSubtitles, now, backoffMs }` con defaults reales — los tests corren
+ * sin DB, sin ffmpeg y sin timers.
  */
 import type { Server } from 'socket.io';
 
@@ -58,6 +60,11 @@ import {
   type ReframeClipInput,
   type ReframeClipResult,
 } from './clipReframeService.js';
+import {
+  clipSubtitleService,
+  type BurnSubtitlesInput,
+  type BurnSubtitlesResult,
+} from './clipSubtitleService.js';
 
 /** Intervalo de claim por default: 10 s (env `RENDER_WORKER_POLL_MS`). */
 export const POLL_MS = 10_000;
@@ -82,6 +89,10 @@ export interface ClipRenderWorkerDeps {
   cutRawWindow?: (input: CutRawWindowInput) => Promise<CutRawWindowResult>;
   /** Default: `clipReframeService.reframeClip` (PF-02, detector real lazy). */
   reframeClip?: (input: ReframeClipInput) => Promise<ReframeClipResult>;
+  /** Default: `clipSubtitleService.burnSubtitles` (PF-03, ffmpeg real). */
+  burnSubtitles?: (
+    input: BurnSubtitlesInput,
+  ) => Promise<BurnSubtitlesResult>;
   now?: () => Date;
   /** Backoff en ms según el nº de intento ya consumido. Default lineal 1min. */
   backoffMs?: (attempts: number) => number;
@@ -91,6 +102,7 @@ interface ResolvedWorkerDeps {
   store: ClipRenderQueueStore;
   cutRawWindow: (input: CutRawWindowInput) => Promise<CutRawWindowResult>;
   reframeClip: (input: ReframeClipInput) => Promise<ReframeClipResult>;
+  burnSubtitles: (input: BurnSubtitlesInput) => Promise<BurnSubtitlesResult>;
   now: () => Date;
   backoffMs: (attempts: number) => number;
 }
@@ -102,6 +114,9 @@ function resolveDeps(deps: ClipRenderWorkerDeps): ResolvedWorkerDeps {
       deps.cutRawWindow ?? ((input) => clipCutterService.cutRawWindow(input)),
     reframeClip:
       deps.reframeClip ?? ((input) => clipReframeService.reframeClip(input)),
+    burnSubtitles:
+      deps.burnSubtitles ??
+      ((input) => clipSubtitleService.burnSubtitles(input)),
     now: deps.now ?? (() => new Date()),
     backoffMs: deps.backoffMs ?? ((attempts) => attempts * BACKOFF_STEP_MS),
   };
@@ -147,9 +162,12 @@ export function createClipRenderWorker(
   const { store, now } = resolved;
 
   async function dispatch(job: ClipRenderJob): Promise<void> {
-    if (job.kind !== 'cut' && job.kind !== 'reframe') {
-      // Kind desconocido → terminal sin reintento (retry:false). PF-03
-      // agregará 'subtitles' a este switch.
+    if (
+      job.kind !== 'cut' &&
+      job.kind !== 'reframe' &&
+      job.kind !== 'subtitles'
+    ) {
+      // Kind desconocido → terminal sin reintento (retry:false).
       const updated = await store.markFailed(
         job.id,
         `unknown render job kind: ${job.kind}`,
@@ -183,26 +201,44 @@ export function createClipRenderWorker(
           durationSec: result.durationSec,
         });
       } else {
-        // 'reframe' (PF-02): el clip YA existe — `payload.clipId` es la
-        // fuente de verdad; `job.clipId` (FK de la fila) es el fallback si
-        // el enqueue no lo rellenó. markDone lo (re)escribe por las dudas.
+        // 'reframe' (PF-02) / 'subtitles' (PF-03): el clip YA existe —
+        // `payload.clipId` es la fuente de verdad; `job.clipId` (FK de la
+        // fila) es el fallback si el enqueue no lo rellenó. markDone lo
+        // (re)escribe por las dudas.
         const payloadClipId = (job.payload as { clipId?: unknown }).clipId;
         const clipId =
           typeof payloadClipId === 'string' && payloadClipId
             ? payloadClipId
             : (job.clipId ?? '');
-        const result = await resolved.reframeClip({
-          tenantId: job.tenantId,
-          clipId,
-        });
-        await store.markDone(job.id, { clipId: result.clipId });
-        emitToTenant(io, job.tenantId, 'clip:render:done', {
-          jobId: job.id,
-          clipId: result.clipId,
-          kind: job.kind,
-          videoPath: result.videoPath,
-          layout: result.layout,
-        });
+        if (job.kind === 'reframe') {
+          const result = await resolved.reframeClip({
+            tenantId: job.tenantId,
+            clipId,
+          });
+          await store.markDone(job.id, { clipId: result.clipId });
+          emitToTenant(io, job.tenantId, 'clip:render:done', {
+            jobId: job.id,
+            clipId: result.clipId,
+            kind: job.kind,
+            videoPath: result.videoPath,
+            layout: result.layout,
+          });
+        } else {
+          // 'subtitles': quema cues + logo + progreso sobre el videoPath
+          // vigente del clip (post-reframe si existe, post-cut si no).
+          const result = await resolved.burnSubtitles({
+            tenantId: job.tenantId,
+            clipId,
+          });
+          await store.markDone(job.id, { clipId: result.clipId });
+          emitToTenant(io, job.tenantId, 'clip:render:done', {
+            jobId: job.id,
+            clipId: result.clipId,
+            kind: job.kind,
+            videoPath: result.videoPath,
+            cues: result.cues,
+          });
+        }
       }
     } catch (err) {
       const retryAt = new Date(now().getTime() + resolved.backoffMs(job.attempts));
