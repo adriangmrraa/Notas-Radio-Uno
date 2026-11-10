@@ -1,64 +1,39 @@
-# PE-01 — Capa de proveedores de análisis (registry + config por proceso)
+# PE-06 — Segmentos: `transmission_segments` (tema, resumen, speakers, ventana temporal)
 
 KANBAN_TASK_ID: t_d2f3cad5
 Slice de: ÉPICA E — Motor de análisis en vivo
 Ejecutor: devin-swe-2-max (sesión de orquestación en worktree master)
-Base: b3d105a (master tip — incluye ÉPICA D completa)
+Base: 260680b (master tip — incluye PE-01 mergeado)
 
 ## Objetivo
 
-Crear `analysisProviderRegistry`: la capa que permite **cambiar de modelo por proceso
-sin reescribir código** (decisión D-2 de la tarjeta). Tres procesos:
-
-- `analysis` — análisis multimodal del vivo (video + transcripción → momentos/temas/citas)
-- `transcription` — audio → utterances + diarización
-- `image` — análisis visual de frames/segmentos (sampler de PE-03 lo consume)
-
-## Decisiones fijas (de la tarjeta)
-
-- Análisis visual = **Gemini 3.x sampled por segmentos** + **AssemblyAI diarización**
-  como timeline primario. NO Gemini Live API. NO reemplazar AssemblyAI.
-- Defaults: analysis→gemini, transcription→assemblyai (fallback whisper), image→gemini.
-- Override por env: `ANALYSIS_PROVIDER_<PROCESO>` y `ANALYSIS_MODEL_<PROCESO>`.
+Crear la tabla `transmission_segments` y su servicio — la unidad editorial que el
+motor de análisis (PE-02) va a escribir por ventana: tema, resumen, speakers y
+ventana temporal. Mismo contrato que `transcript_segments`/`transmission_moments`
+(PD-05): offsets relativos a `transmissions.started_at`, `tenant_id` en todo.
 
 ## Alcance
 
-- Nuevo `src/server/lib/analysisProviders.ts` — registry puro (sin DB, sin axios),
-  mismo patrón que `src/server/lib/streamSources.ts` (PD-07).
-- Rewirear el dispatch de `transcribeAudio` en `transcriptionService.ts` para que
-  consulte el registry — comportamiento idéntico (assemblyai si hay key → whisper).
-- Test `tests/analysisProviders.test.ts` (vitest, patrón de streamSources.test.ts).
+- `src/server/db/schema/live.ts`: nueva tabla `transmission_segments`
+  (tenantId, transmissionId, startMs/endMs bigint, topic varchar(200),
+  summary text, speakers jsonb `{label, personId?}[]`, confidence real,
+  createdAt) + índices tenant / (transmission,start_ms).
+- Migración drizzle (`npx drizzle-kit generate`) + `node scripts/verify-migration-pglite.mjs`.
+- `src/server/services/transmissionSegmentsService.ts`: interface `SegmentsStore`
+  + impl drizzle + factory `createTransmissionSegmentsService(store)` (patrón
+  de `streamRecorderService`/`transmissionSchedulerService`).
+- `tests/helpers/memorySegmentsStore.ts` + `tests/transmissionSegments.test.ts`.
 
-## Contrato
-
-```ts
-export type AnalysisProcess = 'analysis' | 'transcription' | 'image';
-export interface AnalysisProviderDef {
-  id: string;                        // 'gemini' | 'assemblyai' | 'whisper' | 'openai-vision'
-  label: string;
-  processes: readonly AnalysisProcess[];
-  envKeys: readonly string[];        // env vars requeridas
-  defaultModel: string;
-  modelEnvKey?: string;              // env para override del modelo
-  supports: { diarization?: boolean; videoInput?: boolean; imageInput?: boolean };
-}
-export function resolveAnalysisProvider(p: AnalysisProcess): ResolvedAnalysisProvider;
-export function listAnalysisProviders(p?: AnalysisProcess): (AnalysisProviderDef & { available: boolean })[];
-```
-
-`resolveAnalysisProvider` tira `AnalysisProviderUnavailableError` si ningún provider
-del proceso está configurado — el caller decide el fallback, el registry no inventa.
-
-## Gates (obligatorios, en disco)
+## Gates
 
 - [ ] `npx tsc --noEmit` → EXIT 0
-- [ ] `npx vitest run tests/analysisProviders.test.ts` → verde
-- [ ] `npx vitest run` → suite completa sin regresiones
+- [ ] `node scripts/verify-migration-pglite.mjs` → la migración aplica limpio
+- [ ] `npx vitest run` → verde, sin regresiones
 - [ ] `npm run build` → verde
 
 ## Límites
 
-- NO push, NO PR. Commit conventional en rama `pe-01-analysis-providers`, sin atribución IA.
-- NO modificar `streamRecorderService.ts` (la tarjeta lo prohíbe salvo hook explícito).
-- NO crear tablas: `transmission_segments` es de PE-06.
-- `tenant_id` no aplica acá: el registry es config de plataforma (env), no per-tenant.
+- NO push, NO PR. Commit conventional en rama `pe-06-transmission-segments`, sin atribución IA.
+- `tenant_id` en TODA query. El engine (PE-02) es quien poblará la tabla — este
+  slice deja el contrato y el camino de escritura/lectura, no el análisis.
+- NO tocar `streamRecorderService.ts` ni `transcript_segments`/`transmission_moments`.

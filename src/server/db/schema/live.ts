@@ -5,6 +5,7 @@ import {
   text,
   bigint,
   real,
+  jsonb,
   timestamp,
   index,
 } from 'drizzle-orm/pg-core';
@@ -91,6 +92,57 @@ export const transmissionMoments = pgTable(
   (t) => [
     index('transmission_moments_tenant_id_idx').on(t.tenantId),
     index('transmission_moments_transmission_id_start_ms_idx').on(
+      t.transmissionId,
+      t.startMs,
+    ),
+  ],
+);
+
+/**
+ * transmission_segments — segmentos editoriales de una transmisión (PE-06).
+ *
+ * Distinta de `transcript_segments` (utterances crudos, uno por frase
+ * diarizada): un segmento es una UNIDAD TEMÁTICA que el motor de análisis
+ * (PE-02) produce al agrupar la transcripción — tema, resumen, speakers
+ * presentes y ventana temporal. `transmission_moments` tampoco es lo mismo:
+ * son puntos clipables/marks, no el relato segmentado completo.
+ *
+ * `speakers` es jsonb `{ label: string; personId?: string | null }[]`:
+ * los speaker labels del segmento con su resolución de identidad cuando ya
+ * exista (PE-03 la escribe; `personId` null = speaker sin atribuir).
+ * `start_ms`/`end_ms` comparten la convención de offsets relativos a
+ * `transmissions.started_at`.
+ */
+export interface TransmissionSegmentSpeaker {
+  label: string;
+  personId?: string | null;
+}
+
+export const transmissionSegments = pgTable(
+  'transmission_segments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    transmissionId: uuid('transmission_id')
+      .notNull()
+      .references(() => transmissions.id, { onDelete: 'cascade' }),
+    startMs: bigint('start_ms', { mode: 'number' }).notNull(),
+    endMs: bigint('end_ms', { mode: 'number' }).notNull(),
+    topic: varchar('topic', { length: 200 }),
+    summary: text('summary'),
+    speakers: jsonb('speakers')
+      .$type<TransmissionSegmentSpeaker[]>()
+      .notNull()
+      .default([]),
+    confidence: real('confidence'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('transmission_segments_tenant_id_idx').on(t.tenantId),
+    // Timeline editorial: segmentos de UNA transmisión ordenados por offset.
+    index('transmission_segments_transmission_id_start_ms_idx').on(
       t.transmissionId,
       t.startMs,
     ),
