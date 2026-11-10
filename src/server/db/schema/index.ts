@@ -25,6 +25,7 @@ export * from './transmissions.js';
 export * from './recordings.js';
 export * from './live.js';
 export * from './renderJobs.js';
+export * from './assets.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -59,6 +60,7 @@ import { transmissions, scheduledTransmissions } from './transmissions.js';
 import { streamRecordings, recordingSegments } from './recordings.js';
 import { transcriptSegments, transmissionMoments } from './live.js';
 import { clipRenderJobs } from './renderJobs.js';
+import { assets } from './assets.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -105,6 +107,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   transcriptSegments: many(transcriptSegments),
   transmissionMoments: many(transmissionMoments),
   clipRenderJobs: many(clipRenderJobs),
+  assets: many(assets),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -380,6 +383,7 @@ export const transmissionsRelations = relations(transmissions, ({ one, many }) =
   transcriptSegments: many(transcriptSegments),
   moments: many(transmissionMoments),
   clips: many(clips),
+  assets: many(assets),
 }));
 
 export const scheduledTransmissionsRelations = relations(scheduledTransmissions, ({ one, many }) => ({
@@ -433,5 +437,22 @@ export const transmissionMomentsRelations = relations(transmissionMoments, ({ on
   clip: one(clips, {
     fields: [transmissionMoments.clipId],
     references: [clips.id],
+  }),
+}));
+
+// ── assets relations (PF-10: ledger editorial unificado) ────────────────────
+export const assetsRelations = relations(assets, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [assets.tenantId], references: [tenants.id] }),
+  // Self-FK: flyer→nota, variant/post→padre. relationName obligatorio
+  // porque las dos puntas de la relación son la misma tabla.
+  parent: one(assets, {
+    fields: [assets.parentAssetId],
+    references: [assets.id],
+    relationName: 'AssetChildren',
+  }),
+  children: many(assets, { relationName: 'AssetChildren' }),
+  transmission: one(transmissions, {
+    fields: [assets.transmissionId],
+    references: [transmissions.id],
   }),
 }));

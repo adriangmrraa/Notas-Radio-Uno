@@ -106,6 +106,13 @@
       "when": 1794279490092,
       "tag": "0014_bright_gabe_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794288289697,
+      "tag": "0015_equal_gunslinger",
+      "breakpoints": true
     }
   ]
 }

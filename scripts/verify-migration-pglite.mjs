@@ -699,6 +699,148 @@ if (!/\("?status"?,\s*"?run_at"?\)|\(status,run_at\)|status.*run_at/.test(claimI
   process.exit(1);
 }
 
+// 19) PF-10: assets (ledger editorial unificado) existe con columnas, FKs,
+//     índices y la UNIQUE (tenant_id, source_table, ref_id) del sync.
+const { rows: pf10Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename = 'assets'
+`);
+if (pf10Tables.length !== 1) {
+  console.error('PF-10: falta la tabla assets');
+  process.exit(1);
+}
+
+const { rows: pf10Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'assets'
+`);
+const pf10ColInfo = new Map(pf10Cols.map((r) => [r.column_name, r]));
+const checkPf10Col = (col, dataType, nullable, needsDefault) => {
+  const c = pf10ColInfo.get(col);
+  if (!c) return `falta assets.${col}`;
+  if (c.data_type !== dataType) return `assets.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `assets.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `assets.${col} sin DEFAULT`;
+  return null;
+};
+const pf10ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['kind', 'character varying', 'NO', false],
+  ['source_table', 'character varying', 'NO', false],
+  ['ref_id', 'uuid', 'NO', false],
+  ['parent_asset_id', 'uuid', 'YES', false],
+  ['title', 'text', 'YES', false],
+  ['status', 'character varying', 'NO', true],
+  ['payload', 'jsonb', 'NO', true],
+  ['transmission_id', 'uuid', 'YES', false],
+  ['created_at', 'timestamp with time zone', 'NO', true],
+  ['updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPf10Col(c, t, n, d)).filter(Boolean);
+if (pf10ColErrors.length > 0) {
+  console.error(`PF-10 columnas incorrectas:\n  ${pf10ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const assetStatusDef = pf10ColInfo.get('status')?.column_default ?? '';
+if (!assetStatusDef.includes("'draft'")) {
+  console.error(`PF-10: default de assets.status incorrecto (${assetStatusDef})`);
+  process.exit(1);
+}
+
+// FKs: tenant cascade; parent_asset_id self SET NULL; transmission SET NULL.
+// ref_id NO debe tener FK (el flyer apunta a un path dentro de un jsonb).
+const { rows: pf10Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'assets'
+`);
+const pf10FkMap = new Map(pf10Fks.map((r) => [r.column_name, r]));
+const expectedPf10Fks = [
+  // [columna, tabla destino, confdeltype ('c' cascade, 'n' set null)]
+  ['tenant_id', 'tenants', 'c'],
+  ['parent_asset_id', 'assets', 'n'],
+  ['transmission_id', 'transmissions', 'n'],
+];
+const badPf10Fks = expectedPf10Fks.filter(([col, target, deltype]) => {
+  const row = pf10FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== deltype;
+});
+if (badPf10Fks.length > 0) {
+  console.error(`PF-10: faltan FKs, apuntan mal o el ON DELETE no es el esperado: ${badPf10Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+if (pf10FkMap.has('ref_id')) {
+  console.error('PF-10: ref_id tiene FK y no debe (flyer referencia un path jsonb, no una fila)');
+  process.exit(1);
+}
+
+// Índices + la UNIQUE compuesta (contrato de idempotencia del sync).
+const { rows: pf10Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'assets'
+`);
+const pf10IdxMap = new Map(pf10Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPf10Idx = [
+  'assets_tenant_id_idx',
+  'assets_tenant_id_kind_idx',
+  'assets_tenant_id_status_idx',
+  'assets_transmission_id_idx',
+  'assets_tenant_source_ref_unique',
+];
+const missingPf10Idx = expectedPf10Idx.filter((name) => !pf10IdxMap.has(name));
+if (missingPf10Idx.length > 0) {
+  console.error(`PF-10: faltan índices/unique: ${missingPf10Idx.join(', ')}`);
+  process.exit(1);
+}
+const pf10UniqueDef = pf10IdxMap.get('assets_tenant_source_ref_unique') ?? '';
+if (!/UNIQUE/i.test(pf10UniqueDef)
+  || !pf10UniqueDef.includes('tenant_id')
+  || !pf10UniqueDef.includes('source_table')
+  || !pf10UniqueDef.includes('ref_id')) {
+  console.error(`PF-10: la unique no cubre (tenant_id, source_table, ref_id): ${pf10UniqueDef}`);
+  process.exit(1);
+}
+
+// Funcional: el upsert del sync (INSERT ... ON CONFLICT DO UPDATE sin status
+// en el SET) es idempotente y preserva el estado editorial transicionado.
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('00000000-0000-4000-8000-00000000ff10', 'Tenant pf10', 'tenant-pf10')
+  ON CONFLICT (id) DO NOTHING
+`);
+const pf10Tenant = '00000000-0000-4000-8000-00000000ff10';
+const pf10ClipRef = '00000000-0000-4000-8000-00000000c110';
+await db.exec(`
+  INSERT INTO assets (tenant_id, kind, source_table, ref_id, title, status, payload)
+  VALUES ('${pf10Tenant}', 'clip', 'clips', '${pf10ClipRef}', 'Clip A', 'draft', '{"videoPath":"v1.mp4"}'::jsonb)
+  ON CONFLICT (tenant_id, source_table, ref_id)
+  DO UPDATE SET title = EXCLUDED.title, payload = EXCLUDED.payload, updated_at = now()
+`);
+await db.exec(`
+  UPDATE assets SET status = 'approved' WHERE tenant_id = '${pf10Tenant}' AND ref_id = '${pf10ClipRef}'
+`);
+// Re-sync: mismas columnas del conflicto — status queda 'approved' (preservado).
+await db.exec(`
+  INSERT INTO assets (tenant_id, kind, source_table, ref_id, title, status, payload)
+  VALUES ('${pf10Tenant}', 'clip', 'clips', '${pf10ClipRef}', 'Clip A v2', 'draft', '{"videoPath":"v2.mp4"}'::jsonb)
+  ON CONFLICT (tenant_id, source_table, ref_id)
+  DO UPDATE SET title = EXCLUDED.title, payload = EXCLUDED.payload, updated_at = now()
+`);
+const { rows: pf10Rows } = await db.query(`
+  SELECT title, status, payload->>'videoPath' AS video_path
+  FROM assets WHERE tenant_id = '${pf10Tenant}' AND source_table = 'clips' AND ref_id = '${pf10ClipRef}'
+`);
+if (pf10Rows.length !== 1 || pf10Rows[0].status !== 'approved' || pf10Rows[0].title !== 'Clip A v2' || pf10Rows[0].video_path !== 'v2.mp4') {
+  console.error(`PF-10: el upsert del sync no es idempotente o pisó el status editorial: ${JSON.stringify(pf10Rows)}`);
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -714,5 +856,6 @@ console.log('tablas PD-05:', pd05Tables.map((r) => r.tablename).join(', '));
 console.log('fks PD-05:', expectedPd05Fks.map(([c, t, d]) => `${c}->${t}(${d})`).join(', '));
 console.log('índices PD-05:', expectedPd05Idx.join(', '));
 console.log('tabla PF-04: clip_render_jobs (14 columnas) + FKs cascade + índice del claim (status, run_at)');
+console.log('tabla PF-10: assets (12 columnas) + UNIQUE (tenant_id,source_table,ref_id) idempotente + FKs (tenant cascade, parent/tx set null)');
 await db.close();
 process.exit(0);
