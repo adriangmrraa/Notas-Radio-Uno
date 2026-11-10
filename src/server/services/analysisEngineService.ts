@@ -523,7 +523,7 @@ export function parseAnalysisResult(raw: string): AnalysisResult {
  * con `response_format: json_object`. Otro id que el registry habilite a
  * futuro sin caller acá → error explícito, nunca fallback silencioso.
  */
-async function callAnalysisProvider(
+export async function callAnalysisProvider(
   provider: ResolvedAnalysisProvider,
   prompt: string,
 ): Promise<string> {
