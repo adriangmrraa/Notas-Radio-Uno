@@ -1,117 +1,135 @@
-# BRIEF — PF-09 Variantes por red: copy + hashtags + menciones con handles reales
+# BRIEF — PF-10 Modelo `assets` unificado + estados editoriales (ledger sobre clips/publications)
 
-**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-09, 3 pts)
-**Base**: `5379a04` (master tip)
-**Branch**: `pf-09-network-variants`
-**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-09-network-variants`
+**KANBAN_TASK_ID**: t_682756fa (ÉPICA F — PF-10, 5 pts — CIERRA LA ÉPICA)
+**Base**: `35bf992` (master tip)
+**Branch**: `pf-10-unified-assets`
+**Worktree**: `C:/Users/Asus/orca/workspaces/periodistapp/pf-10-unified-assets`
 
 ## Contexto
 
-`generateContentVariants` (contentMultiplierService) ya produce copy por red — pero NO
-hashtags ni menciones. Este slice agrega **menciones con handles REALES** resueltas
-determinísticamente desde `persons.social_links` (los handles son hechos — NUNCA los
-genera el LLM) + hashtags, persistido en `publications.contentVariants` (jsonb, ya existe).
+Después de PF-01..09 el contenido vive en DOS tablas: `clips` (videos: cut/reframe/subs)
+y `publications` (notas, con quote_flyer_paths + contentVariants). La épica pide un
+**modelo `assets` unificado (clip/nota/flyer/post) con estados editoriales**.
 
-Contratos existentes (verificados):
-- `persons.socialLinks` jsonb `{twitter, instagram, linkedin, x, web, email, ...}`
-  (schema/persons.ts:43).
-- `ContentVariants` (shared/types.ts:153): `{twitterThread: string[],
-  instagramCarousel: string[], linkedinPost: string, youtubeDescription: string,
-  newsletterBlurb: string}` — shape FIJO que el client ya consume. Extensión: agregar
-  campo opcional `extras` aditivo (no rompe nada).
-- `publications.contentVariants` jsonb (nullable) — destino.
-- `publications.quotes` jsonb = AttributedQuote[] con `personId`+`personName` (PF-06/07).
-- `chatCompletion({systemPrompt, userPrompt, temperature, maxTokens, jsonMode})` en
-  `aiSdkService.ts:142` — dep inyectable para el LLM (NUNCA real en tests).
-- `resolveEditorialPromptBlock(tenantId, programId?)` — mismo patrón que PF-06.
-- `activeVariantKeys(activeFormats)` — decide qué variantes pedir según línea editorial.
+**Decisión de diseño (explícita — no negociable en el slice)**: `assets` es un **ledger
+editorial unificado**, NO una migración destructiva de las tablas existentes — un merge
+real de clips+publications tocaría los 9 slices que ya las consumen (blast radius
+enorme, no entra en 5pts ni es seguro). El ledger:
+- 1 fila por artefacto generado, referencia estable `(source_table, ref_id)` UNIQUE
+- estados editoriales CANÓNICOS mapeados desde los statuses legacy
+- transiciones write-through: actualizar el asset también actualiza el status de la
+  fila fuente (los consumers viejos siguen viendo su estado)
+
+Contratos (verificados):
+- `clips`: id, title, status ('generating'|'pending_review'|'ready'|'error'|...),
+  videoPath, transmissionId, metadata jsonb
+- `publications`: id, title, status ('pending_review'|'approved'|'published'|
+  'rejected'), quotes, quoteFlyerPaths, contentVariants — SIN transmissionId
+- Statuses legacy heterogéneos → mapeo canónico obligatorio (map puro testeable).
+- Migración: `npx drizzle-kit generate` + verificación pglite
+  (`scripts/verify-migration-pglite.mjs` — agregar sección PF-10 como hizo PF-04).
 
 ## Alcance
 
-### 1) `networkVariantService.ts` — Store pattern
+### 1) Schema — `assets` (tabla nueva, migración 0015)
 
-`NetworkVariantStore` + `createDrizzleNetworkVariantStore`:
-- `getPublication(pubId, tenantId)` → {id, title, content, quotes}
-- `getPersonSocialLinks(tenantId, personIds: string[])` → `[{id, name, socialLinks}]`
-  tenant-scoped (`inArray` + eq tenant)
-- `updateContentVariants(pubId, tenantId, variants)` — UPDATE de la columna
-  (no merge atómico necesario: una corrida reemplaza, es regenerable)
+`src/server/db/schema/assets.ts` + export en index.ts + relations si aplica:
 
-### 2) Menciones determinísticas (puras — corazón del slice)
+- `id` uuid PK, `tenant_id` NOT NULL FK tenants cascade + index
+- `kind` varchar(16) NOT NULL — 'clip' | 'note' | 'flyer' | 'post'
+- `source_table` varchar(24) NOT NULL — 'clips' | 'publications'
+- `ref_id` uuid NOT NULL — id de la fila fuente (SIN FK: flyer apunta a path, no row;
+  documentar por qué no hay FK)
+- `parent_asset_id` uuid NULL FK self (flyer→nota, variant→nota, post→cualquiera)
+- `title` text NULL, `status` varchar(20) NOT NULL default 'draft'
+- `payload` jsonb NOT NULL default {} — kind-specific: {videoPath} | {content} |
+  {flyerPath, quoteIndex} | {network, copy, hashtags}
+- `transmission_id` uuid NULL FK transmissions set null + index
+- `created_at`, `updated_at` (patrón repo)
+- UNIQUE compuesto `(tenant_id, source_table, ref_id)` — idempotencia del sync
+- Índices: `(tenant_id, kind)`, `(tenant_id, status)`
 
-`NETWORK_HANDLE_KEYS: Record<NetworkKey, string[]>` —
-`twitter → ['x','twitter']`, `instagram → ['instagram']`,
-`linkedin → ['linkedin']`, `youtube → ['youtube']`, `newsletter → []` (sin menciones).
+### 2) `assetsService.ts` — Store pattern + máquina de estados
 
-`resolveMentions(persons, network)` → `[{personId, name, handle}]` (pura): por cada
-persona toma `socialLinks[key]` del primer key presente de la red; normaliza `@`
-(agregar si falta); sin handle en esa red → no aparece. Deduplicar por handle.
+`AssetStore` + `createDrizzleAssetStore`:
+- `upsertAsset(row)` — ON CONFLICT (tenant_id, source_table, ref_id) DO UPDATE
+  title/payload/updated_at (status NO se pisa si el asset ya transicionó manualmente —
+  conflicto preserva status; sync nunca retrocede un estado editorial)
+- `listAssets(tenantId, {kind?, status?, transmissionId?})`, `getAsset(id, tenantId)`
+- `setAssetStatus(id, tenantId, status)` + `updateSourceStatus(source_table, ref_id,
+  tenantId, statusLegacy)` — write-through
+- Lectores del sync: `listClips(tenantId, transmissionId?)`,
+  `listPublications(tenantId)`, `listPublicationFlyerPaths(pubId)` (del jsonb)
 
-`extractPersonIds(quotes)` → personIds únicos con personId no-null (pura).
+**Máquina de estados canónica** (`ASSET_STATES`): draft → pending_review → approved →
+published | archived (desde pending_review/approved). `canTransition(from,to)` pura.
+`mapLegacyStatus(source_table, legacyStatus)` → canónico (pura):
+- clips: generating→draft, pending_review→pending_review, ready→approved,
+  published→published, error→draft + metadata.error
+- publications: pending_review→pending_review, approved→approved,
+  published→published, rejected→archived
 
-### 3) `generateVariants({tenantId, publicationId, networks?})`
+`syncAssets({tenantId, transmissionId?})` — el CORAZÓN del ledger:
+- Por cada clip del tenant (o de la transmisión): upsert {kind:'clip',
+  source_table:'clips', ref_id:clip.id, title, status:map(clip.status),
+  payload:{videoPath, duration}, transmission_id:clip.transmissionId}
+- Por cada publication: upsert {kind:'note', ref_id:pub.id, payload:{content}}
+- Por cada flyerPath en pub.quoteFlyerPaths[i]: upsert {kind:'flyer',
+  ref_id: <uuid derivado determinista — pubId + índice via uuid v5 o string estable
+  en payload.quoteIndex; elegir y documentar>, parent_asset_id: asset de la nota,
+  payload:{flyerPath, quoteIndex:i}}
+- Return {upserted, byKind}
 
-1. Publication → `publication_not_found`; title+content requeridos (`no_content`).
-2. `networks` opcional: default = `activeVariantKeys` de la línea editorial → si todo
-   vacío, las 5 de ContentVariants. Validar ∈ keys válidas → `invalid_network`.
-3. `extractPersonIds(quotes)` → `getPersonSocialLinks` → por red: `resolveMentions`
-   → mention map `{handle: personName}` para el prompt + `mentions[]` estructurado.
-4. LLM (dep `generate` inyectable, default lazy chatCompletion): prompt con
-   title+content+quotes atribuidas+handles disponibles por red → JSON
-   `{twitterThread: {tweets:[], hashtags:[]}, instagramCarousel: {slides:[], hashtags:[]}, ...}`
-   — hashtags se piden al modelo (son creativos); menciones NO (se inyectan del mapa).
-5. Persistir `contentVariants` = shape ContentVariants canonical para compat
-   (twitterThread=tweets, instagramCarousel=slides, linkedinPost=post,
-   youtubeDescription=desc, newsletterBlurb=blurb) + `extras` (nuevo campo opcional en
-   shared/types.ts — aditivo): `{twitter: {hashtags, mentions:[{name,handle}]},
-   instagram: {...}, linkedin: {...}, youtube: {...}, newsletter: {...}}` solo para
-   las redes pedidas. Actualizar `ContentVariants` type en shared/types.ts con
-   `extras?: Partial<Record<NetworkVariantKey, NetworkExtras>>` — ADITIVO, no rompe.
-6. Return `{publicationId, variants (lo persistido), mentionsResolved}`.
+`transitionAsset({tenantId, assetId, to})` → valida canTransition → setAssetStatus +
+`updateSourceStatus` (legacy inverso: approved→clips 'ready' / publications 'approved',
+published→'published', archived→publications 'rejected'?? NO — archived no tiene
+legacy; documentar: archived solo toca el asset) → asset actualizado.
+`invalid_transition` si canTransition falla.
 
-Errores: `publication_not_found` 404 / `no_content` 422 / `invalid_network` 422 /
-`invalid_model_response` 502 (mismo patrón PF-06).
+### 3) Endpoint — `routes/assets.ts` (nuevo, patrón notes.ts)
 
-Deps: `{store, generate, editorialBlock, now}` — generate default lazy import
-chatCompletion; editorialBlock default lazy resolveEditorialPromptBlock.
+- `GET /api/assets?kind&status&transmissionId` → `{assets}`
+- `POST /api/assets/sync {transmissionId?}` → `{upserted, byKind}`
+- `POST /api/assets/:id/transition {to}` → 200 {asset} / 409 invalid_transition / 404
+`req.auth!.tenantId`; deps inyectables patrón repo.
 
-### 4) Endpoint — `routes/publications.ts` (extender — YA EXISTE de PF-07)
+### 4) Tests deterministas
 
-`POST /:id/variants` body `{networks?: string[]}` → `generateVariants` →
-`201 {publicationId, variants, mentionsResolved}`; 400 body inválido; 404; 422.
-`publicationsRouteDeps` extender con los deps nuevos (mismo patrón).
-
-### 5) Tests deterministas
-
-`tests/helpers/memoryNetworkVariantStore.ts` + `tests/networkVariants.test.ts`:
-- `resolveMentions`: x antes que twitter en key list, normalización @, persona sin
-  handle en la red → no aparece, dedupe por handle, newsletter → []
-- `extractPersonIds`: únicos, nulls fuera
-- generateVariants: LLM fake devuelve copy+hashtags → persistido = canonical keys +
-  extras con mentions resueltas (¡el handle REAL de socialLinks, no el que invente el LLM!);
-  contentVariants shape compat
-- redes pedidas ⊆ válidas; invalid_network; publication_not_found; no_content
-- tenant isolation; ruta 201/400/404/422
+`tests/helpers/memoryAssetsStore.ts` + `tests/assets.test.ts`:
+- mapLegacyStatus ambas tablas, canTransition todas las aristas (incluidas inválidas:
+  draft→published directo NO, published→draft NO)
+- syncAssets idempotente (2 corridas → mismo count de upserts, sin duplicar);
+  status manual preservado en re-sync
+- flyers con ref determinista + parent_asset_id a la nota
+- transitionAsset write-through: aprueba asset → source status actualizado
+- archived solo toca asset (sin legacy)
+- rutas: list filtra kind/status, sync 200, transition 200/404/409
+- tenant isolation
+- Migración: sección PF-10 en verify-migration-pglite.mjs
 
 ## NO TOCAR
 
-- `contentMultiplierService.ts` (línea vieja — no se toca; el servicio nuevo es el
-  camino ÉPICA F)
-- `imageService.ts`, `quoteFlyerService.ts`, `noteFactoryService.ts`
-- Schemas — cero migraciones (contentVariants jsonb ya existe)
-- shared/types.ts — SOLO el campo aditivo `extras` + types nuevos
-- El LLM NO genera handles: `resolveMentions` es determinístico desde socialLinks
+- `clips`/`publications` schemas y columnas (cero cambios en tablas existentes —
+  assets es capa NUEVA encima)
+- Todos los services PF-01..09 (clipCutter/Reframe/Subtitle/Recut/noteFactory/
+  quoteFlyer/imageModel/networkVariant/clipRender*) — NINGUNO se modifica; el ledger
+  se puebla por sync, no por hooks
+- `clipService.ts`, `pipelineService.ts`, `contentMultiplierService.ts`
+- El UNIQUE (tenant,source_table,ref_id) es el contrato de idempotencia — no
+  improvisar claves distintas
 
 ## Gates obligatorios
 
 ```bash
 npm ci --ignore-scripts   # si node_modules no está
+npx drizzle-kit generate  # migración 0015
+node scripts/verify-migration-pglite.mjs  # + sección PF-10
 npx tsc --noEmit          # EXIT 0
-npx vitest run            # 646 base + nuevos
-npm run build             # verde — sin schema changes
+npx vitest run            # 680 base + nuevos
+npm run build             # verde
 ```
 
 ## Reporte
 
-`DONE: PF-09 → <SHA>` + archivos + gates + decisiones (mapa de keys por red, shape
-extras, política de menciones). `BLOCKED: <razón>`.
+`DONE: PF-10 → <SHA>` + archivos + migración + gates + decisiones (ref determinista de
+flyers, mapa de estados completo, por qué ledger y no merge destructivo). `BLOCKED:`.
