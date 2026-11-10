@@ -158,6 +158,41 @@ export interface ContentVariants {
   newsletterBlurb: string;
 }
 
+// ─── PF-09: variantes por red — hashtags + menciones con handles reales ───
+
+/** Redes soportadas por las variantes (keys de `extras` y del body {networks}). */
+export type NetworkVariantKey =
+  | 'twitter'
+  | 'instagram'
+  | 'linkedin'
+  | 'youtube'
+  | 'newsletter';
+
+/**
+ * Mención REAL resuelta determinísticamente desde persons.social_links —
+ * el LLM nunca la genera. `handle` viene normalizado con '@'.
+ */
+export interface NetworkVariantMention {
+  name: string;
+  handle: string;
+}
+
+/** Extras por red pedida: hashtags del modelo + menciones determinísticas. */
+export interface NetworkExtras {
+  hashtags: string[];
+  mentions: NetworkVariantMention[];
+}
+
+/**
+ * ContentVariants + `extras` por red pedida (PF-09) — lo que
+ * networkVariantService persiste en publications.contentVariants.
+ * `extras` es ADITIVO y opcional: el client sigue leyendo el shape
+ * canonical; las filas viejas sin extras siguen siendo válidas.
+ */
+export interface ContentVariantsWithExtras extends ContentVariants {
+  extras?: Partial<Record<NetworkVariantKey, NetworkExtras>>;
+}
+
 // Review / Editorial Copilot
 export type PublicationStatus = 'pending_review' | 'approved' | 'published' | 'rejected';
 
