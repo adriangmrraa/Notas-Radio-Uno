@@ -25,6 +25,9 @@ import {
   CheckCheck,
   Sparkles,
   Layers,
+  AtSign,
+  Hash,
+  Send,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 
@@ -611,6 +614,313 @@ function ContentVariantsPanel({ publicationId, pub, onVariantsUpdated }: Content
   );
 }
 
+// ─── Publish Preview Panel (PG-06) ────────────────────────────────────────────
+
+interface PublishPreviewMention {
+  personId: string;
+  name: string;
+  handle: string;
+}
+
+interface PublishPreviewItem {
+  platform: string;
+  accountId: string;
+  connectionId: string | null;
+  accountLabel: string | null;
+  content: string;
+  mentions: PublishPreviewMention[];
+  hashtags: string[];
+  textLimit: number | null;
+  truncated: boolean;
+}
+
+interface PublishPreviewResult {
+  usedZernio: boolean;
+  connectionCount: number;
+  previews: PublishPreviewItem[];
+}
+
+const PUBLISH_PLATFORM_LABELS: Record<string, string> = {
+  twitter: 'X / Twitter',
+  instagram: 'Instagram',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  tiktok: 'TikTok',
+  facebook: 'Facebook',
+  threads: 'Threads',
+  pinterest: 'Pinterest',
+  reddit: 'Reddit',
+  bluesky: 'Bluesky',
+};
+
+const shortAccountId = (id: string) => (id.length > 10 ? `${id.slice(0, 8)}…` : id);
+
+/**
+ * PG-06: previsualización del texto final que va a salir a cada red —
+ * menciones reales (de la ficha de la persona, nunca inventadas) y
+ * etiquetas. Cada persona citada se puede excluir con un toggle; las
+ * etiquetas extra se mandan al aprobar junto con las exclusiones.
+ */
+function PublishPreviewPanel({
+  publicationId,
+  onOptionsChange,
+}: {
+  publicationId: string;
+  onOptionsChange: (opts: { excludePersonIds: string[]; hashtags: string[] }) => void;
+}) {
+  const { fetchApi } = useApi();
+  const [preview, setPreview] = useState<PublishPreviewResult | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [previewError, setPreviewError] = useState('');
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [tagInput, setTagInput] = useState('');
+  const [appliedTags, setAppliedTags] = useState<string[]>([]);
+  // Todas las personas vistas alguna vez — al excluir una desaparece de la
+  // previsualización pero el toggle tiene que seguir disponible para volver.
+  const [allPeople, setAllPeople] = useState<Map<string, PublishPreviewMention>>(new Map());
+
+  const loadPreview = useCallback(
+    async (excludeIds: string[], hashtags: string[]) => {
+      setLoadingPreview(true);
+      setPreviewError('');
+      try {
+        const data = await fetchApi<PublishPreviewResult>(
+          `/review/${publicationId}/publish-preview`,
+          {
+            method: 'POST',
+            body: {
+              ...(excludeIds.length > 0 ? { excludePersonIds: excludeIds } : {}),
+              ...(hashtags.length > 0 ? { hashtags } : {}),
+            },
+          },
+        );
+        setPreview(data);
+        setAllPeople((prev) => {
+          const next = new Map(prev);
+          for (const p of data.previews) {
+            for (const m of p.mentions) next.set(m.personId, m);
+          }
+          return next;
+        });
+      } catch (err: any) {
+        setPreviewError(err.message || 'Error al generar la previsualización');
+      }
+      setLoadingPreview(false);
+    },
+    [publicationId, fetchApi],
+  );
+
+  useEffect(() => {
+    void loadPreview([], []);
+  }, [loadPreview]);
+
+  const togglePerson = (personId: string) => {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(personId)) next.delete(personId);
+      else next.add(personId);
+      const ids = Array.from(next);
+      void loadPreview(ids, appliedTags);
+      onOptionsChange({ excludePersonIds: ids, hashtags: appliedTags });
+      return next;
+    });
+  };
+
+  const applyTags = () => {
+    const tags = tagInput
+      .split(/[\s,]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    setAppliedTags(tags);
+    void loadPreview(Array.from(excluded), tags);
+    onOptionsChange({ excludePersonIds: Array.from(excluded), hashtags: tags });
+  };
+
+  if (loadingPreview && !preview) {
+    return (
+      <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-5 flex items-center gap-3">
+        <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
+        <span className="text-xs text-white/40">Generando previsualización por red…</span>
+      </div>
+    );
+  }
+
+  if (previewError && !preview) {
+    return (
+      <div className="rounded-2xl bg-red-500/[0.06] border border-red-500/15 p-4 flex items-start gap-3 text-red-400 text-xs">
+        <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+        <span>{previewError}</span>
+      </div>
+    );
+  }
+
+  if (!preview || !preview.usedZernio) {
+    return (
+      <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4">
+        <p className="text-xs text-white/35">
+          Sin cuentas conectadas — al aprobar se publica por el circuito clásico,
+          sin menciones ni etiquetas automáticas. Conectá redes en{' '}
+          <span className="text-cyan-400/80">Conexiones</span> para previsualizar el texto final por red.
+        </p>
+      </div>
+    );
+  }
+
+  const people = Array.from(allPeople.values());
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Send className="w-3.5 h-3.5 text-white/30" />
+          <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+            Texto final por red
+          </span>
+        </div>
+        {loadingPreview && (
+          <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+        )}
+      </div>
+
+      {/* Toggles por persona citada — excluir de TODAS las redes. */}
+      {people.length > 0 && (
+        <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-2">
+          <div className="flex items-center gap-2">
+            <AtSign className="w-3.5 h-3.5 text-cyan-400/70" />
+            <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+              Menciones ({people.length - excluded.size} de {people.length})
+            </span>
+          </div>
+          <p className="text-[11px] text-white/30">
+            Tocá una persona para excluirla de las menciones de todas las redes.
+          </p>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {people.map((p) => {
+              const off = excluded.has(p.personId);
+              return (
+                <button
+                  key={p.personId}
+                  onClick={() => togglePerson(p.personId)}
+                  title={off ? `Incluir a ${p.name} en las menciones` : `Excluir a ${p.name} de las menciones`}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-150 ${
+                    off
+                      ? 'bg-white/[0.03] text-white/25 border-white/[0.08] line-through'
+                      : 'bg-cyan-400/[0.08] text-cyan-300 border-cyan-400/25 hover:bg-cyan-400/[0.14]'
+                  }`}
+                >
+                  <AtSign className="w-3 h-3" />
+                  {p.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Etiquetas extra del posteo — se suman a las del contenido. */}
+      <div className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <Hash className="w-3.5 h-3.5 text-cyan-400/70" />
+          <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+            Etiquetas
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') applyTags();
+            }}
+            placeholder="Ej: elecciones deporte local (separadas por espacio)"
+            className="input-premium !py-2 !text-xs flex-1"
+          />
+          <button
+            onClick={applyTags}
+            className="btn-secondary !py-2 !px-3 !text-xs inline-flex items-center gap-1.5"
+          >
+            Aplicar
+          </button>
+        </div>
+      </div>
+
+      {previewError && (
+        <p className="text-xs text-red-400">{previewError}</p>
+      )}
+
+      {/* Una tarjeta por cuenta destino con el texto exacto que se envía. */}
+      <div className="space-y-3">
+        {preview.previews.map((item, i) => {
+          const overLimit =
+            item.textLimit !== null && item.content.length > item.textLimit;
+          return (
+            <div
+              key={`${item.platform}-${item.accountId}-${i}`}
+              className="rounded-2xl bg-white/[0.02] border border-white/[0.06] p-4 space-y-2.5"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-semibold text-white/75">
+                  {PUBLISH_PLATFORM_LABELS[item.platform] ?? item.platform}
+                </span>
+                <span className="text-[11px] text-white/30">
+                  {item.accountLabel
+                    ? `@${item.accountLabel}`
+                    : shortAccountId(item.accountId)}
+                </span>
+                {item.truncated && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-400/10 text-amber-300 border border-amber-400/20 font-medium">
+                    Texto recortado al límite
+                  </span>
+                )}
+                {item.textLimit !== null && (
+                  <span
+                    className={`ml-auto text-[10px] font-mono ${
+                      overLimit
+                        ? 'text-red-400'
+                        : item.textLimit - item.content.length < 30
+                          ? 'text-amber-400'
+                          : 'text-white/25'
+                    }`}
+                  >
+                    {item.content.length}/{item.textLimit}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-white/70 leading-relaxed whitespace-pre-wrap">
+                {item.content}
+              </p>
+              {(item.mentions.length > 0 || item.hashtags.length > 0) && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {item.mentions.map((m) => (
+                    <span
+                      key={m.personId}
+                      title={m.name}
+                      className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-sky-400/10 text-sky-300 border border-sky-400/20 font-medium"
+                    >
+                      <AtSign className="w-2.5 h-2.5" />
+                      {m.handle} · {m.name}
+                    </span>
+                  ))}
+                  {item.hashtags.map((h) => (
+                    <span
+                      key={h}
+                      className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-purple-400/10 text-purple-300 border border-purple-400/20 font-medium"
+                    >
+                      <Hash className="w-2.5 h-2.5" />
+                      {h}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Review Detail Modal ──────────────────────────────────────────────────────
 
 interface ReviewDetailModalProps {
@@ -658,6 +968,16 @@ function ReviewDetailModal({
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
 
+  // PG-06: exclusiones de menciones + etiquetas extra que viajan al approve.
+  const [publishOpts, setPublishOpts] = useState<{
+    excludePersonIds: string[];
+    hashtags: string[];
+  }>({ excludePersonIds: [], hashtags: [] });
+  const handlePublishOpts = useCallback(
+    (opts: { excludePersonIds: string[]; hashtags: string[] }) => setPublishOpts(opts),
+    [],
+  );
+
   const loadPublication = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -678,8 +998,18 @@ function ReviewDetailModal({
     if (!pub) return;
     setApproving(true);
     try {
+      // PG-06: las exclusiones de menciones y las etiquetas extra del
+      // preview panel viajan en el body — el servidor compone el texto final.
       const res = await fetchApi<{ publish?: string; enqueued?: number; targetCount?: number }>(
-        `/review/${pub.id}/approve`, { method: 'POST' });
+        `/review/${pub.id}/approve`,
+        {
+          method: 'POST',
+          body: {
+            excludePersonIds: publishOpts.excludePersonIds,
+            hashtags: publishOpts.hashtags,
+          },
+        },
+      );
       // PG-05: con Zernio la publicación queda 'approved' y el worker publica
       // — el aviso dice que quedó encolada, no que ya salió en las redes.
       const notice = res.publish === 'zernio'
@@ -1118,6 +1448,14 @@ function ReviewDetailModal({
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {/* ── PG-06: previsualización del texto final por red ── */}
+                  {pub.status === 'pending_review' && (
+                    <PublishPreviewPanel
+                      publicationId={pub.id}
+                      onOptionsChange={handlePublishOpts}
+                    />
                   )}
                 </>
               )}

@@ -22,10 +22,14 @@ import {
   addEditHistoryEntry,
 } from "../services/databaseService.js";
 import { publishToChannels } from "../services/publishService.js";
+import { AppError } from "../lib/errors.js";
 import {
   enqueueForApproval,
+  previewPublishEnqueue,
+  validatePublishOptions,
   type EnqueueForApprovalResult,
   type PublishJobDeps,
+  type PublishPreviewResult,
 } from "../services/publishJobService.js";
 import { chatCompletion } from "../services/aiSdkService.js";
 import { processImage } from "../services/imageService.js";
@@ -67,11 +71,41 @@ export const reviewPublishDeps: {
       content: string;
       mediaUrls?: string[];
       scheduledFor?: Date | null;
+      /** PG-06: personas explícitas / excluidas / etiquetas del request. */
+      personIds?: string[];
+      excludePersonIds?: string[];
+      hashtags?: string[];
     },
     deps?: PublishJobDeps,
   ) => Promise<EnqueueForApprovalResult>;
+  /** PG-06: previsualización de texto final por red (sin encolar). */
+  previewPublishEnqueue?: (
+    input: {
+      tenantId: string;
+      assetId?: string | null;
+      publicationId?: string | null;
+      content: string;
+      personIds?: string[];
+      excludePersonIds?: string[];
+      hashtags?: string[];
+    },
+    deps?: PublishJobDeps,
+  ) => Promise<PublishPreviewResult>;
   publishJobDeps?: PublishJobDeps;
 } = {};
+
+/** AppError → su status; cualquier otra cosa → 500. */
+function routePublishError(res: Response, err: unknown, fallback: string): void {
+  if (err instanceof AppError) {
+    res.status(err.statusCode).json({
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+    });
+    return;
+  }
+  const e = err as Error;
+  res.status(500).json({ error: `${fallback}: ${e.message}` });
+}
 
 /** Media publicable por Zernio: sólo URLs absolutas http(s) — los paths locales no los puede leer. */
 function publicMediaUrls(imageUrl: string | null | undefined): string[] {
@@ -113,6 +147,38 @@ export function registerReviewRoutes(app: Express): void {
   });
 
   // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/review/:id/publish-preview — PG-06: texto final por red
+  // (menciones reales + etiquetas) ANTES de aprobar. No encola nada.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post("/api/review/:id/publish-preview", requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const id = req.params.id;
+
+    const pub = await getReviewPublicationById(id, tenantId);
+    if (!pub) {
+      res.status(404).json({ error: "Publicación no encontrada" });
+      return;
+    }
+
+    try {
+      const opts = validatePublishOptions((req.body ?? {}) as Record<string, unknown>);
+      const previewFn = reviewPublishDeps.previewPublishEnqueue ?? previewPublishEnqueue;
+      const preview = await previewFn(
+        {
+          tenantId,
+          publicationId: id,
+          content: pub.content ?? "",
+          ...opts,
+        },
+        reviewPublishDeps.publishJobDeps,
+      );
+      res.json(preview);
+    } catch (err) {
+      routePublishError(res, err, "Error al generar la previsualización");
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
   // POST /api/review/:id/approve — Aprobar y publicar en todos los canales
   // ────────────────────────────────────────────────────────────────────────────
   app.post("/api/review/:id/approve", requireAuth, async (req: Request, res: Response): Promise<void> => {
@@ -129,7 +195,10 @@ export function registerReviewRoutes(app: Express): void {
     // por cuenta destino) y la publicación queda 'approved' — el worker la
     // pasa a 'published' cuando todos los jobs publican (queda 'approved'
     // si alguno queda partial/failed). Sin conexiones → legacy intacto.
+    // PG-06: el body puede traer personIds/excludePersonIds/hashtags — se
+    // validan y componen el texto final por red dentro del enqueue.
     try {
+      const opts = validatePublishOptions((req.body ?? {}) as Record<string, unknown>);
       const enqueueFn = reviewPublishDeps.enqueueForApproval ?? enqueueForApproval;
       const enq = await enqueueFn(
         {
@@ -137,6 +206,7 @@ export function registerReviewRoutes(app: Express): void {
           publicationId: id,
           content: pub.content ?? "",
           mediaUrls: publicMediaUrls(pub.imageUrl),
+          ...opts,
         },
         reviewPublishDeps.publishJobDeps,
       );
@@ -175,7 +245,7 @@ export function registerReviewRoutes(app: Express): void {
         entityId: id,
         metadata: { error: e.message },
       });
-      res.status(500).json({ error: `Error al encolar la publicación: ${e.message}` });
+      routePublishError(res, err, 'Error al encolar la publicación');
       return;
     }
 

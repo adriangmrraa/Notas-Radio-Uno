@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
     Send, RefreshCw, ExternalLink, XCircle, RotateCcw,
-    CalendarClock, AlertTriangle,
+    CalendarClock, AlertTriangle, AtSign, Hash, Scissors,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
@@ -13,12 +13,22 @@ import { useSocket } from '../hooks/useSocket';
 // opacos de Zernio (accountId) — nunca credenciales ni handles reales.
 // ------------------------------------------------------------------
 
+// PG-06: composición persistida por job (publish_jobs.payload jsonb) —
+// menciones reales resueltas de persons.social_links + etiquetas finales.
+interface PublishJobPayload {
+    mentions?: Array<{ personId: string; name: string; handle: string }>;
+    hashtags?: string[];
+    excludedPersonIds?: string[];
+    truncated?: boolean;
+}
+
 interface PublishJob {
     id: string;
     platform: string;
     accountId: string;
     status: string;
     content: string;
+    payload?: PublishJobPayload;
     attempts: number;
     maxAttempts: number;
     lastError: string | null;
@@ -254,8 +264,38 @@ export function PublishJobsPage() {
                                         <span className="text-sm font-semibold capitalize">{job.platform}</span>
                                         <span className="text-xs text-white/35">{accountLabel(job)}</span>
                                         {statusBadge(job.status)}
+                                        {job.payload?.truncated && (
+                                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-400/10 text-amber-300 border border-amber-400/20 font-medium">
+                                                <Scissors className="w-2.5 h-2.5" />
+                                                Texto recortado al límite
+                                            </span>
+                                        )}
                                     </div>
-                                    <p className="text-xs text-white/40 line-clamp-2">{job.content}</p>
+                                    {/* PG-06: texto final tal como se manda a la red. */}
+                                    <p className="text-xs text-white/50 leading-relaxed whitespace-pre-wrap">{job.content}</p>
+                                    {(job.payload?.mentions?.length || job.payload?.hashtags?.length) ? (
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                            {job.payload?.mentions?.map((m) => (
+                                                <span
+                                                    key={m.personId}
+                                                    title={m.name}
+                                                    className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-sky-400/10 text-sky-300 border border-sky-400/20 font-medium"
+                                                >
+                                                    <AtSign className="w-2.5 h-2.5" />
+                                                    {m.handle} · {m.name}
+                                                </span>
+                                            ))}
+                                            {job.payload?.hashtags?.map((h) => (
+                                                <span
+                                                    key={h}
+                                                    className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-purple-400/10 text-purple-300 border border-purple-400/20 font-medium"
+                                                >
+                                                    <Hash className="w-2.5 h-2.5" />
+                                                    {h}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : null}
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
                                     {job.platformPostUrl && (

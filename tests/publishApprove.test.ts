@@ -209,6 +209,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
                 makeConn({ tenantId: T_A, platform: 'tiktok', accountId: 'zacc_2' }),
             ],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
 
         const res = await api(`/api/review/${PUB_1}/approve`, { method: 'POST' });
@@ -250,6 +254,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
         const res = await api(`/api/review/${PUB_1}/approve`, { method: 'POST' });
         const body = (await res.json()) as { jobs: Array<{ mediaUrls: string[] }> };
@@ -263,6 +271,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
             store,
             listConnections: async () => [],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
 
         const res = await api(`/api/review/${PUB_1}/approve`, { method: 'POST' });
@@ -284,6 +296,10 @@ describe('POST /api/review/:id/approve — circuito Zernio vs legacy', () => {
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
         await api(`/api/review/${PUB_1}/approve`, { method: 'POST' });
         const second = await api(`/api/review/${PUB_1}/approve`, { method: 'POST' });
@@ -325,6 +341,10 @@ describe('POST /api/review/batch — approve encola por publicación', () => {
                 makeConn({ tenantId: T_A, platform: 'instagram', accountId: 'zacc_1' }),
             ],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
         const res = await api('/api/review/batch', {
             method: 'POST',
@@ -351,6 +371,10 @@ describe('POST /api/review/batch — approve encola por publicación', () => {
             store,
             listConnections: async () => [],
             listAutoPublishConfigs: async () => [],
+            // PG-06: estos tests no ejercitan la composición por red —
+            // sin origen de menciones (publishMentions.test.ts la cubre).
+            getMentionSource: async () => null,
+            listMentionPersons: async () => [],
         };
         const res = await api('/api/review/batch', {
             method: 'POST',

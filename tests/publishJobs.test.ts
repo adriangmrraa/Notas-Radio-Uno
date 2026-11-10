@@ -155,6 +155,10 @@ const makeDeps = (
 ): PublishJobDeps => ({
     store,
     now: () => T0,
+    // PG-06: sin origen de menciones — estos tests ejercitan el circuito
+    // PG-05; la composición por red se cubre en publishMentions.test.ts.
+    getMentionSource: async () => null,
+    listMentionPersons: async () => [],
     ...extra,
 });
 
@@ -1007,6 +1011,10 @@ describe('rutas /api/publish-jobs', () => {
     let baseUrl = '';
 
     const startApp = async () => {
+        // PG-06: las rutas encolan sin origen de menciones — el enqueue va
+        // por los deps inyectados; la composición se prueba aparte.
+        publishJobsRouteDeps.getMentionSource = async () => null;
+        publishJobsRouteDeps.listMentionPersons = async () => [];
         const app = express();
         app.use(express.json());
         app.use('/api/publish-jobs', publishJobsRouter);

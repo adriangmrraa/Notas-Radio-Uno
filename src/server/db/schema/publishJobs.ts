@@ -39,6 +39,24 @@ import { socialConnections } from './socialConnections.js';
  * borra el job ya ejecutado). `zernio_post_id` queda cuando Zernio creó el
  * post — es la llave para el retry remoto POST /v1/posts/{id}/retry.
  */
+/**
+ * Detalle de la composición del contenido por red (PG-06): las menciones
+ * reales aplicadas (handle desde persons.social_links del tenant), las
+ * etiquetas finales y las exclusiones del operador en la previsualización.
+ * El texto final ya vive en `content`; este jsonb guarda la estructura
+ * para mostrarla en la UI sin reparsear el texto.
+ */
+export interface PublishJobPayload {
+  /** Menciones resueltas para la plataforma del job (tras exclusiones). */
+  mentions?: Array<{ personId: string; name: string; handle: string }>;
+  /** '#tag' normalizados incluidos en el texto final. */
+  hashtags?: string[];
+  /** personIds excluidos por el operador al aprobar (toggle por persona). */
+  excludedPersonIds?: string[];
+  /** true si el límite de la plataforma recortó el texto base con '…'. */
+  truncated?: boolean;
+}
+
 export const publishJobs = pgTable(
   'publish_jobs',
   {
@@ -73,6 +91,8 @@ export const publishJobs = pgTable(
     idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
     content: text('content').notNull(),
     mediaUrls: jsonb('media_urls').$type<string[]>().notNull().default([]),
+    /** Composición PG-06: menciones/etiquetas/exclusiones aplicadas al content. */
+    payload: jsonb('payload').$type<PublishJobPayload>().notNull().default({}),
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(3),
     lastError: text('last_error'),

@@ -37,6 +37,7 @@ import {
     isPublishJobStatus,
     listPublishJobs,
     retryPublishJob,
+    validatePublishOptions,
     type PublishJobDeps,
     type PublishTarget,
 } from '../services/publishJobService.js';
@@ -237,6 +238,9 @@ publishJobsRouter.post(
                 scheduledFor = new Date(body.scheduledFor);
             }
 
+            // PG-06: personIds / excludePersonIds / hashtags del request.
+            const publishOpts = validatePublishOptions(body);
+
             const result = await enqueuePublishJobs(
                 {
                     tenantId,
@@ -246,6 +250,7 @@ publishJobsRouter.post(
                     content: body.content,
                     mediaUrls,
                     scheduledFor,
+                    ...publishOpts,
                 },
                 publishJobsRouteDeps,
             );

@@ -33,8 +33,23 @@ import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 import { v5 as uuidv5 } from 'uuid';
 
 import { db, type Database } from '../db/index.js';
-import { publishJobs } from '../db/schema/publishJobs.js';
+import { publishJobs, type PublishJobPayload } from '../db/schema/publishJobs.js';
+import { persons } from '../db/schema/persons.js';
+import { publications } from '../db/schema/publications.js';
+import { assets } from '../db/schema/assets.js';
 import { AppError } from '../lib/errors.js';
+import {
+    composePublishContent,
+    normalizePublishHashtags,
+    resolvePublishMentions,
+    PUBLISH_TEXT_LIMITS,
+    type PublishPlatform,
+} from './mentionService.js';
+import {
+    extractPersonIds,
+    type PersonSocialLinks,
+    type ResolvedMention,
+} from './networkVariantService.js';
 import {
     listSocialConnections,
     type SocialConnectionRow,
@@ -235,6 +250,18 @@ export interface EnqueuePublishJobsInput {
     scheduledFor?: Date | null;
     /** Tope de intentos automáticos. Default 3 (columna). */
     maxAttempts?: number;
+    /**
+     * PG-06: lista explícita de personas a mencionar (uuid). Si no viene,
+     * los personIds se extraen de `publications.quotes` del origen.
+     */
+    personIds?: string[];
+    /**
+     * PG-06: personIds excluidos de las menciones (toggle por persona en la
+     * previsualización de la UI).
+     */
+    excludePersonIds?: string[];
+    /** PG-06: etiquetas explícitas del request (se normalizan y deduplican). */
+    hashtags?: string[];
 }
 
 export interface EnqueuePublishJobsResult {
@@ -278,6 +305,8 @@ export interface PublishJobStore {
         idempotencyKey: string;
         content: string;
         mediaUrls: string[];
+        /** Composición PG-06 persistida con el job (jsonb, default {}). */
+        payload?: PublishJobPayload;
         scheduledFor: Date | null;
         nextAttemptAt: Date;
         maxAttempts?: number;
@@ -388,6 +417,9 @@ export function createDrizzlePublishJobStore(
                     idempotencyKey: input.idempotencyKey,
                     content: input.content,
                     mediaUrls: input.mediaUrls,
+                    ...(input.payload !== undefined
+                        ? { payload: input.payload }
+                        : {}),
                     scheduledFor: input.scheduledFor,
                     nextAttemptAt: input.nextAttemptAt,
                     ...(input.maxAttempts !== undefined
@@ -689,6 +721,24 @@ export interface PublishJobDeps {
         tenantId: string,
         publicationId: string,
     ) => Promise<unknown>;
+    /**
+     * PG-06: quotes + contentVariants del origen editorial (tenant-scoped).
+     * Default: drizzle — publication directa o la del asset cuando el
+     * asset viene de `publications` (note/post); otro origen → null.
+     */
+    getMentionSource?: (
+        tenantId: string,
+        source: { assetId?: string | null; publicationId?: string | null },
+    ) => Promise<MentionSource | null>;
+    /**
+     * PG-06: `{id, name, socialLinks}` de las personas pedidas, una sola
+     * query tenant-scoped (personas de otro tenant no se leen — igual
+     * que `getPersonSocialLinks` de PF-09). Default: drizzle.
+     */
+    listMentionPersons?: (
+        tenantId: string,
+        personIds: string[],
+    ) => Promise<PersonSocialLinks[]>;
     /** Reloj inyectable — los tests corren en tiempo falso. */
     now?: () => Date;
 }
@@ -699,10 +749,237 @@ const resolveStore = (deps?: PublishJobDeps): PublishJobStore =>
 const fingerprintContent = (content: string): string =>
     uuidv5(`content|${content}`, PUBLISH_JOB_NAMESPACE);
 
+// ---------------------------------------------------------------------------
+// PG-06 — menciones reales + etiquetas por red de publicación
+// ---------------------------------------------------------------------------
+
+/** Lo que el origen editorial aporta a la composición (tenant-scoped). */
+export interface MentionSource {
+    quotes: unknown;
+    contentVariants: unknown;
+}
+
+/**
+ * Default drizzle de `getMentionSource`: publication directa, o la del
+ * asset cuando `assets.source_table = 'publications'` (note/post del
+ * ledger). Otro origen (clip, flyer, ad-hoc) → null → sin menciones.
+ * TODAS las queries filtran por tenant_id.
+ */
+const defaultGetMentionSource = async (
+    tenantId: string,
+    source: { assetId?: string | null; publicationId?: string | null },
+): Promise<MentionSource | null> => {
+    let publicationId = source.publicationId ?? null;
+    if (!publicationId && source.assetId) {
+        const [asset] = await db
+            .select({
+                sourceTable: assets.sourceTable,
+                refId: assets.refId,
+            })
+            .from(assets)
+            .where(
+                and(
+                    eq(assets.id, source.assetId),
+                    eq(assets.tenantId, tenantId),
+                ),
+            )
+            .limit(1);
+        if (asset?.sourceTable === 'publications') {
+            publicationId = asset.refId;
+        }
+    }
+    if (!publicationId) return null;
+    const [row] = await db
+        .select({
+            quotes: publications.quotes,
+            contentVariants: publications.contentVariants,
+        })
+        .from(publications)
+        .where(
+            and(
+                eq(publications.id, publicationId),
+                eq(publications.tenantId, tenantId),
+            ),
+        )
+        .limit(1);
+    return row ?? null;
+};
+
+/** Default drizzle de `listMentionPersons` — eq tenant_id + inArray. */
+const defaultListMentionPersons = (
+    tenantId: string,
+    personIds: string[],
+): Promise<PersonSocialLinks[]> =>
+    db
+        .select({
+            id: persons.id,
+            name: persons.name,
+            socialLinks: persons.socialLinks,
+        })
+        .from(persons)
+        .where(
+            and(
+                eq(persons.tenantId, tenantId),
+                inArray(persons.id, personIds),
+            ),
+        );
+
+/**
+ * Red de publicación → key de `contentVariants.extras` (PF-09). Las redes
+ * que no son `NetworkVariantKey` (tiktok, facebook, threads, pinterest,
+ * reddit, bluesky) no tienen extras de dónde sacar hashtags.
+ */
+const VARIANT_KEY_BY_PLATFORM: Partial<
+    Record<PublishPlatform, 'twitter' | 'instagram' | 'linkedin' | 'youtube'>
+> = {
+    twitter: 'twitter',
+    instagram: 'instagram',
+    linkedin: 'linkedin',
+    youtube: 'youtube',
+};
+
+/** `contentVariants.extras[red].hashtags` normalizados (o [] si no hay). */
+function variantHashtagsFor(
+    contentVariants: unknown,
+    platform: string,
+): string[] {
+    const key = (VARIANT_KEY_BY_PLATFORM as Record<string, string | undefined>)[
+        platform
+    ];
+    if (!key || !contentVariants || typeof contentVariants !== 'object') {
+        return [];
+    }
+    const extras = (contentVariants as { extras?: unknown }).extras;
+    const entry =
+        extras && typeof extras === 'object'
+            ? (extras as Record<string, unknown>)[key]
+            : undefined;
+    const raw =
+        entry && typeof entry === 'object'
+            ? (entry as { hashtags?: unknown }).hashtags
+            : undefined;
+    return normalizePublishHashtags(raw as readonly unknown[] | undefined);
+}
+
+/** Resultado de la composición por target (texto final + detalle jsonb). */
+export interface PublishComposition {
+    target: PublishTarget;
+    /** Texto final: content persistido y enviado a Zernio. */
+    content: string;
+    /** Menciones resueltas para la red (tras exclusiones). */
+    mentions: ResolvedMention[];
+    /** '#tag' normalizados incluidos en la composición. */
+    hashtags: string[];
+    /** true si el límite de la plataforma truncó el texto base. */
+    truncated: boolean;
+}
+
+type PublishCompositionInput = Pick<
+    EnqueuePublishJobsInput,
+    | 'tenantId'
+    | 'assetId'
+    | 'publicationId'
+    | 'targets'
+    | 'content'
+    | 'personIds'
+    | 'excludePersonIds'
+    | 'hashtags'
+>;
+
+/**
+ * Compone el texto por red para cada target:
+ *   personIds (explícitos o de `quotes` del origen) → persons tenant-scoped
+ *   → `resolvePublishMentions` por plataforma (excluyendo los toggles) →
+ *   hashtags = extras de `contentVariants` (respetados) + explícitos del
+ *   request → `composePublishContent` (determinista, límites por red).
+ *
+ * Los handles salen SIEMPRE de `persons.social_links` del tenant — jamás
+ * del nombre ni del LLM. Personas sin handle en la red no se mencionan.
+ */
+async function composeForTargets(
+    input: PublishCompositionInput,
+    deps?: PublishJobDeps,
+): Promise<PublishComposition[]> {
+    const source =
+        input.assetId || input.publicationId
+            ? await (
+                  deps?.getMentionSource ?? defaultGetMentionSource
+              )(input.tenantId, {
+                  assetId: input.assetId ?? null,
+                  publicationId: input.publicationId ?? null,
+              })
+            : null;
+
+    const personIds = input.personIds ?? extractPersonIds(source?.quotes);
+    const personsList =
+        personIds.length > 0
+            ? await (
+                  deps?.listMentionPersons ?? defaultListMentionPersons
+              )(input.tenantId, personIds)
+            : [];
+
+    const excluded = new Set(input.excludePersonIds ?? []);
+    const requestTags = input.hashtags ?? [];
+
+    return input.targets.map((target) => {
+        const mentions = resolvePublishMentions(personsList, target.platform, {
+            exclude: excluded,
+        });
+        // Orden: primero las etiquetas del contenido (respetadas), después
+        // las explícitas del request — dedupe case-insensitive por orden.
+        const hashtags = normalizePublishHashtags([
+            ...variantHashtagsFor(source?.contentVariants, target.platform),
+            ...requestTags,
+        ]);
+        const composed = composePublishContent({
+            baseText: input.content,
+            platform: target.platform,
+            mentions,
+            hashtags,
+        });
+        return {
+            target,
+            content: composed.text,
+            mentions,
+            hashtags,
+            truncated: composed.truncated,
+        };
+    });
+}
+
+/** jsonb persistido por job — la estructura detrás del `content` final. */
+function payloadForComposition(
+    composition: PublishComposition,
+    excludePersonIds: readonly string[],
+): PublishJobPayload | undefined {
+    const { mentions, hashtags, truncated } = composition;
+    if (mentions.length === 0 && hashtags.length === 0 && !truncated) {
+        return undefined;
+    }
+    return {
+        mentions: mentions.map((m) => ({
+            personId: m.personId,
+            name: m.name,
+            handle: m.handle,
+        })),
+        hashtags,
+        ...(excludePersonIds.length > 0
+            ? { excludedPersonIds: [...excludePersonIds] }
+            : {}),
+        ...(truncated ? { truncated: true } : {}),
+    };
+}
+
 /**
  * Encola UN job por target. Dedup por idempotency_key: re-encolar el mismo
  * (tenant, origen, plataforma, cuenta) devuelve el job existente — nunca
  * duplica. Todos los jobs comparten origen/contenido/schedule.
+ *
+ * PG-06: el `content` de cada job es el texto FINAL compuesto para su red
+ * (menciones reales de `persons.social_links` + etiquetas), y `payload`
+ * guarda la estructura (menciones/etiquetas/exclusiones/truncado) para la
+ * UI. La idempotency_key no entra en la composición: re-aprobar con otras
+ * exclusiones cae en el MISMO job (dedupe por origen×plataforma×cuenta).
  */
 export async function enqueuePublishJobs(
     input: EnqueuePublishJobsInput,
@@ -726,12 +1003,17 @@ export async function enqueuePublishJobs(
         ? scheduledFor
         : now;
 
+    // PG-06: texto final por red (menciones + etiquetas) para cada target.
+    const compositions = await composeForTargets(input, deps);
+    const excludePersonIds = input.excludePersonIds ?? [];
+
     const jobs: PublishJob[] = [];
     let createdCount = 0;
     let deduplicatedCount = 0;
     const seenKeys = new Set<string>();
 
-    for (const target of input.targets) {
+    for (const composition of compositions) {
+        const { target } = composition;
         const idempotencyKey = deriveIdempotencyKey({
             tenantId: input.tenantId,
             assetId: input.assetId,
@@ -747,6 +1029,7 @@ export async function enqueuePublishJobs(
         if (seenKeys.has(idempotencyKey)) continue;
         seenKeys.add(idempotencyKey);
 
+        const payload = payloadForComposition(composition, excludePersonIds);
         const { job, created } = await store.enqueueJob({
             tenantId: input.tenantId,
             assetId: input.assetId ?? null,
@@ -755,7 +1038,8 @@ export async function enqueuePublishJobs(
             platform: target.platform,
             accountId: target.accountId,
             idempotencyKey,
-            content: input.content,
+            content: composition.content,
+            ...(payload !== undefined ? { payload } : {}),
             mediaUrls,
             scheduledFor,
             nextAttemptAt,
@@ -858,6 +1142,12 @@ export async function enqueueForApproval(
         content: string;
         mediaUrls?: string[];
         scheduledFor?: Date | null;
+        /** PG-06: personas explícitas a mencionar (uuid). */
+        personIds?: string[];
+        /** PG-06: personas excluidas de las menciones (toggle de la UI). */
+        excludePersonIds?: string[];
+        /** PG-06: etiquetas explícitas del request de aprobación. */
+        hashtags?: string[];
     },
     deps?: PublishJobDeps,
 ): Promise<EnqueueForApprovalResult> {
@@ -893,6 +1183,9 @@ export async function enqueueForApproval(
             content: input.content,
             mediaUrls: input.mediaUrls,
             scheduledFor: input.scheduledFor,
+            personIds: input.personIds,
+            excludePersonIds: input.excludePersonIds,
+            hashtags: input.hashtags,
         },
         deps,
     );
@@ -904,6 +1197,154 @@ export async function enqueueForApproval(
         createdCount: enqueued.createdCount,
         deduplicatedCount: enqueued.deduplicatedCount,
     };
+}
+
+// ---------------------------------------------------------------------------
+// PG-06 — previsualización antes de aprobar
+// ---------------------------------------------------------------------------
+
+/** Lo que la UI muestra por destino antes de confirmar la aprobación. */
+export interface PublishPreviewItem {
+    platform: string;
+    accountId: string;
+    connectionId: string | null;
+    /** username/displayName de la conexión — label humano (nunca credencial). */
+    accountLabel: string | null;
+    /** Texto final que se va a mandar a la red (menciones + etiquetas). */
+    content: string;
+    mentions: ResolvedMention[];
+    hashtags: string[];
+    /** Límite de caracteres de la plataforma (null = sin límite aplicado). */
+    textLimit: number | null;
+    truncated: boolean;
+}
+
+export interface PublishPreviewResult {
+    /** false ⇒ sin conexiones Zernio — la ruta sigue el flujo legacy. */
+    usedZernio: boolean;
+    connectionCount: number;
+    previews: PublishPreviewItem[];
+}
+
+/**
+ * Previsualización del circuito de aprobación: resuelve los targets como
+ * `enqueueForApproval` y compone el texto por red SIN encolar nada. La UI
+ * lo llama antes de aprobar (con los `excludePersonIds` del toggle) para
+ * mostrar menciones, etiquetas y el texto final por red.
+ */
+export async function previewPublishEnqueue(
+    input: {
+        tenantId: string;
+        assetId?: string | null;
+        publicationId?: string | null;
+        content: string;
+        personIds?: string[];
+        excludePersonIds?: string[];
+        hashtags?: string[];
+    },
+    deps?: PublishJobDeps,
+): Promise<PublishPreviewResult> {
+    const { connections, targets } = await resolvePublishTargets(
+        input.tenantId,
+        deps,
+    );
+    if (connections.length === 0) {
+        return { usedZernio: false, connectionCount: 0, previews: [] };
+    }
+    const compositions = await composeForTargets(
+        { ...input, targets },
+        deps,
+    );
+    const labelOf = (target: PublishTarget): string | null => {
+        const conn = connections.find(
+            (c) =>
+                c.id === target.connectionId ||
+                (c.platform === target.platform &&
+                    c.accountId === target.accountId),
+        );
+        return conn?.username ?? conn?.displayName ?? null;
+    };
+    return {
+        usedZernio: true,
+        connectionCount: connections.length,
+        previews: compositions.map((c) => ({
+            platform: c.target.platform,
+            accountId: c.target.accountId,
+            connectionId: c.target.connectionId ?? null,
+            accountLabel: labelOf(c.target),
+            content: c.content,
+            mentions: c.mentions,
+            hashtags: c.hashtags,
+            textLimit:
+                PUBLISH_TEXT_LIMITS[c.target.platform as PublishPlatform] ??
+                null,
+            truncated: c.truncated,
+        })),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Validación del request de publicación (PG-06)
+// ---------------------------------------------------------------------------
+
+const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Opciones de publicación del body (approve / publish-preview / POST
+ * /publish-jobs): `personIds` y `excludePersonIds` deben ser arrays de
+ * uuid; `hashtags` un array de strings (máx 30, ≤100 chars c/u — se
+ * normalizan a '#tag' y los que no dejan nada usable se descartan).
+ * Devuelve los campos presentes ya saneados; tira AppError 400 si vienen
+ * mal tipados.
+ */
+export function validatePublishOptions(body: Record<string, unknown>): {
+    personIds?: string[];
+    excludePersonIds?: string[];
+    hashtags?: string[];
+} {
+    const out: {
+        personIds?: string[];
+        excludePersonIds?: string[];
+        hashtags?: string[];
+    } = {};
+    for (const field of ['personIds', 'excludePersonIds'] as const) {
+        const value = body[field];
+        if (value === undefined || value === null) continue;
+        if (
+            !Array.isArray(value) ||
+            value.some(
+                (v) => typeof v !== 'string' || !UUID_RE.test(v),
+            )
+        ) {
+            throw new AppError(
+                `${field} debe ser un array de uuid`,
+                400,
+                'invalid_persons',
+            );
+        }
+        out[field] = [...new Set(value as string[])];
+    }
+    const hashtags = body.hashtags;
+    if (hashtags !== undefined && hashtags !== null) {
+        if (
+            !Array.isArray(hashtags) ||
+            hashtags.length > 30 ||
+            hashtags.some(
+                (v) => typeof v !== 'string' || v.length > 100,
+            )
+        ) {
+            throw new AppError(
+                'hashtags debe ser un array de hasta 30 strings (≤100 chars c/u)',
+                400,
+                'invalid_hashtags',
+            );
+        }
+        out.hashtags = normalizePublishHashtags(
+            hashtags as readonly unknown[],
+        );
+    }
+    return out;
 }
 
 /**

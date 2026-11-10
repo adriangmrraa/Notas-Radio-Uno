@@ -1406,6 +1406,73 @@ if (pg05AfterCascade[0].n !== 0) {
   process.exit(1);
 }
 
+// ============================================================================
+// PG-06: publish_jobs.payload — composición por red (0019)
+// ============================================================================
+// Columna jsonb NOT NULL DEFAULT '{}' que guarda la estructura del texto
+// final por red: mentions[] (handle real de persons.social_links),
+// hashtags[] normalizados, excludedPersonIds[] del toggle y truncated
+// (recorte por límite de plataforma). El `content` del job ya es el texto
+// compuesto; payload lo describe para la UI.
+const pg06ColInfo = pg05ColInfo.get('payload');
+if (!pg06ColInfo || pg06ColInfo.data_type !== 'jsonb' || pg06ColInfo.is_nullable !== 'NO' || pg06ColInfo.column_default === null) {
+  console.error(`PG-06: publish_jobs.payload incorrecto: ${JSON.stringify(pg06ColInfo ?? null)}`);
+  process.exit(1);
+}
+if (!pg06ColInfo.column_default.includes("'{}'")) {
+  console.error(`PG-06: publish_jobs.payload sin DEFAULT '{}': ${pg06ColInfo.column_default}`);
+  process.exit(1);
+}
+
+// Funcional: un INSERT sin payload queda '{}'; un INSERT con payload hace
+// roundtrip exacto del jsonb (menciones + etiquetas + exclusiones).
+const pg06Tenant = '00000000-0000-4000-8000-00000000aa06';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pg06Tenant}', 'Tenant pg06', 'tenant-pg06')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO publish_jobs (tenant_id, platform, account_id, idempotency_key, content)
+  VALUES ('${pg06Tenant}', 'twitter', 'zacc_pg06', 'pj_key_pg06_plain', 'Nota sin composición');
+`);
+const { rows: pg06Default } = await db.query(`
+  SELECT payload FROM publish_jobs
+  WHERE tenant_id = '${pg06Tenant}' AND idempotency_key = 'pj_key_pg06_plain'
+`);
+if (JSON.stringify(pg06Default[0]?.payload) !== '{}') {
+  console.error(`PG-06: payload sin valor explícito no quedó '{}': ${JSON.stringify(pg06Default[0])}`);
+  process.exit(1);
+}
+const pg06Payload = JSON.stringify({
+  mentions: [{ personId: 'p1', name: 'María', handle: '@maria_x' }],
+  hashtags: ['#Deporte'],
+  excludedPersonIds: ['p2'],
+  truncated: true,
+});
+await db.exec(`
+  INSERT INTO publish_jobs (tenant_id, platform, account_id, idempotency_key, content, payload)
+  VALUES ('${pg06Tenant}', 'twitter', 'zacc_pg06', 'pj_key_pg06_comp',
+    'Nota…
+
+@maria_x #Deporte', '${pg06Payload.replace(/'/g, "''")}'::jsonb)
+`);
+const { rows: pg06Roundtrip } = await db.query(`
+  SELECT payload FROM publish_jobs
+  WHERE tenant_id = '${pg06Tenant}' AND idempotency_key = 'pj_key_pg06_comp'
+`);
+const pg06P = pg06Roundtrip[0]?.payload;
+if (
+  !pg06P ||
+  pg06P.mentions?.[0]?.handle !== '@maria_x' ||
+  pg06P.mentions?.[0]?.name !== 'María' ||
+  JSON.stringify(pg06P.hashtags) !== '["#Deporte"]' ||
+  JSON.stringify(pg06P.excludedPersonIds) !== '["p2"]' ||
+  pg06P.truncated !== true
+) {
+  console.error(`PG-06: roundtrip de payload incorrecto: ${JSON.stringify(pg06P)}`);
+  process.exit(1);
+}
+await db.exec(`DELETE FROM tenants WHERE id = '${pg06Tenant}'`);
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -1425,5 +1492,6 @@ console.log('tabla PF-10: assets (12 columnas) + UNIQUE (tenant_id,source_table,
 console.log('tabla PG-03: auto_publish_configs (12 columnas) + UNIQUE (tenant_id,program_key) cubre global (__all__) + FKs cascade');
 console.log('tablas PG-04: zernio_profiles (1/tenant UNIQUE) + social_connections (11 columnas, UNIQUE tenant+platform+account, FKs cascade, idx tenant+status)');
 console.log('tabla PG-05: publish_jobs (23 columnas, UNIQUE idempotency_key, FK tenant cascade + asset/publication/connection SET NULL, índices tenant+status y claim)');
+console.log('columna PG-06: publish_jobs.payload jsonb NOT NULL DEFAULT \'{}\' (composición por red: mentions/hashtags/excludedPersonIds/truncated)');
 await db.close();
 process.exit(0);
