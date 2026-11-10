@@ -48,6 +48,7 @@ import { editorialRouter } from "./routes/editorial.js";
 import { transmissionsRouter } from "./routes/transmissions.js";
 import { liveRouter } from "./routes/live.js";
 import { notesRouter } from "./routes/notes.js";
+import { publicationsRouter } from "./routes/publications.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
@@ -272,6 +273,8 @@ app.use("/api/transmissions", transmissionsRouter);
 // PF-06: POST /api/transmissions/:id/notes — paths disjuntos del router anterior.
 app.use("/api/transmissions", notesRouter);
 app.use("/api/live", liveRouter);
+// PF-07: POST /api/publications/:id/quote-flyers — quote-cards con foto real.
+app.use("/api/publications", publicationsRouter);
 
 // Initialize background services
 initNotificationService(io);
