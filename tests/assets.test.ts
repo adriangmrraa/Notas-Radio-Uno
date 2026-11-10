@@ -68,6 +68,7 @@ import {
     canTransition,
     flyerRefId,
     listAssets,
+    listAssetsPage,
     mapLegacyStatus,
     syncAssets,
     toLegacyStatus,
@@ -419,6 +420,20 @@ describe('syncAssets', () => {
 });
 
 // ─── transitionAsset ──────────────────────────────────────────────────────────
+
+describe('listAssetsPage', () => {
+    it('keeps tenant isolation while returning a bounded page', async () => {
+        const { store, state } = createMemoryAssetsStore();
+        seedAssetClip(state, { id: CLIP_1, tenantId: T_A });
+        seedAssetClip(state, { id: CLIP_2, tenantId: T_A });
+        seedAssetClip(state, { id: 'clip-b-page', tenantId: T_B });
+        await syncAssets({ tenantId: T_A }, { store });
+        const page = await listAssetsPage({ tenantId: T_A, page: 1, pageSize: 1 }, { store });
+        expect(page.total).toBe(2);
+        expect(page.assets).toHaveLength(1);
+        expect(page.assets[0].tenantId).toBe(T_A);
+    });
+});
 
 describe('transitionAsset', () => {
     let store: AssetStore;

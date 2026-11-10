@@ -375,6 +375,10 @@ export function createDrizzleAssetStore(
             if (filters.transmissionId)
                 conds.push(
                     eq(assets.transmissionId, filters.transmissionId),
+                    exists(executor.select({ id: transmissions.id }).from(transmissions).where(and(
+                        eq(transmissions.id, filters.transmissionId),
+                        eq(transmissions.tenantId, tenantId),
+                    ))),
                 );
             if (filters.programId) {
                 conds.push(exists(
@@ -530,6 +534,19 @@ export async function listAssets(
         transmissionId: input.transmissionId,
         programId: input.programId,
     });
+}
+
+export interface ListAssetsPageInput extends ListAssetsInput { page: number; pageSize: number; }
+export interface AssetPage { assets: AssetRow[]; total: number; page: number; pageSize: number; }
+
+/** Applies pagination in the assets service so route callers share one contract. */
+export async function listAssetsPage(
+    input: ListAssetsPageInput,
+    deps: AssetServiceDeps = {},
+): Promise<AssetPage> {
+    const rows = await listAssets(input, deps);
+    const start = (input.page - 1) * input.pageSize;
+    return { assets: rows.slice(start, start + input.pageSize), total: rows.length, page: input.page, pageSize: input.pageSize };
 }
 
 // ---------------------------------------------------------------------------

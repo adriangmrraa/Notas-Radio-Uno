@@ -28,7 +28,7 @@ import { AppError } from '../lib/errors.js';
 import {
     isAssetKind,
     isAssetState,
-    listAssets,
+    listAssetsPage,
     syncAssets,
     transitionAsset,
     type AssetServiceDeps,
@@ -117,17 +117,11 @@ assetsRouter.get(
                 return;
             }
 
-            const rows = await listAssets(
-                { tenantId, kind, status, transmissionId, programId },
+            const result = await listAssetsPage(
+                { tenantId, kind, status, transmissionId, programId, page, pageSize },
                 assetsRouteDeps,
             );
-            const start = (page - 1) * pageSize;
-            res.status(200).json({
-                assets: rows.slice(start, start + pageSize),
-                total: rows.length,
-                page,
-                pageSize,
-            });
+            res.status(200).json(result);
         } catch (error) {
             handleError(res, error, 'Error al listar los assets');
         }

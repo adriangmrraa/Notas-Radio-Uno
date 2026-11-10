@@ -15,6 +15,7 @@ import {
   Mic,
   ClipboardCheck,
   Film,
+  Inbox,
   ShieldCheck,
   Users,
   PenLine,

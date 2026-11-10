@@ -58,7 +58,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/onboarding" element={<OnboardingPage />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/review" element={<ReviewPage />} />
-              <Route path="/clips" element={<ClipsPage />} />`n              <Route path="/assets" element={<AssetsInboxPage />} />
+              <Route path="/clips" element={<ClipsPage />} />
+              <Route path="/assets" element={<AssetsInboxPage />} />
               <Route path="/en-vivo" element={<LiveRoomPage />} />
               <Route path="/en-vivo/:transmissionId" element={<LiveRoomPage />} />
               <Route path="/editor" element={<PipelineEditor />} />
