@@ -3,32 +3,32 @@
 /* ========================================= */
 
 .pipeline-scope {
-  --bg-primary: #0b0d17;
-  --bg-secondary: #111427;
-  --bg-card: rgba(255, 255, 255, 0.02);
-  --bg-card-hover: rgba(255, 255, 255, 0.04);
-  --bg-input: rgba(255, 255, 255, 0.03);
-  --bg-input-focus: rgba(255, 255, 255, 0.05);
+  --bg-primary: var(--ds-bg);
+  --bg-secondary: var(--ds-surface);
+  --bg-card: var(--ds-surface);
+  --bg-card-hover: var(--ds-surface-raised);
+  --bg-input: var(--ds-surface);
+  --bg-input-focus: var(--ds-surface-raised);
 
-  --border: rgba(255, 255, 255, 0.06);
-  --border-hover: rgba(255, 255, 255, 0.10);
-  --border-focus: rgba(6, 182, 212, 0.35);
+  --border: var(--ds-border);
+  --border-hover: var(--ds-brand);
+  --border-focus: var(--ds-focus);
 
-  --accent: #06b6d4;
-  --accent-hover: #0891b2;
-  --accent-glow: rgba(6, 182, 212, 0.15);
-  --success: #00d4aa;
+  --accent: var(--ds-brand);
+  --accent-hover: var(--ds-brand-strong);
+  --accent-glow: color-mix(in srgb, var(--ds-brand) 15%, transparent);
+  --success: var(--ds-success);
   --success-bg: rgba(0, 212, 170, 0.08);
-  --warning: #f59e0b;
+  --warning: var(--ds-warning);
   --warning-bg: rgba(245, 158, 11, 0.08);
-  --error: rgba(239, 68, 68, 0.7);
+  --error: var(--ds-danger);
   --error-bg: rgba(239, 68, 68, 0.05);
   --meta-blue: #1877F2;
 
-  --text-primary: #e8eaf0;
-  --text-secondary: #8892a4;
-  --text-muted: #555d70;
-  --text-accent: #06b6d4;
+  --text-primary: var(--ds-text);
+  --text-secondary: var(--ds-text-muted);
+  --text-muted: var(--ds-text-muted);
+  --text-accent: var(--ds-brand);
 
   --radius-sm: 6px;
   --radius: 10px;

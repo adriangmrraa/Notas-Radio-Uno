@@ -3,7 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { NotificationBell } from './NotificationBell';
 import { useAuth } from '../contexts/AuthContext';
-import { Menu } from 'lucide-react';
+import { Menu, Moon, Sun } from 'lucide-react';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { Toaster } from './ui/toaster';
 
@@ -38,10 +38,29 @@ export function Layout() {
   const { user } = useAuth();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isDark, setIsDark] = useState(true);
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem('periodistapp-theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const nextIsDark = storedTheme ? storedTheme === 'dark' : prefersDark;
+
+    setIsDark(nextIsDark);
+    document.documentElement.classList.toggle('dark', nextIsDark);
+    document.documentElement.style.colorScheme = nextIsDark ? 'dark' : 'light';
+  }, []);
 
   useEffect(() => {
     setSidebarOpen(false);
   }, [location.pathname]);
+
+  const toggleTheme = () => {
+    const nextIsDark = !isDark;
+    setIsDark(nextIsDark);
+    window.localStorage.setItem('periodistapp-theme', nextIsDark ? 'dark' : 'light');
+    document.documentElement.classList.toggle('dark', nextIsDark);
+    document.documentElement.style.colorScheme = nextIsDark ? 'dark' : 'light';
+  };
 
   const pageTitle = Object.entries(PAGE_TITLES).find(
     ([path]) => location.pathname.startsWith(path)
@@ -89,6 +108,15 @@ export function Layout() {
           </div>
 
           <div className="layout-header-right">
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={toggleTheme}
+              aria-label={isDark ? 'Activar tema claro' : 'Activar tema oscuro'}
+              title={isDark ? 'Activar tema claro' : 'Activar tema oscuro'}
+            >
+              {isDark ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
             <NotificationBell />
             <div className="layout-header-divider" />
             <div className="layout-header-user">
