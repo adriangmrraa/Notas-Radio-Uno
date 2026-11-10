@@ -52,8 +52,10 @@ import { publicationsRouter } from "./routes/publications.js";
 import { assetsRouter } from "./routes/assets.js";
 import { autoPublishRouter } from "./routes/autoPublish.js";
 import { socialConnectionsRouter } from "./routes/socialConnections.js";
+import { publishJobsRouter } from "./routes/publishJobs.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
+import { initPublishWorker } from "./services/publishWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { initLiveAlertsService } from "./services/liveAlertsService.js";
@@ -284,6 +286,8 @@ app.use("/api/assets", assetsRouter);
 app.use("/api/auto-publish", autoPublishRouter);
 // PG-04: conexión de cuentas sociales vía Zernio — connect/callback/list/delete/sync.
 app.use("/api/social-connections", socialConnectionsRouter);
+// PG-05: cola de publicación vía Zernio — list/detail/enqueue/retry/cancel.
+app.use("/api/publish-jobs", publishJobsRouter);
 
 // Initialize background services
 initNotificationService(io);
@@ -299,6 +303,11 @@ initTransmissionScheduler(io);
 // API-only hasta que exista PROCESS_ROLE).
 if (process.env.RENDER_WORKER_ENABLED !== "0") {
   initClipRenderWorker(io);
+}
+// PG-05: worker de la cola publish_jobs — PUBLISH_WORKER_ENABLED=0 lo apaga
+// (mismo patrón que RENDER_WORKER_ENABLED para procesos API-only).
+if (process.env.PUBLISH_WORKER_ENABLED !== "0") {
+  initPublishWorker(io);
 }
 initDossierScheduler();
 

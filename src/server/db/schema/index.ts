@@ -28,6 +28,7 @@ export * from './renderJobs.js';
 export * from './assets.js';
 export * from './autoPublish.js';
 export * from './socialConnections.js';
+export * from './publishJobs.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -65,6 +66,7 @@ import { clipRenderJobs } from './renderJobs.js';
 import { assets } from './assets.js';
 import { autoPublishConfigs } from './autoPublish.js';
 import { zernioProfiles, socialConnections } from './socialConnections.js';
+import { publishJobs } from './publishJobs.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -478,4 +480,18 @@ export const zernioProfilesRelations = relations(zernioProfiles, ({ one }) => ({
 
 export const socialConnectionsRelations = relations(socialConnections, ({ one }) => ({
   tenant: one(tenants, { fields: [socialConnections.tenantId], references: [tenants.id] }),
+}));
+
+// ── publish_jobs relations (PG-05) ────────────────────────────────────────────
+export const publishJobsRelations = relations(publishJobs, ({ one }) => ({
+  tenant: one(tenants, { fields: [publishJobs.tenantId], references: [tenants.id] }),
+  asset: one(assets, { fields: [publishJobs.assetId], references: [assets.id] }),
+  publication: one(publications, {
+    fields: [publishJobs.publicationId],
+    references: [publications.id],
+  }),
+  connection: one(socialConnections, {
+    fields: [publishJobs.connectionId],
+    references: [socialConnections.id],
+  }),
 }));

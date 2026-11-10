@@ -616,7 +616,7 @@ function ContentVariantsPanel({ publicationId, pub, onVariantsUpdated }: Content
 interface ReviewDetailModalProps {
   publicationId: string;
   onClose: () => void;
-  onApprove: (id: string) => void;
+  onApprove: (id: string, notice?: string) => void;
   onReject: (id: string) => void;
   onUpdated: () => void;
 }
@@ -678,8 +678,14 @@ function ReviewDetailModal({
     if (!pub) return;
     setApproving(true);
     try {
-      await fetchApi(`/review/${pub.id}/approve`, { method: 'POST' });
-      onApprove(pub.id);
+      const res = await fetchApi<{ publish?: string; enqueued?: number; targetCount?: number }>(
+        `/review/${pub.id}/approve`, { method: 'POST' });
+      // PG-05: con Zernio la publicación queda 'approved' y el worker publica
+      // — el aviso dice que quedó encolada, no que ya salió en las redes.
+      const notice = res.publish === 'zernio'
+        ? `Aprobada — encolada para publicar en ${res.enqueued ?? res.targetCount ?? 0} cuenta(s).`
+        : undefined;
+      onApprove(pub.id, notice);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error al aprobar');
@@ -1199,6 +1205,7 @@ export function ReviewPage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
 
   const loadPublications = useCallback(
     async (status: ReviewStatus) => {
@@ -1266,11 +1273,16 @@ export function ReviewPage() {
     if (selectedIds.size === 0) return;
     setBatchLoading(true);
     setActionError('');
+    setActionNotice('');
     try {
-      await fetchApi('/review/batch', {
+      const res = await fetchApi<{ processed: number; errors: number }>('/review/batch', {
         method: 'POST',
         body: { ids: Array.from(selectedIds), action },
       });
+      if (action === 'approve') {
+        // PG-05: las aprobadas con redes conectadas quedaron encoladas.
+        setActionNotice(`${res.processed} aprobada${res.processed !== 1 ? 's' : ''} — las que tienen cuentas conectadas se encolaron para publicar.`);
+      }
       await loadPublications(activeTab);
       await loadAllCounts();
     } catch (err: any) {
@@ -1279,7 +1291,8 @@ export function ReviewPage() {
     setBatchLoading(false);
   };
 
-  const handleApproveOne = async (id: string) => {
+  const handleApproveOne = async (id: string, notice?: string) => {
+    if (notice) setActionNotice(notice);
     setPublications((prev) => prev.filter((p) => p.id !== id));
     setTabCounts((prev) => ({
       ...prev,
@@ -1299,9 +1312,14 @@ export function ReviewPage() {
 
   const handleApproveCard = async (id: string) => {
     setActionError('');
+    setActionNotice('');
     try {
-      await fetchApi(`/review/${id}/approve`, { method: 'POST' });
-      handleApproveOne(id);
+      const res = await fetchApi<{ publish?: string; enqueued?: number; targetCount?: number }>(
+        `/review/${id}/approve`, { method: 'POST' });
+      const notice = res.publish === 'zernio'
+        ? `Aprobada — encolada para publicar en ${res.enqueued ?? res.targetCount ?? 0} cuenta(s).`
+        : undefined;
+      handleApproveOne(id, notice);
     } catch (err: any) {
       setActionError(err.message || 'Error al aprobar');
     }
@@ -1404,6 +1422,14 @@ export function ReviewPage() {
         <div className="flex items-start gap-3 p-4 rounded-xl bg-red-500/[0.06] border border-red-500/15 text-red-400 text-sm mb-5">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{actionError}</span>
+        </div>
+      )}
+
+      {/* Aviso (ej: aprobada + encolada para publicar vía Zernio) */}
+      {actionNotice && (
+        <div className="flex items-start gap-3 p-4 rounded-xl bg-emerald-500/[0.06] border border-emerald-500/15 text-emerald-300 text-sm mb-5">
+          <Check className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{actionNotice}</span>
         </div>
       )}
 

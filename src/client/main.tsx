@@ -12,6 +12,7 @@ import { ForgotPassword } from './pages/ForgotPassword';
 import { AcceptInvite } from './pages/AcceptInvite';
 import { Dashboard } from './pages/Dashboard';
 import { ConnectionsPage } from './pages/ConnectionsPage';
+import { PublishJobsPage } from './pages/PublishJobsPage';
 import { BillingPage } from './pages/BillingPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
@@ -67,6 +68,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/persons" element={<PersonsPage />} />
               <Route path="/editorial" element={<EditorialPage />} />
               <Route path="/connections/*" element={<ConnectionsPage />} />
+              <Route path="/publish" element={<PublishJobsPage />} />
               <Route path="/scheduled" element={<ScheduledJobsPage />} />
               <Route path="/agenda" element={<AgendaPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />

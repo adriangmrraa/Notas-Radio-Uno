@@ -159,7 +159,7 @@ if (pc02Migration) {
 //    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
 //    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo), la 0016
 //    (PG-03 auto-publicación) y la 0017 (PG-04 Zernio) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017']) {
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017', '0018']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -1204,6 +1204,208 @@ if (casc.profiles !== 0 || casc.connections !== 0 || casc.profiles_a !== 1 || ca
   process.exit(1);
 }
 
+// ============================================================================
+// PG-05: publish_jobs — cola de publicación vía Zernio (0018)
+// ============================================================================
+const { rows: pg05Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename = 'publish_jobs'
+`);
+if (pg05Tables.length !== 1) {
+  console.error('PG-05: falta la tabla publish_jobs');
+  process.exit(1);
+}
+
+// Columnas: tipo, nullabilidad y DEFAULT. `next_attempt_at` es la extensión
+// del slice (gate del claim del worker — scheduled_for guarda la intención
+// editorial del usuario y nunca la pisa el backoff).
+const { rows: pg05Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'publish_jobs'
+`);
+const pg05ColInfo = new Map(pg05Cols.map((r) => [r.column_name, r]));
+const checkPg05Col = (col, dataType, nullable, needsDefault) => {
+  const c = pg05ColInfo.get(col);
+  if (!c) return `falta publish_jobs.${col}`;
+  if (c.data_type !== dataType) return `publish_jobs.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `publish_jobs.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `publish_jobs.${col} sin DEFAULT`;
+  return null;
+};
+const pg05ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['asset_id', 'uuid', 'YES', false],
+  ['publication_id', 'uuid', 'YES', false],
+  ['connection_id', 'uuid', 'YES', false],
+  ['platform', 'character varying', 'NO', false],
+  ['account_id', 'character varying', 'NO', false],
+  ['status', 'character varying', 'NO', true],
+  ['zernio_post_id', 'character varying', 'YES', false],
+  ['idempotency_key', 'character varying', 'NO', false],
+  ['content', 'text', 'NO', false],
+  ['media_urls', 'jsonb', 'NO', true],
+  ['attempts', 'integer', 'NO', true],
+  ['max_attempts', 'integer', 'NO', true],
+  ['last_error', 'text', 'YES', false],
+  ['last_error_category', 'character varying', 'YES', false],
+  ['last_error_source', 'character varying', 'YES', false],
+  ['scheduled_for', 'timestamp with time zone', 'YES', false],
+  ['published_at', 'timestamp with time zone', 'YES', false],
+  ['platform_post_url', 'text', 'YES', false],
+  ['next_attempt_at', 'timestamp with time zone', 'YES', false],
+  ['created_at', 'timestamp with time zone', 'NO', true],
+  ['updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPg05Col(c, t, n, d)).filter(Boolean);
+if (pg05ColErrors.length > 0) {
+  console.error(`PG-05 columnas incorrectas:\n  ${pg05ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const pg05StatusDef = pg05ColInfo.get('status')?.column_default ?? '';
+const pg05AttemptsDef = pg05ColInfo.get('attempts')?.column_default ?? '';
+const pg05MaxDef = pg05ColInfo.get('max_attempts')?.column_default ?? '';
+if (!pg05StatusDef.includes("'queued'") || !pg05AttemptsDef.includes('0') || !pg05MaxDef.includes('3')) {
+  console.error(`PG-05: defaults incorrectos (status=${pg05StatusDef}, attempts=${pg05AttemptsDef}, max_attempts=${pg05MaxDef})`);
+  process.exit(1);
+}
+
+// FKs: tenant cascade; asset/publication/connection SET NULL (borrar el
+// origen o desconectar la cuenta no borra el historial del job).
+const { rows: pg05Fks } = await db.query(`
+  SELECT att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'publish_jobs'
+`);
+const pg05FkMap = new Map(pg05Fks.map((r) => [r.column_name, r]));
+const expectedPg05Fks = [
+  ['tenant_id', 'tenants', 'c'],
+  ['asset_id', 'assets', 'n'],
+  ['publication_id', 'publications', 'n'],
+  ['connection_id', 'social_connections', 'n'],
+];
+const badPg05Fks = expectedPg05Fks.filter(([col, target, del]) => {
+  const row = pg05FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== del;
+});
+if (badPg05Fks.length > 0) {
+  console.error(`PG-05: faltan FKs, apuntan mal o el ON DELETE es incorrecto: ${badPg05Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+
+// Índices + UNIQUE(idempotency_key) — el contrato de dedupe del enqueue:
+// re-encolar el mismo (tenant, origen, plataforma, cuenta) cae en la misma
+// fila y la key viaja a Zernio como Idempotency-Key.
+const { rows: pg05Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'publish_jobs'
+`);
+const pg05IdxMap = new Map(pg05Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPg05Idx = [
+  'publish_jobs_tenant_id_idx',
+  'publish_jobs_tenant_id_status_idx',
+  'publish_jobs_tenant_id_created_at_idx',
+  'publish_jobs_status_next_attempt_idx',
+  'publish_jobs_idempotency_key_unique',
+];
+const missingPg05Idx = expectedPg05Idx.filter((name) => !pg05IdxMap.has(name));
+if (missingPg05Idx.length > 0) {
+  console.error(`PG-05: faltan índices/unique: ${missingPg05Idx.join(', ')}`);
+  process.exit(1);
+}
+const pg05Unique = pg05IdxMap.get('publish_jobs_idempotency_key_unique') ?? '';
+if (!/UNIQUE/i.test(pg05Unique) || !pg05Unique.includes('idempotency_key')) {
+  console.error(`PG-05: la unique no cubre idempotency_key: ${pg05Unique}`);
+  process.exit(1);
+}
+
+// Funcional: (a) INSERT crudo con idempotency_key duplicada falla;
+// (b) ON CONFLICT (idempotency_key) DO NOTHING es idempotente; (c) borrar
+// el tenant borra sus jobs (cascade); (d) borrar connection/asset/
+// publication deja la fila con la FK en NULL (SET NULL — el historial del
+// job sobrevive a la desconexión de la cuenta y al borrado del origen).
+const pg05Tenant = '00000000-0000-4000-8000-00000000aa05';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pg05Tenant}', 'Tenant pg05', 'tenant-pg05')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO zernio_profiles (tenant_id, profile_id, name) VALUES
+    ('${pg05Tenant}', 'zprof_pg05', 'Tenant pg05')
+  ON CONFLICT (tenant_id) DO NOTHING;
+  INSERT INTO social_connections (tenant_id, platform, account_id, status, zernio_profile_id)
+  VALUES ('${pg05Tenant}', 'instagram', 'zacc_pg05', 'connected', 'zprof_pg05')
+  ON CONFLICT (tenant_id, platform, account_id) DO NOTHING;
+`);
+const { rows: pg05Conn } = await db.query(`
+  SELECT id FROM social_connections
+  WHERE tenant_id = '${pg05Tenant}' AND platform = 'instagram' AND account_id = 'zacc_pg05'
+`);
+const { rows: pg05Asset } = await db.query(`
+  INSERT INTO assets (tenant_id, kind, source_table, ref_id, title, status, payload)
+  VALUES ('${pg05Tenant}', 'note', 'publications', '${pg05Tenant}', 'Nota', 'approved', '{}'::jsonb)
+  RETURNING id
+`);
+const { rows: pg05Pub } = await db.query(`
+  INSERT INTO publications (tenant_id, title, content)
+  VALUES ('${pg05Tenant}', 'Nota', 'Contenido')
+  RETURNING id
+`);
+const insertPg05Job = `
+  INSERT INTO publish_jobs (tenant_id, asset_id, publication_id, connection_id,
+    platform, account_id, idempotency_key, content)
+  VALUES ('${pg05Tenant}', '${pg05Asset[0].id}', '${pg05Pub[0].id}', '${pg05Conn[0].id}',
+    'instagram', 'zacc_pg05', 'pj_key_1', 'Contenido del post')
+`;
+// (b) upsert idempotente por idempotency_key.
+for (let i = 0; i < 2; i++) {
+  await db.exec(`${insertPg05Job} ON CONFLICT (idempotency_key) DO NOTHING`);
+}
+const { rows: pg05Rows } = await db.query(`
+  SELECT status, attempts, max_attempts, media_urls FROM publish_jobs WHERE tenant_id = '${pg05Tenant}'
+`);
+if (pg05Rows.length !== 1 || pg05Rows[0].status !== 'queued' || pg05Rows[0].attempts !== 0 || pg05Rows[0].max_attempts !== 3) {
+  console.error(`PG-05: el upsert por idempotency_key no es idempotente o los defaults fallaron: ${JSON.stringify(pg05Rows)}`);
+  process.exit(1);
+}
+// (a) INSERT crudo duplicado debe fallar por la UNIQUE.
+let pg05DupRejected = false;
+try {
+  await db.exec(insertPg05Job);
+} catch {
+  pg05DupRejected = true;
+}
+if (!pg05DupRejected) {
+  console.error('PG-05: la UNIQUE permitió duplicar idempotency_key');
+  process.exit(1);
+}
+// (d) SET NULL: borrar connection + asset + publication deja el job con las FKs en NULL.
+await db.exec(`
+  DELETE FROM social_connections WHERE id = '${pg05Conn[0].id}';
+  DELETE FROM assets WHERE id = '${pg05Asset[0].id}';
+  DELETE FROM publications WHERE id = '${pg05Pub[0].id}';
+`);
+const { rows: pg05AfterSetNull } = await db.query(`
+  SELECT connection_id, asset_id, publication_id FROM publish_jobs WHERE tenant_id = '${pg05Tenant}'
+`);
+const sn = pg05AfterSetNull[0];
+if (!sn || sn.connection_id !== null || sn.asset_id !== null || sn.publication_id !== null) {
+  console.error(`PG-05: el ON DELETE SET NULL de las FKs falló: ${JSON.stringify(sn)}`);
+  process.exit(1);
+}
+// (c) cascade: borrar el tenant borra sus jobs.
+await db.exec(`DELETE FROM tenants WHERE id = '${pg05Tenant}'`);
+const { rows: pg05AfterCascade } = await db.query(`
+  SELECT COUNT(*)::int AS n FROM publish_jobs WHERE tenant_id = '${pg05Tenant}'
+`);
+if (pg05AfterCascade[0].n !== 0) {
+  console.error('PG-05: el cascade por tenant no borró los jobs');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -1222,5 +1424,6 @@ console.log('tabla PF-04: clip_render_jobs (14 columnas) + FKs cascade + índice
 console.log('tabla PF-10: assets (12 columnas) + UNIQUE (tenant_id,source_table,ref_id) idempotente + FKs (tenant cascade, parent/tx set null)');
 console.log('tabla PG-03: auto_publish_configs (12 columnas) + UNIQUE (tenant_id,program_key) cubre global (__all__) + FKs cascade');
 console.log('tablas PG-04: zernio_profiles (1/tenant UNIQUE) + social_connections (11 columnas, UNIQUE tenant+platform+account, FKs cascade, idx tenant+status)');
+console.log('tabla PG-05: publish_jobs (23 columnas, UNIQUE idempotency_key, FK tenant cascade + asset/publication/connection SET NULL, índices tenant+status y claim)');
 await db.close();
 process.exit(0);

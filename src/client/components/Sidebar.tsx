@@ -20,6 +20,7 @@ import {
   Users,
   PenLine,
   Radio,
+  Send,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatures } from '../hooks/useFeature';
@@ -36,6 +37,7 @@ const NAV_MAIN = [
   { to: '/persons', icon: Users, label: 'Personas' },
   { to: '/editorial', icon: PenLine, label: 'Línea editorial' },
   { to: '/connections', icon: Share2, label: 'Conexiones' },
+  { to: '/publish', icon: Send, label: 'Publicación' },
   { to: '/scheduled', icon: CalendarClock, label: 'Programados' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },
 ];

@@ -22,6 +22,11 @@ import {
   addEditHistoryEntry,
 } from "../services/databaseService.js";
 import { publishToChannels } from "../services/publishService.js";
+import {
+  enqueueForApproval,
+  type EnqueueForApprovalResult,
+  type PublishJobDeps,
+} from "../services/publishJobService.js";
 import { chatCompletion } from "../services/aiSdkService.js";
 import { processImage } from "../services/imageService.js";
 import { loadTenantBranding } from "../services/brandingService.js";
@@ -43,6 +48,34 @@ const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
 /** Timestamp ISO para entradas de historial */
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * PG-05 — deps inyectables del circuito approve → publish jobs.
+ *
+ * `enqueueForApproval` decide dentro: con conexiones Zernio encola un job
+ * por cuenta destino (`usedZernio:true`); sin conexiones devuelve
+ * `usedZernio:false` y el flujo legacy (`publishToChannels`) corre intacto.
+ * Los tests pisan la fn y/o los stores vía `publishJobDeps`.
+ */
+export const reviewPublishDeps: {
+  enqueueForApproval?: (
+    input: {
+      tenantId: string;
+      assetId?: string | null;
+      publicationId?: string | null;
+      content: string;
+      mediaUrls?: string[];
+      scheduledFor?: Date | null;
+    },
+    deps?: PublishJobDeps,
+  ) => Promise<EnqueueForApprovalResult>;
+  publishJobDeps?: PublishJobDeps;
+} = {};
+
+/** Media publicable por Zernio: sólo URLs absolutas http(s) — los paths locales no los puede leer. */
+function publicMediaUrls(imageUrl: string | null | undefined): string[] {
+  return imageUrl && /^https?:\/\//.test(imageUrl) ? [imageUrl] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +125,61 @@ export function registerReviewRoutes(app: Express): void {
       return;
     }
 
-    // Publicar en todos los canales configurados
+    // PG-05: con conexiones Zernio el approve encola publish jobs (un job
+    // por cuenta destino) y la publicación queda 'approved' — el worker la
+    // pasa a 'published' cuando todos los jobs publican (queda 'approved'
+    // si alguno queda partial/failed). Sin conexiones → legacy intacto.
+    try {
+      const enqueueFn = reviewPublishDeps.enqueueForApproval ?? enqueueForApproval;
+      const enq = await enqueueFn(
+        {
+          tenantId,
+          publicationId: id,
+          content: pub.content ?? "",
+          mediaUrls: publicMediaUrls(pub.imageUrl),
+        },
+        reviewPublishDeps.publishJobDeps,
+      );
+
+      if (enq.usedZernio) {
+        await updatePublicationStatus(id, tenantId, 'approved');
+
+        const entry: EditHistoryEntry = {
+          action: 'approved',
+          timestamp: now(),
+          by: req.auth!.userId,
+        };
+        await addEditHistoryEntry(id, tenantId, entry);
+
+        void auditFromRequest(req, AUDIT_ACTIONS.PUBLICATION_APPROVED, {
+          entityType: 'publication',
+          entityId: id,
+          metadata: { publishJobs: enq.jobs.length, targets: enq.targets.length },
+        });
+
+        res.json({
+          success: true,
+          publish: 'zernio',
+          enqueued: enq.createdCount,
+          deduplicated: enq.deduplicatedCount,
+          targetCount: enq.targets.length,
+          jobs: enq.jobs,
+        });
+        return;
+      }
+    } catch (err) {
+      const e = err as Error;
+      void auditFromRequest(req, AUDIT_ACTIONS.PUBLISH_FAILED, {
+        outcome: 'error',
+        entityType: 'publication',
+        entityId: id,
+        metadata: { error: e.message },
+      });
+      res.status(500).json({ error: `Error al encolar la publicación: ${e.message}` });
+      return;
+    }
+
+    // Sin conexiones Zernio: publicar en todos los canales configurados (legacy).
     let publishResults;
     try {
       publishResults = await publishToChannels({
@@ -446,14 +533,31 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
         if (!pub) { errors++; continue; }
 
         if (action === 'approve') {
-          await publishToChannels({
-            id,
-            tenantId,
-            title: pub.title ?? "",
-            content: pub.content ?? "",
-            imagePath: pub.imagePath ?? null,
-            imageUrl: pub.imageUrl ?? null,
-          });
+          // PG-05: mismo branch que /:id/approve — con conexiones Zernio
+          // encola jobs y la publicación queda 'approved'; sin conexiones
+          // el publishToChannels legacy corre como antes.
+          const enqueueFn = reviewPublishDeps.enqueueForApproval ?? enqueueForApproval;
+          const enq = await enqueueFn(
+            {
+              tenantId,
+              publicationId: id,
+              content: pub.content ?? "",
+              mediaUrls: publicMediaUrls(pub.imageUrl),
+            },
+            reviewPublishDeps.publishJobDeps,
+          );
+          if (enq.usedZernio) {
+            await updatePublicationStatus(id, tenantId, 'approved');
+          } else {
+            await publishToChannels({
+              id,
+              tenantId,
+              title: pub.title ?? "",
+              content: pub.content ?? "",
+              imagePath: pub.imagePath ?? null,
+              imageUrl: pub.imageUrl ?? null,
+            });
+          }
           await addEditHistoryEntry(id, tenantId, {
             action: 'approved',
             timestamp: now(),

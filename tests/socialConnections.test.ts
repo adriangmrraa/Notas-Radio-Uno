@@ -110,6 +110,8 @@ interface FakeZernio extends ZernioApi {
         }>;
         listAccounts: string[];
         disconnectAccount: string[];
+        publishPost: unknown[];
+        retryPost: string[];
     };
     remoteAccounts: Array<{
         id: string;
@@ -131,6 +133,8 @@ const createFakeZernio = (): FakeZernio => {
             getConnectUrl: [],
             listAccounts: [],
             disconnectAccount: [],
+            publishPost: [],
+            retryPost: [],
         },
         remoteAccounts: [],
         async findProfileByExternalId(externalId: string) {
@@ -157,6 +161,16 @@ const createFakeZernio = (): FakeZernio => {
         },
         async disconnectAccount(accountId: string) {
             fake.calls.disconnectAccount.push(accountId);
+        },
+        // PG-05: la interfaz creció — stubs sin uso en este suite (los tests
+        // de publicación viven en publishJobs.test.ts).
+        async publishPost(input) {
+            fake.calls.publishPost.push(input);
+            return { httpStatus: 201, idempotentReplay: false, post: null };
+        },
+        async retryPost(postId: string) {
+            fake.calls.retryPost.push(postId);
+            return { httpStatus: 200, idempotentReplay: false, post: null };
         },
     };
     return fake;

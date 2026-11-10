@@ -61,6 +61,82 @@ export interface ZernioConnectResult {
     state?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Publicación (PG-05): POST /v1/posts + retry remoto
+// ---------------------------------------------------------------------------
+
+/** Estados del post que reporta Zernio (Post.status). */
+export type ZernioPostStatus =
+    | 'draft'
+    | 'pending_approval'
+    | 'scheduled'
+    | 'publishing'
+    | 'published'
+    | 'partial'
+    | 'failed'
+    | 'cancelled'
+    | (string & {});
+
+/** Estado de cada platform entry dentro del post. */
+export type ZernioPlatformEntryStatus =
+    | 'pending'
+    | 'processing'
+    | 'uploading'
+    | 'published'
+    | 'failed'
+    | 'cancelled'
+    | (string & {});
+
+export interface ZernioPostPlatformEntry {
+    platform: string;
+    /** `_id` de la cuenta en Zernio — puede venir null en entradas raras. */
+    accountId: string | null;
+    status: ZernioPlatformEntryStatus;
+    /** URL pública del post en la red (cuando la plataforma la devolvió). */
+    platformPostUrl: string | null;
+    errorMessage: string | null;
+    /** Taxonomía de error de Zernio (auth_expired, user_content, …). */
+    errorCategory: string | null;
+    /** 'user' | 'platform' | 'system'. */
+    errorSource: string | null;
+}
+
+export interface ZernioPost {
+    /** `_id` del post en Zernio — llave del retry remoto. */
+    id: string;
+    status: ZernioPostStatus;
+    platforms: ZernioPostPlatformEntry[];
+}
+
+/**
+ * Resultado normalizado de publishPost/retryPost. `httpStatus` conserva el
+ * código real porque la semántica cambia con él:
+ *   201 → creado · 200 → replay idempotente (Idempotency-Key conocida,
+ *   NO creó un post nuevo) · 202 → creado pero X quedó esperando fondos ·
+ *   207 → publicación parcial entre plataformas.
+ * `post` es null sólo si la API respondió 2xx sin body de post (caso
+ * anómalo — el caller lo decide, no se asume éxito).
+ */
+export interface ZernioPublishResult {
+    httpStatus: number;
+    /** true cuando el 200 fue replay de la Idempotency-Key original. */
+    idempotentReplay: boolean;
+    post: ZernioPost | null;
+}
+
+export interface ZernioPublishInput {
+    profileId: string;
+    content: string;
+    /** Un destino por plataforma/cuenta — {platform, accountId}. */
+    platforms: Array<{ platform: string; accountId: string }>;
+    mediaUrls?: string[];
+    /** publicNow=true XOR scheduledFor (ISO) — siempre uno de los dos. */
+    publishNow?: boolean;
+    scheduledFor?: string;
+    /** Header Idempotency-Key — la key persistente del publish job. */
+    idempotencyKey?: string;
+}
+
 /** Detalle estructurado del error de la API (details.existingProfileId, …). */
 export type ZernioErrorDetails = Record<string, unknown> | undefined;
 
@@ -87,6 +163,15 @@ export interface ZernioApi {
     listAccounts(profileId: string): Promise<ZernioAccount[]>;
     /** DELETE /v1/accounts/{accountId} — 404 si ya estaba desconectada. */
     disconnectAccount(accountId: string): Promise<void>;
+    /**
+     * POST /v1/posts — publica contenido en una o varias cuentas del perfil.
+     * Conserva el HTTP status (201/200/202/207) en el resultado; los 4xx/5xx
+     * siguen saliendo como AppError con el `code` de la API. Idempotente
+     * vía `idempotencyKey` → header Idempotency-Key.
+     */
+    publishPost(input: ZernioPublishInput): Promise<ZernioPublishResult>;
+    /** POST /v1/posts/{postId}/retry — reintenta las plataformas fallidas. */
+    retryPost(postId: string): Promise<ZernioPublishResult>;
 }
 
 export interface ZernioDeps {
@@ -146,12 +231,17 @@ export function createZernioApi(deps: ZernioDeps = {}): ZernioApi {
      * Única vía de salida a la red. Resuelve la API key POR LLAMADA (así un
      * proceso arrancado sin env y luego configurado funciona sin reiniciar
      * la importación, y los tests controlan el caso "sin key").
+     *
+     * `requestRaw` devuelve `{status, payload}` — los 4xx/5xx siguen siendo
+     * AppError; publishPost necesita el status real porque 200/201/202/207
+     * significan cosas distintas. `request` lo envuelve para los métodos
+     * clásicos que no les importa el status.
      */
-    async function request<T>(
+    async function requestRaw(
         method: string,
         path: string,
         options: { query?: Record<string, string>; body?: unknown; headers?: Record<string, string> } = {},
-    ): Promise<T> {
+    ): Promise<{ status: number; payload: unknown }> {
         const apiKey = resolveKey(deps);
         if (!apiKey) {
             throw new AppError(
@@ -207,6 +297,15 @@ export function createZernioApi(deps: ZernioDeps = {}): ZernioApi {
             throw appError;
         }
 
+        return { status: res.status, payload };
+    }
+
+    async function request<T>(
+        method: string,
+        path: string,
+        options: { query?: Record<string, string>; body?: unknown; headers?: Record<string, string> } = {},
+    ): Promise<T> {
+        const { payload } = await requestRaw(method, path, options);
         return payload as T;
     }
 
@@ -243,6 +342,48 @@ export function createZernioApi(deps: ZernioDeps = {}): ZernioApi {
             enabled: typeof raw.enabled === 'boolean' ? raw.enabled : null,
             status: disconnected ? 'disconnected' : 'connected',
         };
+    };
+
+    const parsePostPlatformEntry = (raw: unknown): ZernioPostPlatformEntry | null => {
+        if (!isRecord(raw)) return null;
+        const platform = asString(raw.platform);
+        const status = asString(raw.status);
+        if (!platform || !status) return null;
+        return {
+            platform,
+            accountId: asString(raw.accountId),
+            status,
+            platformPostUrl:
+                asString(raw.platformPostUrl) ?? asString(raw.postUrl) ?? asString(raw.url),
+            errorMessage: asString(raw.errorMessage) ?? asString(raw.error),
+            errorCategory: asString(raw.errorCategory) ?? asString(raw.category),
+            errorSource: asString(raw.errorSource) ?? asString(raw.source),
+        };
+    };
+
+    const parsePost = (raw: unknown): ZernioPost | null => {
+        if (!isRecord(raw)) return null;
+        const id = asString(raw._id) ?? asString(raw.id);
+        const status = asString(raw.status);
+        if (!id || !status) return null;
+        const rawPlatforms = Array.isArray(raw.platforms) ? raw.platforms : [];
+        return {
+            id,
+            status,
+            platforms: rawPlatforms
+                .map(parsePostPlatformEntry)
+                .filter((p): p is ZernioPostPlatformEntry => p !== null),
+        };
+    };
+
+    /**
+     * Extrae el objeto post del body de /v1/posts — la API lo devuelve como
+     * `{ post }` en 201/207 y (según versión) directo o `{ post }` en 200/202.
+     */
+    const parsePostResponse = (status: number, payload: unknown): ZernioPublishResult => {
+        const body = isRecord(payload) ? payload : {};
+        const post = parsePost(body.post) ?? parsePost(body);
+        return { httpStatus: status, idempotentReplay: status === 200, post };
     };
 
     return {
@@ -308,6 +449,40 @@ export function createZernioApi(deps: ZernioDeps = {}): ZernioApi {
 
         async disconnectAccount(accountId) {
             await request<unknown>('DELETE', `/accounts/${encodeURIComponent(accountId)}`);
+        },
+
+        async publishPost(input) {
+            const body: Record<string, unknown> = {
+                profileId: input.profileId,
+                content: input.content,
+                platforms: input.platforms.map((t) => ({
+                    platform: t.platform,
+                    accountId: t.accountId,
+                })),
+            };
+            if (input.mediaUrls && input.mediaUrls.length > 0) {
+                body.mediaUrls = input.mediaUrls;
+            }
+            if (input.scheduledFor) {
+                body.scheduledFor = input.scheduledFor;
+            } else {
+                body.publishNow = true;
+            }
+            const { status, payload } = await requestRaw('POST', '/posts', {
+                body,
+                headers: input.idempotencyKey
+                    ? { 'Idempotency-Key': input.idempotencyKey }
+                    : {},
+            });
+            return parsePostResponse(status, payload);
+        },
+
+        async retryPost(postId) {
+            const { status, payload } = await requestRaw(
+                'POST',
+                `/posts/${encodeURIComponent(postId)}/retry`,
+            );
+            return parsePostResponse(status, payload);
         },
     };
 }
