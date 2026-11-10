@@ -16,7 +16,7 @@
  * (posee la fila); las rutas externas — `getById`, `listByClip`, `retry`,
  * `cancel`, `listPending(tenantId)` — sí están acotadas por tenant.
  */
-import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 
 import { db, type Database } from '../db/index.js';
 import { clipRenderJobs } from '../db/schema/renderJobs.js';
@@ -122,7 +122,14 @@ export interface ClipRenderQueueStore {
   cancel(jobId: string, tenantId: string): Promise<ClipRenderJob | null>;
 
   getById(jobId: string, tenantId: string): Promise<ClipRenderJob | null>;
-  /** Jobs de un clip, más viejos primero (tenant-scoped). */
+  /**
+   * Jobs ligados a un clip, más viejos primero (tenant-scoped). Matchea por
+   * DOS vías: `clip_id = clipId` (destino — reframe/subtitles y todo job
+   * 'cut' terminado) OR `payload->>'recutOf' = clipId` (origen de un
+   * re-corte — PF-05). Sin el OR, un job de re-corte desaparecería de la
+   * lista del origen: su clip_id es NULL mientras corre y apunta al clip
+   * NUEVO cuando termina; `recutOf` es el vínculo estable.
+   */
   listByClip(clipId: string, tenantId: string): Promise<ClipRenderJob[]>;
   /**
    * Pendientes ordenados por run_at. Con `tenantId` filtra ese tenant; sin
@@ -292,8 +299,11 @@ export function createDrizzleClipRenderQueueStore(
         .from(clipRenderJobs)
         .where(
           and(
-            eq(clipRenderJobs.clipId, clipId),
             eq(clipRenderJobs.tenantId, tenantId),
+            or(
+              eq(clipRenderJobs.clipId, clipId),
+              sql`${clipRenderJobs.payload} ->> 'recutOf' = ${clipId}`,
+            ),
           ),
         )
         .orderBy(asc(clipRenderJobs.createdAt));

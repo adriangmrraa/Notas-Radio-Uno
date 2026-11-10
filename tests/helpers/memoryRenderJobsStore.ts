@@ -6,9 +6,11 @@
  *   - `claimNext` es tenant-agnóstico (excepción documentada del brief):
  *     toma el primer `pending` con `run_at <= now` ordenado por
  *     run_at/created_at y lo pasa a `running` con attempts+1.
- *   - `retry`/`cancel`/`getById`/`listByClip` matchean por `id AND tenant_id`:
+ *   - `retry`/`cancel`/`getById` matchean por `id AND tenant_id`:
  *     un id ajeno al tenant no se encuentra → null/no-op (mismo WHERE que el
- *     UPDATE/SELECT drizzle).
+ *     UPDATE/SELECT drizzle). `listByClip` matchea por tenant AND
+ *     (clip_id OR payload.recutOf) — el OR de PF-05 liga el recut job al
+ *     clip origen.
  *   - `markFailed` mira `attempts >= maxAttempts` (o `retry === false`) para
  *     decidir `error` terminal vs vuelta a `pending` con `run_at = retryAt`.
  *
@@ -155,8 +157,17 @@ export function createMemoryRenderJobsStore(opts?: {
     },
 
     async listByClip(clipId, tenantId) {
+      // Mismo WHERE que el drizzle extendido (PF-05): tenant_id AND
+      // (clip_id = :id OR payload->>'recutOf' = :id) — un recut job queda
+      // ligado al clip origen por payload.recutOf aunque su clip_id apunte
+      // al clip derivado cuando termina.
       return state.jobs
-        .filter((j) => j.clipId === clipId && j.tenantId === tenantId)
+        .filter(
+          (j) =>
+            j.tenantId === tenantId &&
+            (j.clipId === clipId ||
+              (j.payload as { recutOf?: unknown }).recutOf === clipId),
+        )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     },
 

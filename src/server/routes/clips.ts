@@ -20,10 +20,58 @@ import {
   updateClipStatus,
   deleteClip,
 } from '../services/clipService.js';
+import {
+  clipRecutService,
+  ClipRecutError,
+  type ClipRecutErrorReason,
+  type RecutClipInput,
+  type RecutClipResult,
+} from '../services/clipRecutService.js';
+import {
+  clipRenderQueueService,
+  type ClipRenderJob,
+} from '../services/clipRenderQueueService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+
+// ---------------------------------------------------------------------------
+// Deps inyectables (mismo patrón que liveRouteDeps/transmissionsRouteDeps)
+// ---------------------------------------------------------------------------
+
+/**
+ * En producción quedan vacías (los servicios usan sus singletons drizzle);
+ * los tests las pisan con servicios sobre stores en memoria — el router se
+ * monta en una app express efímera sin tocar Neon.
+ */
+export const clipsRouteDeps: {
+  recutClip?: (input: RecutClipInput) => Promise<RecutClipResult>;
+  listJobsByClip?: (
+    clipId: string,
+    tenantId: string,
+  ) => Promise<ClipRenderJob[]>;
+  getRenderJob?: (
+    jobId: string,
+    tenantId: string,
+  ) => Promise<ClipRenderJob | null>;
+  retryRenderJob?: (
+    jobId: string,
+    tenantId: string,
+  ) => Promise<ClipRenderJob | null>;
+} = {};
+
+/** reason del ClipRecutError → HTTP (contrato del slice PF-05). */
+const RECUT_ERROR_HTTP: Record<ClipRecutErrorReason, number> = {
+  clip_not_found: 404,
+  // El clip existe pero su transmisión origen se borró (FK set null):
+  // estado del recurso que lo hace improcesable — no es un conflicto
+  // transitorio que se resuelva reintentando (eso sería 409).
+  no_transmission: 422,
+  invalid_window: 422,
+  window_out_of_coverage: 409,
+  clip_rendering: 409,
+};
 
 // ---------------------------------------------------------------------------
 // Registro de rutas
@@ -166,6 +214,141 @@ export function registerClipRoutes(app: Express): void {
     } catch (err) {
       const e = err as Error;
       res.status(500).json({ error: `Error al eliminar clip: ${e.message}` });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // POST /api/clips/:id/recut — Re-corte manual (PF-05)
+  //
+  // Body {startMs, endMs} (offsets en ms sobre la línea de tiempo grabada).
+  // Valida la ventana contra el crudo ANTES de encolar y devuelve 202 con el
+  // job de la cola de render — el clip derivado lo crea el worker (kind 'cut').
+  // ──────────────────────────────────────────────────────────────────────────
+  app.post('/api/clips/:id/recut', requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const { id } = req.params;
+    const body = (req.body ?? {}) as { startMs?: unknown; endMs?: unknown };
+
+    // 400: el body tiene que traer DOS números finitos (el resto de las
+    // validaciones de la ventana — rango, duración, cobertura — es del
+    // servicio y se traduce por `reason`).
+    if (
+      typeof body.startMs !== 'number' ||
+      typeof body.endMs !== 'number' ||
+      !Number.isFinite(body.startMs) ||
+      !Number.isFinite(body.endMs)
+    ) {
+      res.status(400).json({
+        error: 'startMs y endMs deben ser números finitos',
+        code: 'invalid_body',
+      });
+      return;
+    }
+
+    try {
+      const recut = clipsRouteDeps.recutClip ??
+        ((input: RecutClipInput) => clipRecutService.recutClip(input));
+      const { job } = await recut({
+        tenantId,
+        clipId: id,
+        startMs: body.startMs,
+        endMs: body.endMs,
+      });
+      res.status(202).json({ jobId: job.id, status: job.status });
+    } catch (err) {
+      if (err instanceof ClipRecutError) {
+        res
+          .status(RECUT_ERROR_HTTP[err.reason] ?? 500)
+          .json({ error: err.message, code: err.reason });
+        return;
+      }
+      const e = err as Error;
+      res.status(500).json({ error: `Error al re-cortar el clip: ${e.message}` });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GET /api/clips/:id/jobs — Jobs de render ligados al clip (PF-05)
+  //
+  // listByClip matchea por clip_id (destino) O payload.recutOf (origen), así
+  // el recut job aparece acá — y cuando termina, su clip_id muestra el clip
+  // derivado. Un clip ajeno/inexistente devuelve lista vacía (sin leak).
+  // ──────────────────────────────────────────────────────────────────────────
+  app.get('/api/clips/:id/jobs', requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const { id } = req.params;
+
+    try {
+      const list = clipsRouteDeps.listJobsByClip ??
+        ((clipId: string, tId: string) =>
+          clipRenderQueueService.listJobsByClip(clipId, tId));
+      const jobs = await list(id, tenantId);
+      res.json({ jobs });
+    } catch (err) {
+      const e = err as Error;
+      res.status(500).json({ error: `Error al listar jobs del clip: ${e.message}` });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GET /api/render-jobs/:jobId — Estado de un job de render (PF-05)
+  //
+  // Para el polling de la UI: status/attempts/last_error y, cuando termina,
+  // clip_id = el clip derivado.
+  // ──────────────────────────────────────────────────────────────────────────
+  app.get('/api/render-jobs/:jobId', requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const { jobId } = req.params;
+
+    try {
+      const get = clipsRouteDeps.getRenderJob ??
+        ((jId: string, tId: string) => clipRenderQueueService.getJob(jId, tId));
+      const job = await get(jobId, tenantId);
+      if (!job) {
+        res.status(404).json({ error: 'Job de render no encontrado' });
+        return;
+      }
+      res.json({ job });
+    } catch (err) {
+      const e = err as Error;
+      res.status(500).json({ error: `Error al obtener el job: ${e.message}` });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // POST /api/render-jobs/:jobId/retry — Reintento manual de un job (PF-05)
+  //
+  // Sólo desde 'error' o 'cancelled' (contrato del store): 404 si el job no
+  // existe para el tenant, 409 si está en otro estado.
+  // ──────────────────────────────────────────────────────────────────────────
+  app.post('/api/render-jobs/:jobId/retry', requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const tenantId = req.auth!.tenantId;
+    const { jobId } = req.params;
+
+    try {
+      const get = clipsRouteDeps.getRenderJob ??
+        ((jId: string, tId: string) => clipRenderQueueService.getJob(jId, tId));
+      const existing = await get(jobId, tenantId);
+      if (!existing) {
+        res.status(404).json({ error: 'Job de render no encontrado' });
+        return;
+      }
+
+      const retry = clipsRouteDeps.retryRenderJob ??
+        ((jId: string, tId: string) =>
+          clipRenderQueueService.retryJob(jId, tId));
+      const job = await retry(jobId, tenantId);
+      if (!job) {
+        res.status(409).json({
+          error: `El job está '${existing.status}' — sólo se reintentan jobs en error o cancelados`,
+          code: 'job_not_retryable',
+        });
+        return;
+      }
+      res.json({ job });
+    } catch (err) {
+      const e = err as Error;
+      res.status(500).json({ error: `Error al reintentar el job: ${e.message}` });
     }
   });
 }
