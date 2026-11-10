@@ -9,6 +9,7 @@ import { Toaster } from './ui/toaster';
 
 const PAGE_TITLES: Record<string, string> = {
   '/en-vivo': 'En vivo',
+  '/assets': 'Bandeja de assets',
   '/dashboard': 'Dashboard',
   '/persons': 'Personas',
   '/editorial': 'Línea editorial',

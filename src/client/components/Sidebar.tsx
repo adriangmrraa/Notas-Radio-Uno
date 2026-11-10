@@ -27,6 +27,7 @@ const NAV_MAIN = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
   { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
+  { to: '/assets', icon: Inbox, label: 'Assets' },
   { to: '/en-vivo', icon: Radio, label: 'En vivo' },
   { to: '/editor', icon: Workflow, label: 'Pipeline Editor', feature: 'pipeline_editor' },
   { to: '/programs', icon: Mic, label: 'Programas' },

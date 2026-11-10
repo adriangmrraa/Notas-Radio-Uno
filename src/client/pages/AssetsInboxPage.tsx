@@ -1,0 +1,16 @@
+import { useEffect, useMemo, useState } from 'react';
+import { FilterX, Inbox } from 'lucide-react';
+import { useApi } from '../hooks/useApi';
+
+type Asset = { id: string; kind: string; title: string | null; status: string; transmissionId: string | null };
+
+export function AssetsInboxPage() {
+  const { fetchApi } = useApi();
+  const [kind, setKind] = useState(''); const [status, setStatus] = useState('');
+  const [programId, setProgramId] = useState(''); const [transmissionId, setTransmissionId] = useState('');
+  const [assets, setAssets] = useState<Asset[]>([]); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
+  const query = useMemo(() => { const p = new URLSearchParams(); if (kind) p.set('kind', kind); if (status) p.set('status', status); if (programId) p.set('programId', programId); if (transmissionId) p.set('transmissionId', transmissionId); return p; }, [kind, status, programId, transmissionId]);
+  useEffect(() => { let alive = true; setLoading(true); setError(''); fetchApi<{ assets: Asset[] }>(`/assets?${query}`).then(r => alive && setAssets(r.assets)).catch((e: Error) => alive && setError(e.message)).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [fetchApi, query]);
+  const clear = () => { setKind(''); setStatus(''); setProgramId(''); setTransmissionId(''); };
+  return <section className="space-y-6"><div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-semibold text-white">Bandeja de assets</h2><p className="text-sm text-white/50">Contenido editorial unificado del tenant.</p></div><button type="button" onClick={clear} className="btn-secondary inline-flex gap-2"><FilterX className="w-4 h-4" />Limpiar filtros</button></div><div className="grid grid-cols-1 md:grid-cols-4 gap-3 rounded-xl border border-white/10 p-4"><label>Tipo<select aria-label="Tipo" className="input-premium" value={kind} onChange={e => setKind(e.target.value)}><option value="">Todos</option><option value="clip">Clip</option><option value="note">Nota</option><option value="flyer">Flyer</option><option value="post">Post</option></select></label><label>Estado<select aria-label="Estado" className="input-premium" value={status} onChange={e => setStatus(e.target.value)}><option value="">Todos</option>{['draft','pending_review','approved','published','archived'].map(s => <option key={s}>{s}</option>)}</select></label><label>Programa<input aria-label="ID de programa" className="input-premium" value={programId} onChange={e => setProgramId(e.target.value)} placeholder="UUID" /></label><label>Transmisión<input aria-label="ID de transmisión" className="input-premium" value={transmissionId} onChange={e => setTransmissionId(e.target.value)} placeholder="UUID" /></label></div>{loading ? <p>Cargando assets…</p> : error ? <p role="alert">{error}</p> : assets.length === 0 ? <div className="rounded-xl border border-dashed border-white/15 p-12 text-center"><Inbox className="mx-auto mb-3" /><h3>No hay assets para estos filtros</h3></div> : <ul className="space-y-2">{assets.map(a => <li key={a.id} className="rounded-xl border border-white/10 p-4"><strong>{a.title || 'Asset sin título'}</strong><p className="text-sm text-white/50">{a.kind} · {a.status} · {a.transmissionId ? 'Con transmisión' : 'Sin transmisión'}</p></li>)}</ul>}</section>;
+}
