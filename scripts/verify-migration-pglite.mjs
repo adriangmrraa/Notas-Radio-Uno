@@ -613,6 +613,92 @@ if (missingPd05Idx.length > 0) {
   process.exit(1);
 }
 
+// 18) PF-04: clip_render_jobs existe con columnas, FKs e índices.
+const { rows: pf04Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'clip_render_jobs'
+`);
+const pf04ColInfo = new Map(pf04Cols.map((r) => [r.column_name, r]));
+const checkPf04Col = (col, dataType, nullable, needsDefault) => {
+  const c = pf04ColInfo.get(col);
+  if (!c) return `falta clip_render_jobs.${col}`;
+  if (c.data_type !== dataType) return `clip_render_jobs.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `clip_render_jobs.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `clip_render_jobs.${col} sin DEFAULT`;
+  return null;
+};
+const pf04ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['clip_id', 'uuid', 'YES', false], // nullable: 'cut' lo rellena el worker
+  ['kind', 'character varying', 'NO', false],
+  ['status', 'character varying', 'NO', true],
+  ['payload', 'jsonb', 'NO', true],
+  ['attempts', 'integer', 'NO', true],
+  ['max_attempts', 'integer', 'NO', true],
+  ['last_error', 'text', 'YES', false],
+  ['run_at', 'timestamp with time zone', 'NO', true],
+  ['started_at', 'timestamp with time zone', 'YES', false],
+  ['finished_at', 'timestamp with time zone', 'YES', false],
+  ['created_at', 'timestamp with time zone', 'NO', true],
+  ['updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPf04Col(c, t, n, d)).filter(Boolean);
+if (pf04ColErrors.length > 0) {
+  console.error(`PF-04 columnas incorrectas:\n  ${pf04ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const jobStatusDef = pf04ColInfo.get('status')?.column_default ?? '';
+if (!jobStatusDef.includes("'pending'")) {
+  console.error(`PF-04: default de clip_render_jobs.status incorrecto (${jobStatusDef})`);
+  process.exit(1);
+}
+
+const { rows: pf04Fks } = await db.query(`
+  SELECT con.conrelid::regclass::text AS table_name,
+         att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'clip_render_jobs'
+`);
+const pf04FkMap = new Map(pf04Fks.map((r) => [r.column_name, r]));
+const expectedPf04Fks = [
+  ['tenant_id', 'tenants'],
+  ['clip_id', 'clips'],
+];
+const badPf04Fks = expectedPf04Fks.filter(([col, target]) => {
+  const row = pf04FkMap.get(col);
+  return !row || row.foreign_table !== target || row.confdeltype !== 'c';
+});
+if (badPf04Fks.length > 0) {
+  console.error(`PF-04: faltan FKs, apuntan mal o no son ON DELETE CASCADE: ${badPf04Fks.map((f) => f[0]).join(', ')}`);
+  process.exit(1);
+}
+
+const { rows: pf04Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'clip_render_jobs'
+`);
+const pf04IdxMap = new Map(pf04Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPf04Idx = [
+  'clip_render_jobs_tenant_id_idx',
+  'clip_render_jobs_clip_id_idx',
+  'clip_render_jobs_status_run_at_idx',
+];
+const missingPf04Idx = expectedPf04Idx.filter((name) => !pf04IdxMap.has(name));
+if (missingPf04Idx.length > 0) {
+  console.error(`PF-04: faltan índices: ${missingPf04Idx.join(', ')}`);
+  process.exit(1);
+}
+const claimIdxDef = pf04IdxMap.get('clip_render_jobs_status_run_at_idx') ?? '';
+if (!/\("?status"?,\s*"?run_at"?\)|\(status,run_at\)|status.*run_at/.test(claimIdxDef) || !claimIdxDef.includes('status') || !claimIdxDef.includes('run_at')) {
+  console.error(`PF-04: el índice del claim no cubre (status, run_at): ${claimIdxDef}`);
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -627,5 +713,6 @@ console.log('índices PD-01:', expectedPd01Idx.join(', '));
 console.log('tablas PD-05:', pd05Tables.map((r) => r.tablename).join(', '));
 console.log('fks PD-05:', expectedPd05Fks.map(([c, t, d]) => `${c}->${t}(${d})`).join(', '));
 console.log('índices PD-05:', expectedPd05Idx.join(', '));
+console.log('tabla PF-04: clip_render_jobs (14 columnas) + FKs cascade + índice del claim (status, run_at)');
 await db.close();
 process.exit(0);

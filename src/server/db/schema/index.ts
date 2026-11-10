@@ -24,6 +24,7 @@ export * from './editorialProfiles.js';
 export * from './transmissions.js';
 export * from './recordings.js';
 export * from './live.js';
+export * from './renderJobs.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -57,6 +58,7 @@ import { editorialProfiles } from './editorialProfiles.js';
 import { transmissions, scheduledTransmissions } from './transmissions.js';
 import { streamRecordings, recordingSegments } from './recordings.js';
 import { transcriptSegments, transmissionMoments } from './live.js';
+import { clipRenderJobs } from './renderJobs.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -102,6 +104,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   recordingSegments: many(recordingSegments),
   transcriptSegments: many(transcriptSegments),
   transmissionMoments: many(transmissionMoments),
+  clipRenderJobs: many(clipRenderJobs),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -290,12 +293,19 @@ export const guestDossiersRelations = relations(guestDossiers, ({ one }) => ({
 }));
 
 // ── clips relations ───────────────────────────────────────────────────────────
-export const clipsRelations = relations(clips, ({ one }) => ({
+export const clipsRelations = relations(clips, ({ one, many }) => ({
   tenant: one(tenants, { fields: [clips.tenantId], references: [tenants.id] }),
   transmission: one(transmissions, {
     fields: [clips.transmissionId],
     references: [transmissions.id],
   }),
+  renderJobs: many(clipRenderJobs),
+}));
+
+// ── clip_render_jobs relations (PF-04) ─────────────────────────────────────
+export const clipRenderJobsRelations = relations(clipRenderJobs, ({ one }) => ({
+  tenant: one(tenants, { fields: [clipRenderJobs.tenantId], references: [tenants.id] }),
+  clip: one(clips, { fields: [clipRenderJobs.clipId], references: [clips.id] }),
 }));
 
 // ── features relations ────────────────────────────────────────────────────────

@@ -99,6 +99,13 @@
       "when": 1794273147586,
       "tag": "0013_pe06_transmission_segments",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794279490092,
+      "tag": "0014_bright_gabe_jones",
+      "breakpoints": true
     }
   ]
 }

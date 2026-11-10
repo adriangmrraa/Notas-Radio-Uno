@@ -48,6 +48,7 @@ import { editorialRouter } from "./routes/editorial.js";
 import { transmissionsRouter } from "./routes/transmissions.js";
 import { liveRouter } from "./routes/live.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
+import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { initLiveAlertsService } from "./services/liveAlertsService.js";
@@ -278,6 +279,12 @@ initJobScheduler(io);
 // TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
 // este scheduler no debe arrancar en el proceso que sólo sirve API.
 initTransmissionScheduler(io);
+// PF-04: cola de render de clips. Los demás schedulers no tienen env-guard;
+// este es el primero — RENDER_WORKER_ENABLED=0 lo apaga (p.ej. proceso
+// API-only hasta que exista PROCESS_ROLE).
+if (process.env.RENDER_WORKER_ENABLED !== "0") {
+  initClipRenderWorker(io);
+}
 initDossierScheduler();
 
 // ---------------------------------------------------------------------------
