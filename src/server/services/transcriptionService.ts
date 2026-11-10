@@ -8,6 +8,11 @@ import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 import type { DiarizedTranscription, Utterance } from "../../shared/types.js";
 import { detectStreamSource, isExplicitStreamUrl } from "../lib/streamSources.js";
+import {
+  resolveAnalysisModel,
+  resolveAnalysisProvider,
+  resolveAnalysisProviders,
+} from "../lib/analysisProviders.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -354,28 +359,7 @@ async function transcribeWithAssemblyAI(filePath: string): Promise<DiarizedTrans
   };
 }
 
-/**
- * Transcribe un archivo de audio.
- * Provider dispatch: AssemblyAI (diarization, si ASSEMBLYAI_API_KEY configurada) → Whisper (fallback).
- * Retorna DiarizedTranscription con texto, diarización y metadatos del proveedor.
- */
-async function transcribeAudio(filePath: string): Promise<DiarizedTranscription> {
-  // Provider dispatch: AssemblyAI (if configured) → Whisper (fallback)
-  if (process.env.ASSEMBLYAI_API_KEY) {
-    try {
-      console.log('[Transcription] Using AssemblyAI (diarization enabled)');
-      return await transcribeWithAssemblyAI(filePath);
-    } catch (err) {
-      const axiosErr = err as any;
-      if (axiosErr?.response) {
-        console.warn('[Transcription] AssemblyAI failed:', axiosErr.response.status, JSON.stringify(axiosErr.response.data));
-      } else {
-        console.warn('[Transcription] AssemblyAI failed, falling back to Whisper:', err instanceof Error ? err.message : err);
-      }
-    }
-  }
-
-  console.log('[Transcription] Using Whisper');
+async function transcribeWithWhisper(filePath: string): Promise<DiarizedTranscription> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY no configurada. Necesaria para transcripción.');
@@ -385,7 +369,7 @@ async function transcribeAudio(filePath: string): Promise<DiarizedTranscription>
 
   const form = new FormData();
   form.append('file', fs.createReadStream(filePath));
-  form.append('model', 'whisper-1');
+  form.append('model', resolveAnalysisModel('transcription', 'whisper'));
   form.append('language', 'es');
   form.append('response_format', 'json');
 
@@ -414,6 +398,48 @@ async function transcribeAudio(filePath: string): Promise<DiarizedTranscription>
 }
 
 /**
+ * Transcribe un archivo de audio.
+ * El dispatch de proveedor lo resuelve `analysisProviders` (PE-01): por
+ * defecto AssemblyAI (diarización) → Whisper; `ANALYSIS_PROVIDER_TRANSCRIPTION`
+ * fuerza uno solo. Retorna DiarizedTranscription con texto, diarización y
+ * metadatos del proveedor.
+ */
+async function transcribeAudio(filePath: string): Promise<DiarizedTranscription> {
+  const providers = resolveAnalysisProviders('transcription');
+  if (providers.length === 0) {
+    // Sin override y sin nada configurado: esto siempre tira
+    // AnalysisProviderUnavailableError con la lista de env vars que faltan.
+    resolveAnalysisProvider('transcription');
+  }
+
+  let lastError: unknown;
+  for (const provider of providers) {
+    try {
+      if (provider.id === 'assemblyai') {
+        console.log('[Transcription] Using AssemblyAI (diarization enabled)');
+        return await transcribeWithAssemblyAI(filePath);
+      }
+      if (provider.id === 'whisper') {
+        console.log('[Transcription] Using Whisper');
+        return await transcribeWithWhisper(filePath);
+      }
+    } catch (err) {
+      const axiosErr = err as any;
+      if (axiosErr?.response) {
+        console.warn(`[Transcription] ${provider.id} failed:`, axiosErr.response.status, JSON.stringify(axiosErr.response.data));
+      } else {
+        console.warn(`[Transcription] ${provider.id} failed, trying next provider:`, err instanceof Error ? err.message : err);
+      }
+      lastError = err;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Ningún proveedor de transcripción pudo procesar el audio');
+}
+
+/**
  * Captura y transcribe un segmento de audio.
  * Retorna { text, filePath, sourceType, timestamp }
  */
@@ -437,6 +463,7 @@ export {
   captureAudioSegment,
   transcribeAudio,
   transcribeWithAssemblyAI,
+  transcribeWithWhisper,
   formatDiarizedText,
   captureAndTranscribe,
 };
