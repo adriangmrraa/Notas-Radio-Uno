@@ -187,7 +187,7 @@ export function AssetsInboxPage() {
   };
 
   return (
-    <section className="space-y-6">
+    <section className="p-4 md:p-8 space-y-6">
       <div className="flex justify-between">
         <div>
           <h2 className="text-xl font-semibold text-white">Bandeja de assets</h2>
@@ -205,7 +205,7 @@ export function AssetsInboxPage() {
 
       {feedback && <p role="status">{feedback}</p>}
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <label>
           Tipo
           <select aria-label="Tipo" value={kind} onChange={(e) => { setKind(e.target.value); setPage(1); }}>
@@ -269,18 +269,27 @@ export function AssetsInboxPage() {
           />
         )
       ) : (
-        <ul>
+        <ul className="space-y-3">
           {assets.map((asset) => (
-            <li key={asset.id} className="p-4">
-              <strong>{asset.title || 'Asset sin título'}</strong>
-              <p>
+            <li key={asset.id} className="glass-card-static p-4">
+              <strong className="text-white/85">{asset.title || 'Asset sin título'}</strong>
+              <p className="text-xs text-white/40 mt-0.5">
                 {KIND_LABELS[asset.kind] ?? asset.kind} · {STATUS_LABELS[asset.status] ?? asset.status}
               </p>
-              <button type="button" onClick={() => navigate(asset.kind === 'clip' ? '/clips' : '/review')}>
+              <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-secondary tap-target inline-flex items-center gap-1.5 !py-1.5 !px-3 !text-xs"
+                onClick={() => navigate(asset.kind === 'clip' ? '/clips' : '/review')}
+              >
                 Abrir asset
               </button>
               {(asset.kind === 'note' || asset.kind === 'post') && (
-                <button type="button" onClick={() => startTextEdit(asset)}>
+                <button
+                  type="button"
+                  className="btn-secondary tap-target inline-flex items-center gap-1.5 !py-1.5 !px-3 !text-xs"
+                  onClick={() => startTextEdit(asset)}
+                >
                   <Sparkles className="w-4 h-4" />
                   Editar con IA
                 </button>
@@ -288,6 +297,7 @@ export function AssetsInboxPage() {
               {asset.kind === 'clip' && (
                 <button
                   type="button"
+                  className="btn-secondary tap-target inline-flex items-center gap-1.5 !py-1.5 !px-3 !text-xs"
                   disabled={action === `${asset.id}:reprocess`}
                   onClick={() => void reprocessClip(asset)}
                 >
@@ -295,10 +305,15 @@ export function AssetsInboxPage() {
                 </button>
               )}
               {asset.kind === 'flyer' && (
-                <button type="button" onClick={() => startFlyerRegen(asset)}>
+                <button
+                  type="button"
+                  className="btn-secondary tap-target inline-flex items-center gap-1.5 !py-1.5 !px-3 !text-xs"
+                  onClick={() => startFlyerRegen(asset)}
+                >
                   Regenerar imagen
                 </button>
               )}
+              </div>
 
               {textEdit?.assetId === asset.id && (
                 <div className="mt-3 space-y-2">
@@ -311,6 +326,7 @@ export function AssetsInboxPage() {
                   </label>
                   <button
                     type="button"
+                    className="btn-primary tap-target !py-2 !px-4 !text-xs"
                     disabled={textEdit.proposing || textEdit.applying || !textEdit.instruction.trim()}
                     onClick={() => void requestProposal()}
                   >
@@ -320,6 +336,7 @@ export function AssetsInboxPage() {
                     <>
                       <textarea
                         aria-label="Propuesta de texto editada"
+                        className="input-premium"
                         rows={5}
                         value={textEdit.proposal}
                         onChange={(e) => setTextEdit({ ...textEdit, proposal: e.target.value })}
@@ -327,12 +344,21 @@ export function AssetsInboxPage() {
                       <p className="text-xs text-white/40">
                         Propuesta generada por {textEdit.provider}. Podés revisarla y editarla antes de aplicar.
                       </p>
-                      <button type="button" disabled={textEdit.applying} onClick={() => void applyProposal()}>
+                      <button
+                        type="button"
+                        className="btn-primary tap-target !py-2 !px-4 !text-xs"
+                        disabled={textEdit.applying}
+                        onClick={() => void applyProposal()}
+                      >
                         {textEdit.applying ? 'Aplicando…' : 'Aplicar edición'}
                       </button>
                     </>
                   )}
-                  <button type="button" onClick={() => setTextEdit(null)}>
+                  <button
+                    type="button"
+                    className="btn-secondary tap-target !py-2 !px-4 !text-xs"
+                    onClick={() => setTextEdit(null)}
+                  >
                     Descartar
                   </button>
                 </div>
@@ -349,12 +375,17 @@ export function AssetsInboxPage() {
                   </label>
                   <button
                     type="button"
+                    className="btn-primary tap-target !py-2 !px-4 !text-xs"
                     disabled={flyerRegen.running || !flyerRegen.instruction.trim()}
                     onClick={() => void regenerateFlyer()}
                   >
                     {flyerRegen.running ? 'Generando…' : 'Generar imagen'}
                   </button>
-                  <button type="button" onClick={() => setFlyerRegen(null)}>
+                  <button
+                    type="button"
+                    className="btn-secondary tap-target !py-2 !px-4 !text-xs"
+                    onClick={() => setFlyerRegen(null)}
+                  >
                     Cancelar
                   </button>
                 </div>
@@ -364,14 +395,24 @@ export function AssetsInboxPage() {
         </ul>
       )}
 
-      <nav aria-label="Paginación">
-        <button type="button" disabled={page === 1} onClick={() => setPage(page - 1)}>
+      <nav aria-label="Paginación" className="flex items-center gap-3 text-xs text-white/40">
+        <button
+          type="button"
+          className="btn-secondary tap-target !py-1.5 !px-3 !text-xs"
+          disabled={page === 1}
+          onClick={() => setPage(page - 1)}
+        >
           Anterior
         </button>
         <span>
           {data?.total ?? 0} assets · página {page}
         </span>
-        <button type="button" disabled={page * 25 >= (data?.total ?? 0)} onClick={() => setPage(page + 1)}>
+        <button
+          type="button"
+          className="btn-secondary tap-target !py-1.5 !px-3 !text-xs"
+          disabled={page * 25 >= (data?.total ?? 0)}
+          onClick={() => setPage(page + 1)}
+        >
           Siguiente
         </button>
       </nav>
