@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Building2, Search, Users, FileText, Sparkles, DollarSign, AlertCircle, Loader2, ChevronRight,
+  Building2, Search, Users, FileText, Sparkles, DollarSign, ChevronRight,
 } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../../components/feedback';
 
 interface PlatformStats {
   tenants: { total: number; active: number; suspended: number; newLast30d: number };
@@ -77,12 +79,10 @@ export function AdminTenants() {
   const navigate = useNavigate();
 
   const [stats, setStats] = useState<PlatformStats | null>(null);
-  const [data, setData] = useState<TenantListResponse | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [status, setStatus] = useState<'all' | 'active' | 'suspended' | 'trialing'>('all');
   const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
 
   const loadStats = useCallback(async () => {
     try {
@@ -92,20 +92,14 @@ export function AdminTenants() {
     }
   }, [fetchApi]);
 
-  const loadTenants = useCallback(async () => {
-    setLoading(true);
-    try {
+  const { data, loading, error, reload } = useAsyncData(
+    () => {
       const params = new URLSearchParams({ page: String(page), pageSize: '25', status });
-      if (search.trim()) params.set('search', search.trim());
-      const result = await fetchApi<TenantListResponse>(`/admin/tenants?${params.toString()}`);
-      setData(result);
-      setError('');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'No se pudieron cargar los tenants');
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchApi, page, status, search]);
+      if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
+      return fetchApi<TenantListResponse>(`/admin/tenants?${params.toString()}`);
+    },
+    [page, status, debouncedSearch],
+  );
 
   useEffect(() => {
     void loadStats();
@@ -113,10 +107,10 @@ export function AdminTenants() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      void loadTenants();
+      setDebouncedSearch(search);
     }, 250);
     return () => clearTimeout(timer);
-  }, [loadTenants]);
+  }, [search]);
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
 
@@ -185,15 +179,19 @@ export function AdminTenants() {
         </select>
       </div>
 
-      {error && (
-        <div className="glass-card-static p-4 flex items-center gap-2 text-red-400 text-sm">
-          <AlertCircle className="w-4 h-4" />
-          {error}
-        </div>
+      {error && data && (
+        <ErrorState error={error} compact onRetry={() => void reload()} />
       )}
 
       {/* Tabla */}
       <div className="glass-card-static overflow-hidden">
+        {loading && !data ? (
+          <div className="p-4">
+            <LoadingState rows={4} text="Cargando tenants…" />
+          </div>
+        ) : error ? (
+          <ErrorState error={error} compact onRetry={() => void reload()} />
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -208,15 +206,6 @@ export function AdminTenants() {
               </tr>
             </thead>
             <tbody>
-              {loading && !data && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-white/30 text-sm">
-                    <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                    Cargando tenants…
-                  </td>
-                </tr>
-              )}
-
               {data?.tenants.map((tenant) => (
                 <tr
                   key={tenant.id}
@@ -248,6 +237,7 @@ export function AdminTenants() {
             </tbody>
           </table>
         </div>
+        )}
 
         {data && data.total > data.pageSize && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06] text-xs text-white/40">

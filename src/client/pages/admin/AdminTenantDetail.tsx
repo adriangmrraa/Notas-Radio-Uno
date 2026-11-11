@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, AlertCircle, Loader2, Users, Activity, ToggleLeft, ToggleRight, CalendarClock,
+  ArrowLeft, Users, Activity, ToggleLeft, ToggleRight, CalendarClock,
   Ban, PlayCircle, Eye, CreditCard, Gauge, Sparkles, RotateCcw,
 } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../../components/feedback';
 
 interface TenantDetail {
   tenant: {
@@ -87,9 +89,6 @@ export function AdminTenantDetail() {
   const { fetchApi } = useApi();
   const navigate = useNavigate();
 
-  const [data, setData] = useState<TenantDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -97,24 +96,15 @@ export function AdminTenantDetail() {
   const [days, setDays] = useState(7);
   const [transmissions, setTransmissions] = useState(5);
 
-  const load = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    try {
+  const { data, loading, error, reload } = useAsyncData(
+    async () => {
+      if (!id) throw new Error('missing-tenant-id');
       const result = await fetchApi<TenantDetail>(`/admin/tenants/${id}`);
-      setData(result);
       setPlan(result.subscription?.planName ?? '');
-      setError('');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'No se pudo cargar el tenant');
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchApi, id]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+      return result;
+    },
+    [id],
+  );
 
   const showToast = (type: 'success' | 'error', msg: string) => {
     setToast({ type, msg });
@@ -126,7 +116,7 @@ export function AdminTenantDetail() {
     try {
       await fn();
       showToast('success', successMsg);
-      await load();
+      await reload();
     } catch (err: unknown) {
       showToast('error', err instanceof Error ? err.message : 'La operación falló');
     } finally {
@@ -177,21 +167,11 @@ export function AdminTenantDetail() {
   };
 
   if (loading && !data) {
-    return (
-      <div className="flex items-center gap-3 text-white/35 text-sm py-10">
-        <Loader2 className="w-4 h-4 animate-spin" />
-        Cargando tenant…
-      </div>
-    );
+    return <LoadingState text="Cargando tenant…" />;
   }
 
   if (error && !data) {
-    return (
-      <div className="glass-card-static p-6 text-red-400 text-sm flex items-center gap-2">
-        <AlertCircle className="w-4 h-4" />
-        {error}
-      </div>
-    );
+    return <ErrorState error={error} onRetry={() => void reload()} />;
   }
 
   if (!data) return null;

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CreditCard, Loader2, Save, AlertCircle } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../../components/feedback';
 
 interface AdminPlan {
   id: string;
@@ -48,25 +50,16 @@ function NumCell({ value, field, draft, onChange, placeholder }: {
 
 export function AdminPlans() {
   const { fetchApi } = useApi();
-  const [plans, setPlans] = useState<AdminPlan[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    try {
-      setPlans(await fetchApi<AdminPlan[]>('/admin/plans'));
-      setError('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error cargando planes');
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchApi]);
-
-  useEffect(() => { load(); }, [load]);
+  const { data: plansData, loading, error: loadError, reload } = useAsyncData(
+    () => fetchApi<AdminPlan[]>('/admin/plans'),
+    [],
+  );
+  const plans = plansData ?? [];
 
   const setDraft = (planId: string, field: DraftField, v: string) => {
     setDrafts((prev) => ({ ...prev, [planId]: { ...prev[planId], [field]: v } }));
@@ -76,7 +69,7 @@ export function AdminPlans() {
     setSaving(plan.id);
     try {
       await fetchApi(`/admin/plans/${plan.id}`, { method: 'PATCH', body: { isActive: !plan.isActive } });
-      await load();
+      await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error actualizando plan');
     } finally {
@@ -109,7 +102,7 @@ export function AdminPlans() {
       });
       setDrafts((prev) => { const next = { ...prev }; delete next[plan.id]; return next; });
       setNotice(`Plan ${plan.name} actualizado`);
-      await load();
+      await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error guardando plan');
     } finally {
@@ -118,11 +111,11 @@ export function AdminPlans() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-white/40" />
-      </div>
-    );
+    return <LoadingState text="Cargando planes…" />;
+  }
+
+  if (loadError && plans.length === 0) {
+    return <ErrorState error={loadError} onRetry={() => void reload()} />;
   }
 
   return (
