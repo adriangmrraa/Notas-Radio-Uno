@@ -81,7 +81,7 @@ function TransmissionPicker() {
     }
 
     return (
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-3xl mx-auto p-4 md:p-8">
             <div className="mb-6">
                 <h2 className="text-lg font-semibold text-white/85 flex items-center gap-2">
                     <Radio className="w-5 h-5 text-cyan-400" />
@@ -299,7 +299,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
         : 'El mark manual sólo está disponible con la transmisión en vivo';
 
     return (
-        <div className="space-y-4">
+        <div className="p-4 md:p-8 space-y-4">
             {/* Encabezado */}
             <div className="flex flex-wrap items-center gap-3">
                 <h2 className="text-lg font-semibold text-white/85 flex items-center gap-2 min-w-0">
@@ -318,7 +318,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
 
                 <div className="ml-auto flex items-center gap-2">
                     <button
-                        className="btn-primary inline-flex items-center gap-2"
+                        className="btn-primary min-h-11 inline-flex items-center gap-2"
                         disabled={!isLive || marking !== null}
                         title={markDisabledReason}
                         onClick={() => doMark('clip')}
@@ -331,7 +331,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
                         Generar clip ahora
                     </button>
                     <button
-                        className="btn-secondary inline-flex items-center gap-2"
+                        className="btn-secondary min-h-11 inline-flex items-center gap-2"
                         disabled={!isLive || marking !== null}
                         title={markDisabledReason}
                         onClick={() => setNoteOpen((v) => !v)}
@@ -341,7 +341,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
                     </button>
                     {isLive && (
                         <button
-                            className="btn-danger inline-flex items-center gap-2"
+                            className="btn-danger min-h-11 inline-flex items-center gap-2"
                             disabled={stopping}
                             onClick={doStop}
                         >
@@ -360,7 +360,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
             {noteOpen && isLive && (
                 <div className="glass-card-static p-3 flex items-center gap-2">
                     <input
-                        className="input-premium flex-1"
+                        className="input-premium flex-1 min-h-11"
                         placeholder="Título de la nota (ej: chequear cifra mencionada)…"
                         value={noteTitle}
                         onChange={(e) => setNoteTitle(e.target.value)}
@@ -368,7 +368,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
                         autoFocus
                     />
                     <button
-                        className="btn-primary"
+                        className="btn-primary min-h-11"
                         disabled={marking !== null}
                         onClick={() => doMark('note')}
                     >
