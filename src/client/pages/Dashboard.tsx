@@ -1,180 +1,220 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Zap,
-  FileText,
-  Radio,
-  Clock,
-  TrendingUp,
-  Workflow,
-  CalendarClock,
-  Share2,
+  AlertCircle,
   ArrowRight,
-  Sparkles,
-  Activity,
-  AlertTriangle,
+  CalendarClock,
+  CheckCircle2,
+  Clock3,
+  Radio,
+  RefreshCw,
+  Settings2,
+  Upload,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import App from '../App';
-import { useLiveAlerts } from '../hooks/useLiveAlerts';
-import { LiveAlertToast } from '../components/alerts/LiveAlertToast';
-import { LiveAlertFeed } from '../components/alerts/LiveAlertFeed';
+import { useApi } from '../hooks/useApi';
+
+type Transmission = {
+  id: string;
+  status: 'scheduled' | 'waiting' | 'live' | 'processing' | 'done' | 'error' | 'canceled';
+  programName: string | null;
+  scheduledName: string | null;
+  startedAt: string | null;
+  createdAt: string;
+  errorMessage: string | null;
+};
+
+type ScheduledTransmission = {
+  id: string;
+  name: string;
+  programName: string | null;
+  nextRunAt: string | null;
+  isActive: boolean;
+};
+
+type PublishJob = {
+  id: string;
+  platform: string;
+  status: 'queued' | 'publishing' | 'published' | 'partial' | 'failed' | 'cancelled';
+  scheduledFor: string | null;
+  lastError: string | null;
+};
+
+type Quota = {
+  unlimited: boolean;
+  used: number;
+  included: number;
+  addon: number;
+  extra: number;
+  remaining: number;
+  percentUsed: number;
+  periodEnd: string | null;
+};
+
+type DashboardData = {
+  transmissions: Transmission[];
+  scheduled: ScheduledTransmission[];
+  jobs: PublishJob[];
+  quota: Quota | null;
+};
+
+const initialData: DashboardData = { transmissions: [], scheduled: [], jobs: [], quota: null };
+
+const transmissionLabels: Record<Transmission['status'], string> = {
+  scheduled: 'Programada',
+  waiting: 'Esperando seÃ±al',
+  live: 'En vivo',
+  processing: 'Procesando',
+  done: 'Finalizada',
+  error: 'Con error',
+  canceled: 'Cancelada',
+};
+
+function formatDate(value: string | null) {
+  if (!value) return 'Sin horario definido';
+  return new Intl.DateTimeFormat('es-AR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+}
+
+function statusClass(status: Transmission['status']) {
+  if (status === 'live') return 'badge-success';
+  if (status === 'error') return 'badge-danger';
+  if (status === 'processing' || status === 'waiting') return 'badge-warning';
+  return 'badge-info';
+}
 
 export function Dashboard() {
   const { user } = useAuth();
-  const { alerts, toasts, dismissToast } = useLiveAlerts();
+  const { fetchApi } = useApi();
+  const [data, setData] = useState<DashboardData>(initialData);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const greeting = () => {
-    const h = new Date().getHours();
-    if (h < 12) return 'Buenos dias';
-    if (h < 18) return 'Buenas tardes';
-    return 'Buenas noches';
-  };
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+    setError(null);
 
-  const firstName = user?.fullName?.split(' ')[0] || 'Usuario';
-  const planName = user?.subscription?.planName || 'trial';
-  const trialDays = user?.subscription?.trialDaysRemaining;
+    const [transmissions, scheduled, jobs, quota] = await Promise.allSettled([
+      fetchApi<{ items: Transmission[] }>('/transmissions?limit=12'),
+      fetchApi<{ items: ScheduledTransmission[] }>('/transmissions/scheduled'),
+      fetchApi<{ jobs: PublishJob[] }>('/publish-jobs?limit=50'),
+      fetchApi<Quota>('/billing/quota'),
+    ]);
+
+    const failures = [transmissions, scheduled, jobs, quota].filter((result) => result.status === 'rejected');
+    setData({
+      transmissions: transmissions.status === 'fulfilled' ? transmissions.value.items : [],
+      scheduled: scheduled.status === 'fulfilled' ? scheduled.value.items : [],
+      jobs: jobs.status === 'fulfilled' ? jobs.value.jobs : [],
+      quota: quota.status === 'fulfilled' ? quota.value : null,
+    });
+    setError(failures.length > 0 ? 'No pudimos actualizar toda la informaciÃ³n del tablero.' : null);
+    setLoading(false);
+  }, [fetchApi]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  const liveTransmissions = useMemo(
+    () => data.transmissions.filter((transmission) => ['live', 'waiting', 'processing'].includes(transmission.status)),
+    [data.transmissions],
+  );
+  const upcoming = useMemo(
+    () => data.scheduled.filter((transmission) => transmission.isActive && transmission.nextRunAt).slice(0, 4),
+    [data.scheduled],
+  );
+  const pendingJobs = useMemo(
+    () => data.jobs.filter((job) => ['queued', 'publishing', 'failed', 'partial'].includes(job.status)),
+    [data.jobs],
+  );
+  const firstName = user?.fullName?.split(' ')[0] || 'equipo';
 
   return (
-    <>
-    <LiveAlertToast toasts={toasts} onDismiss={dismissToast} />
-    <div className="p-4 md:p-8 lg:p-10 space-y-6 md:space-y-8 max-w-[1440px] mx-auto">
-      {/* Welcome */}
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6 animate-fade-up">
+    <div className="p-4 md:p-8 lg:p-10 space-y-6 max-w-[1440px] mx-auto">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-white/30 text-sm font-medium mb-1 animate-fade-in-delay-1">
+          <p className="text-sm text-white/40 capitalize">
             {new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
-          <h1 className="text-2xl md:text-3xl lg:text-4xl font-bold tracking-tight leading-tight animate-fade-in-delay-2">
-            {greeting()},{' '}
-            <span className="bg-gradient-to-r from-cyan-400 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
-              {firstName}
-            </span>
-          </h1>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">Ahora, {firstName}</h1>
+          <p className="mt-1 text-sm text-white/45">Estado operativo de tu producciÃ³n editorial.</p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap animate-fade-in-delay-3">
-          {trialDays !== undefined && trialDays !== null && (
-            <div className="badge badge-info flex items-center gap-2 px-3 py-1.5">
-              <Clock className="w-3 h-3" />
-              <span>{trialDays} dias restantes</span>
-            </div>
-          )}
-          {planName.toLowerCase() !== 'owner' && (
-            <div className="badge badge-purple flex items-center gap-2 px-3 py-1.5 capitalize">
-              <Sparkles className="w-3 h-3" />
-              <span>Plan {planName}</span>
-            </div>
-          )}
+        <button onClick={() => void loadDashboard()} className="btn-secondary self-start sm:self-auto" disabled={loading}>
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          Actualizar
+        </button>
+      </header>
+
+      {error && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4" />{error}</span>
+          <button onClick={() => void loadDashboard()} className="underline underline-offset-2">Reintentar</button>
         </div>
-      </div>
+      )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div className="animate-fade-in-delay-1"><KpiCard icon={<FileText />} label="Publicaciones" value={0} color="cyan" /></div>
-        <div className="animate-fade-in-delay-2"><KpiCard icon={<Radio />} label="Transcripciones" value={0} color="emerald" /></div>
-        <div className="animate-fade-in-delay-3"><KpiCard icon={<Clock />} label="Horas Pipeline" value={0} suffix="h" color="amber" /></div>
-        <div className="animate-fade-in-delay-4"><KpiCard icon={<TrendingUp />} label="Temas Detectados" value={0} color="purple" /></div>
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-        <div className="animate-fade-in-delay-1"><QuickAction to="/editor" icon={<Workflow />} title="Pipeline Editor" desc="Configura los pasos del pipeline visual" color="cyan" /></div>
-        <div className="animate-fade-in-delay-2"><QuickAction to="/scheduled" icon={<CalendarClock />} title="Programados" desc="Gestiona capturas automaticas" color="emerald" /></div>
-        <div className="animate-fade-in-delay-3"><QuickAction to="/connections" icon={<Share2 />} title="Conexiones" desc="Conecta tus redes sociales" color="purple" /></div>
-      </div>
-
-      {/* Pipeline Section */}
-      <div className="animate-fade-up" style={{ animationDelay: '250ms' }}>
-        <div className="flex items-center gap-5 mb-6">
-          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-          <div className="flex items-center gap-2.5 px-5 py-2 rounded-full bg-white/[0.02] border border-white/[0.05]">
-            <Activity className="w-4 h-4 text-cyan-400" />
-            <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Pipeline en Vivo</span>
-          </div>
-          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-        </div>
-
+      <section className="grid gap-5 lg:grid-cols-[1.45fr_1fr]">
         <div className="glass-card-static overflow-hidden rounded-2xl">
-          <div className="pipeline-scope">
-            <App />
+          <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-500/15 text-rose-300"><Radio className="h-4 w-4" /></span>
+              <div><h2 className="font-semibold">En vivo ahora</h2><p className="text-xs text-white/40">SeÃ±al y procesamiento en curso</p></div>
+            </div>
+            <Link to="/en-vivo" className="text-sm text-cyan-300 hover:text-cyan-200">Abrir sala</Link>
+          </div>
+          <div className="p-5">
+            {loading ? <LoadingRows count={2} /> : liveTransmissions.length > 0 ? (
+              <div className="space-y-3">
+                {liveTransmissions.map((transmission) => (
+                  <Link key={transmission.id} to={`/en-vivo/${transmission.id}`} className="flex items-center justify-between gap-4 rounded-xl border border-white/[0.06] bg-white/[0.025] p-4 transition hover:border-cyan-400/30">
+                    <div className="min-w-0"><p className="truncate font-medium">{transmission.programName || transmission.scheduledName || 'TransmisiÃ³n sin programa'}</p><p className="mt-1 text-xs text-white/40">{transmission.startedAt ? `IniciÃ³ ${formatDate(transmission.startedAt)}` : 'AÃºn sin hora de inicio'}</p></div>
+                    <span className={`badge shrink-0 ${statusClass(transmission.status)}`}>{transmission.status === 'live' && <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}{transmissionLabels[transmission.status]}</span>
+                  </Link>
+                ))}
+              </div>
+            ) : <EmptyState icon={<WifiOff className="h-5 w-5" />} text="No hay transmisiones activas." action="Iniciar transmisiÃ³n" to="/en-vivo" />}
           </div>
         </div>
-      </div>
 
-      {/* Alertas en Vivo */}
-      <div className="animate-fade-up" style={{ animationDelay: '350ms' }}>
-        <div className="flex items-center gap-5 mb-6">
-          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-          <div className="flex items-center gap-2.5 px-5 py-2 rounded-full bg-white/[0.02] border border-white/[0.05]">
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
-            <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Alertas en Vivo</span>
-            {alerts.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[10px] font-semibold border border-amber-500/30">
-                {alerts.length}
-              </span>
-            )}
-          </div>
-          <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-        </div>
+        <CapacityCard loading={loading} quota={data.quota} />
+      </section>
 
-        <div className="glass-card-static p-5 rounded-2xl">
-          <LiveAlertFeed alerts={alerts} />
-        </div>
-      </div>
-    </div>
-    </>
-  );
-}
+      <section className="grid gap-5 lg:grid-cols-2">
+        <Panel title="PrÃ³ximas transmisiones" subtitle="Agenda activa" icon={<CalendarClock className="h-4 w-4" />} actionTo="/agenda" action="Ver agenda">
+          {loading ? <LoadingRows count={3} /> : upcoming.length > 0 ? <div className="divide-y divide-white/[0.06]">{upcoming.map((item) => <div key={item.id} className="flex items-center justify-between gap-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-xs text-white/40">{item.programName || 'Sin programa asociado'}</p></div><p className="shrink-0 text-right text-xs text-white/60">{formatDate(item.nextRunAt)}</p></div>)}</div> : <EmptyState icon={<CalendarClock className="h-5 w-5" />} text="No hay transmisiones programadas." action="Programar" to="/agenda" />}
+        </Panel>
 
-/* ─── KPI Card ─── */
+        <Panel title="Pendientes operativos" subtitle="Publicaciones que requieren seguimiento" icon={<AlertCircle className="h-4 w-4" />} actionTo="/publish" action="Ver publicaciones">
+          {loading ? <LoadingRows count={3} /> : pendingJobs.length > 0 ? <div className="divide-y divide-white/[0.06]">{pendingJobs.slice(0, 4).map((job) => <div key={job.id} className="flex items-center justify-between gap-4 py-3"><div className="min-w-0"><p className="text-sm font-medium capitalize">{job.platform}</p><p className="truncate text-xs text-white/40">{job.lastError || (job.scheduledFor ? `Programada ${formatDate(job.scheduledFor)}` : 'En cola para publicar')}</p></div><span className={`badge shrink-0 ${job.status === 'failed' || job.status === 'partial' ? 'badge-danger' : 'badge-warning'}`}>{job.status === 'publishing' ? 'Publicando' : job.status === 'queued' ? 'En cola' : job.status === 'failed' ? 'Fallida' : 'Parcial'}</span></div>)}</div> : <EmptyState icon={<CheckCircle2 className="h-5 w-5" />} text="No hay pendientes operativos." action="Ir a publicar" to="/publish" />}
+        </Panel>
+      </section>
 
-function KpiCard({ icon, label, value, suffix = '', color }: {
-  icon: React.ReactNode; label: string; value: number; suffix?: string;
-  color: 'cyan' | 'emerald' | 'amber' | 'purple';
-}) {
-  const palette = {
-    cyan:    { bg: 'from-cyan-500/12 to-cyan-600/4', border: 'border-cyan-500/10', icon: 'text-cyan-400', val: 'text-cyan-300', glow: 'shadow-[0_0_24px_rgba(34,211,238,0.06)]' },
-    emerald: { bg: 'from-emerald-500/12 to-emerald-600/4', border: 'border-emerald-500/10', icon: 'text-emerald-400', val: 'text-emerald-300', glow: 'shadow-[0_0_24px_rgba(16,185,129,0.06)]' },
-    amber:   { bg: 'from-amber-500/12 to-amber-600/4', border: 'border-amber-500/10', icon: 'text-amber-400', val: 'text-amber-300', glow: 'shadow-[0_0_24px_rgba(245,158,11,0.06)]' },
-    purple:  { bg: 'from-purple-500/12 to-purple-600/4', border: 'border-purple-500/10', icon: 'text-purple-400', val: 'text-purple-300', glow: 'shadow-[0_0_24px_rgba(124,58,237,0.06)]' },
-  };
-  const c = palette[color];
-
-  return (
-    <div className={`glass-card group p-6 ${c.glow}`}>
-      <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${c.bg} border ${c.border} flex items-center justify-center ${c.icon} mb-4 transition-transform duration-500 group-hover:scale-110 group-hover:rotate-3`}>
-        <div className="w-5 h-5">{icon}</div>
-      </div>
-      <div className={`text-3xl font-bold ${c.val} tracking-tight mb-1`}>
-        {value}
-        {suffix && <span className="text-lg font-normal text-white/20 ml-1">{suffix}</span>}
-      </div>
-      <p className="text-xs text-white/30 font-medium tracking-wide">{label}</p>
+      <section className="grid gap-4 sm:grid-cols-3">
+        <QuickLink to="/en-vivo" icon={<Wifi className="h-5 w-5" />} title="Nueva transmisiÃ³n" description="AbrÃ­ la sala de producciÃ³n en vivo." />
+        <QuickLink to="/assets" icon={<Upload className="h-5 w-5" />} title="Gestionar activos" description="RevisÃ¡ el material listo para producir." />
+        <QuickLink to="/settings" icon={<Settings2 className="h-5 w-5" />} title="ConfiguraciÃ³n" description="AjustÃ¡ fuentes, equipo y preferencias." />
+      </section>
     </div>
   );
 }
 
-/* ─── Quick Action ─── */
+function CapacityCard({ loading, quota }: { loading: boolean; quota: Quota | null }) {
+  return <div className="glass-card-static rounded-2xl p-5"><div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-300"><Clock3 className="h-4 w-4" /></span><div><h2 className="font-semibold">Capacidad del ciclo</h2><p className="text-xs text-white/40">Transmisiones incluidas en tu plan</p></div></div>{loading ? <div className="mt-6 h-20 animate-pulse rounded-xl bg-white/[0.05]" /> : quota ? <div className="mt-6"><div className="flex items-end justify-between gap-3"><p className="text-3xl font-bold">{quota.unlimited ? 'Ilimitada' : `${quota.used} / ${quota.included + quota.addon + quota.extra}`}</p>{!quota.unlimited && <p className="text-sm text-white/50">{quota.remaining} restantes</p>}</div>{!quota.unlimited && <><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className={`h-full rounded-full ${quota.percentUsed > 90 ? 'bg-rose-400' : quota.percentUsed > 70 ? 'bg-amber-400' : 'bg-cyan-400'}`} style={{ width: `${Math.min(quota.percentUsed, 100)}%` }} /></div><p className="mt-3 text-xs text-white/40">{quota.periodEnd ? `Ciclo hasta ${new Date(`${quota.periodEnd}T00:00:00`).toLocaleDateString('es-AR')}` : 'Ciclo vigente'}</p></>}</div> : <EmptyState icon={<Clock3 className="h-5 w-5" />} text="La capacidad no estÃ¡ disponible." action="Ver facturaciÃ³n" to="/billing" />}</div>;
+}
 
-function QuickAction({ to, icon, title, desc, color }: {
-  to: string; icon: React.ReactNode; title: string; desc: string;
-  color: 'cyan' | 'emerald' | 'purple';
-}) {
-  const palette = {
-    cyan:    { hover: 'hover:border-cyan-500/20', icon: 'text-cyan-400', arrow: 'group-hover:text-cyan-400' },
-    emerald: { hover: 'hover:border-emerald-500/20', icon: 'text-emerald-400', arrow: 'group-hover:text-emerald-400' },
-    purple:  { hover: 'hover:border-purple-500/20', icon: 'text-purple-400', arrow: 'group-hover:text-purple-400' },
-  };
-  const c = palette[color];
+function Panel({ title, subtitle, icon, action, actionTo, children }: { title: string; subtitle: string; icon: React.ReactNode; action: string; actionTo: string; children: React.ReactNode }) {
+  return <div className="glass-card-static rounded-2xl p-5"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-cyan-300">{icon}<div><h2 className="font-semibold text-white">{title}</h2><p className="text-xs text-white/40">{subtitle}</p></div></div><Link to={actionTo} className="text-xs text-cyan-300 hover:text-cyan-200">{action}</Link></div>{children}</div>;
+}
 
-  return (
-    <Link to={to} className={`glass-card group flex items-center gap-5 p-5 ${c.hover} cursor-pointer no-underline`}>
-      <div className={`${c.icon} w-5 h-5 flex-shrink-0`}>{icon}</div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-white/85 mb-0.5">{title}</p>
-        <p className="text-xs text-white/25">{desc}</p>
-      </div>
-      <ArrowRight className={`w-4 h-4 text-white/10 transition-all duration-300 ${c.arrow} group-hover:translate-x-1.5`} />
-    </Link>
-  );
+function EmptyState({ icon, text, action, to }: { icon: React.ReactNode; text: string; action: string; to: string }) {
+  return <div className="flex min-h-28 flex-col items-start justify-center gap-3 text-sm text-white/45"><span className="text-white/30">{icon}</span><p>{text}</p><Link className="inline-flex items-center gap-1 text-cyan-300 hover:text-cyan-200" to={to}>{action}<ArrowRight className="h-3.5 w-3.5" /></Link></div>;
+}
+
+function LoadingRows({ count }: { count: number }) {
+  return <div className="space-y-3">{Array.from({ length: count }, (_, index) => <div key={index} className="h-14 animate-pulse rounded-xl bg-white/[0.05]" />)}</div>;
+}
+
+function QuickLink({ to, icon, title, description }: { to: string; icon: React.ReactNode; title: string; description: string }) {
+  return <Link to={to} className="glass-card-static group rounded-2xl p-5 transition hover:border-cyan-400/30"><div className="mb-4 text-cyan-300">{icon}</div><h2 className="font-semibold">{title}</h2><p className="mt-1 text-sm text-white/45">{description}</p><span className="mt-4 inline-flex items-center gap-1 text-xs text-cyan-300">Abrir <ArrowRight className="h-3.5 w-3.5 transition group-hover:translate-x-1" /></span></Link>;
 }
