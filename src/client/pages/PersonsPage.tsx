@@ -6,6 +6,7 @@ import {
 import { useApi } from '../hooks/useApi';
 import { useAsyncData } from '../hooks/useAsyncData';
 import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
+import { ResponsiveTable } from '../components/ResponsiveTable';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -330,7 +331,7 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                     <h2 className="text-base font-semibold text-white/85">
                         {isEdit ? 'Editar persona' : 'Nueva persona'}
                     </h2>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -525,7 +526,7 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                 {!photo.isPrimary && (
                                                     <button
                                                         onClick={() => setPrimaryPhoto(photo.id)}
-                                                        className="w-7 h-7 rounded-lg bg-white/10 hover:bg-cyan-400/30 flex items-center justify-center transition-colors"
+                                                        className="tap-target w-7 h-7 rounded-lg bg-white/10 hover:bg-cyan-400/30 flex items-center justify-center transition-colors"
                                                         title="Marcar como principal"
                                                     >
                                                         <Star className="w-3.5 h-3.5 text-white/80" />
@@ -534,7 +535,7 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                 <button
                                                     onClick={() => enrollPhoto(photo.id)}
                                                     disabled={enrollDisabled || enrollingId !== null}
-                                                    className="w-7 h-7 rounded-lg bg-white/10 hover:bg-cyan-400/30 flex items-center justify-center transition-colors disabled:opacity-40"
+                                                    className="tap-target w-7 h-7 rounded-lg bg-white/10 hover:bg-cyan-400/30 flex items-center justify-center transition-colors disabled:opacity-40"
                                                     title={detectorAvailable === false ? 'Detector de rostros no disponible' : 'Enrolar rostro desde esta foto'}
                                                 >
                                                     <ScanFace className="w-3.5 h-3.5 text-white/80" />
@@ -543,7 +544,7 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                     <button
                                                         onClick={() => disenrollPhoto(photo.id)}
                                                         disabled={disenrollingId === photo.id}
-                                                        className="w-7 h-7 rounded-lg bg-white/10 hover:bg-red-500/30 flex items-center justify-center transition-colors disabled:opacity-40"
+                                                        className="tap-target w-7 h-7 rounded-lg bg-white/10 hover:bg-red-500/30 flex items-center justify-center transition-colors disabled:opacity-40"
                                                         title="Desenrolar (borrar embedding de esta foto)"
                                                     >
                                                         <UserX className="w-3.5 h-3.5 text-white/80" />
@@ -551,7 +552,7 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
                                                 )}
                                                 <button
                                                     onClick={() => deletePhoto(photo.id)}
-                                                    className="w-7 h-7 rounded-lg bg-white/10 hover:bg-red-500/30 flex items-center justify-center transition-colors"
+                                                    className="tap-target w-7 h-7 rounded-lg bg-white/10 hover:bg-red-500/30 flex items-center justify-center transition-colors"
                                                     title="Eliminar foto"
                                                 >
                                                     <Trash2 className="w-3.5 h-3.5 text-white/80" />
@@ -719,7 +720,7 @@ export function PersonsPage() {
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
     return (
-        <div className="space-y-5">
+        <div className="p-4 md:p-8 space-y-5">
             {/* Toolbar */}
             <div className="flex flex-wrap items-center gap-3">
                 <div className="relative flex-1 min-w-[200px]">
@@ -810,7 +811,8 @@ export function PersonsPage() {
                         />
                     )
                 ) : (
-                    <table className="w-full text-sm">
+                    <ResponsiveTable label="Tabla de personas">
+                    <table className="w-full min-w-[720px] text-sm">
                         <thead>
                             <tr className="border-b border-white/[0.06] text-left">
                                 <th className="px-4 py-3 text-xs font-medium text-white/35 uppercase tracking-wider w-14">Foto</th>
@@ -864,7 +866,7 @@ export function PersonsPage() {
                                             <div className="flex items-center gap-1.5 justify-end">
                                                 <button
                                                     onClick={() => setDialog({ open: true, person })}
-                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
                                                     title="Editar"
                                                 >
                                                     <Pencil className="w-3.5 h-3.5" />
@@ -872,7 +874,7 @@ export function PersonsPage() {
                                                 <button
                                                     onClick={() => deletePerson(person)}
                                                     disabled={deleting === person.id}
-                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400 disabled:opacity-40"
+                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400 disabled:opacity-40"
                                                     title="Eliminar"
                                                 >
                                                     <Trash2 className="w-3.5 h-3.5" />
@@ -884,6 +886,7 @@ export function PersonsPage() {
                             })}
                         </tbody>
                     </table>
+                    </ResponsiveTable>
                 )}
             </div>
 
