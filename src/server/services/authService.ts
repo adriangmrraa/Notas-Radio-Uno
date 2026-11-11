@@ -103,7 +103,7 @@ export async function register(input: {
         console.error('[Auth] No se pudo iniciar el trial:', err);
     });
 
-    sendVerificationEmail(normalizedEmail, fullName, result.verificationToken).catch(console.error);
+    sendVerificationEmail(normalizedEmail, fullName, result.verificationToken, { tenantId: result.tenantId }).catch(console.error);
 
     await recordAuditEvent({
         action: AUDIT_ACTIONS.REGISTER,
@@ -141,7 +141,7 @@ export async function verifyEmail(token: string) {
         })
         .where(eq(users.id, user.id));
 
-    sendWelcomeEmail(user.email, user.fullName).catch(console.error);
+    sendWelcomeEmail(user.email, user.fullName, { tenantId: user.tenantId }).catch(console.error);
 
     await recordAuditEvent({
         action: AUDIT_ACTIONS.EMAIL_VERIFIED,
@@ -472,7 +472,7 @@ export async function forgotPassword(email: string) {
         .set({ resetPasswordToken: resetToken, resetPasswordExpiresAt: tokenExpires })
         .where(eq(users.id, user.id));
 
-    sendPasswordResetEmail(user.email, user.fullName, resetToken).catch(console.error);
+    sendPasswordResetEmail(user.email, user.fullName, resetToken, { tenantId: user.tenantId }).catch(console.error);
 
     return genericResponse;
 }

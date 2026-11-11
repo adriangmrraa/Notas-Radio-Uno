@@ -118,6 +118,7 @@ async function sendInviteEmail(invite: {
     role: invite.role,
     token: invite.token,
     expiresInHours: INVITE_TTL_HOURS,
+    tenantId: invite.tenantId,
   });
 }
 

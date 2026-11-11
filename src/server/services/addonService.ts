@@ -216,7 +216,7 @@ export async function applyAddonPurchase(input: {
   // Email de add-on acreditado (PB-09): best-effort, nunca rompe la compra.
   const owner = await resolveOwnerContact(purchase.tenantId);
   if (owner) {
-    await sendAddonPurchasedEmail(owner.email, owner.name, purchase.transmissionsGranted, expiresAt)
+    await sendAddonPurchasedEmail(owner.email, owner.name, purchase.transmissionsGranted, expiresAt, { tenantId: purchase.tenantId })
       .catch((err) => console.error('[Addons] Error enviando email de add-on:', err));
   }
 

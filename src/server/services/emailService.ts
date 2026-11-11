@@ -1,6 +1,21 @@
 import nodemailer from 'nodemailer';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { tenants } from '../db/schema/index.js';
+import {
+    buildVerificationEmail,
+    buildWelcomeEmail,
+    buildPasswordResetEmail,
+    buildTeamInviteEmail,
+    buildTrialEndingEmail,
+    buildTrialExpiredEmail,
+    buildPaymentSucceededEmail,
+    buildPaymentFailedEmail,
+    buildAddonPurchasedEmail,
+    buildSubscriptionSuspendedEmail,
+    type EmailBranding,
+} from './emailTemplates.js';
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const SMTP_FROM = process.env.SMTP_FROM || 'PeriodistApp <noreply@periodistapp.com>';
 
 const transporter = nodemailer.createTransport({
@@ -13,7 +28,12 @@ const transporter = nodemailer.createTransport({
     } : undefined,
 });
 
-async function sendEmail(to: string, subject: string, html: string): Promise<void> {
+interface EmailContent {
+    html: string;
+    text: string;
+}
+
+async function sendEmail(to: string, subject: string, content: EmailContent): Promise<void> {
     if (!process.env.SMTP_HOST) {
         console.log(`[Email] SMTP no configurado. Email a ${to}: ${subject}`);
         return;
@@ -23,63 +43,95 @@ async function sendEmail(to: string, subject: string, html: string): Promise<voi
         from: SMTP_FROM,
         to,
         subject,
-        html,
+        html: content.html,
+        text: content.text,
     });
 }
 
-export async function sendVerificationEmail(email: string, name: string, token: string): Promise<void> {
-    const url = `${FRONTEND_URL}/verify-email?token=${token}`;
-    await sendEmail(email, 'Verifica tu cuenta - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}!</h2>
-            <p>Gracias por registrarte en PeriodistApp. Para activar tu cuenta, haz clic en el siguiente enlace:</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${url}" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Verificar mi email
-                </a>
-            </p>
-            <p style="color: #666; font-size: 14px;">Este enlace expira en 48 horas.</p>
-            <p style="color: #666; font-size: 14px;">Si no creaste esta cuenta, ignora este email.</p>
-        </div>
-    `);
+// ── Branding por tenant ───────────────────────────────────────────────────────
+//
+// Fuente real del branding (verificado en código):
+//  - `tenants.platformName` (fallback `tenants.name`) → nombre de marca.
+//  - `tenants.logoUrl` → URL pública del logo. El blob `logoData` NO sirve
+//    para email: se expone en /api/branding/logo detrás de auth, así que sin
+//    URL pública el layout cae al monograma de texto.
+//  - `tenants.config.brandColor` → color de acento (jsonb de claves libres,
+//    mismo mecanismo que `imageModel`, `pendingPlan`, `extraTransmissions`).
+// Sin tenant, sin fila o sin config → defaults de plataforma (mergeBranding).
+
+const BRAND_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+export async function resolveEmailBranding(tenantId?: string | null): Promise<Partial<EmailBranding>> {
+    if (!tenantId) return {};
+
+    try {
+        const [tenant] = await db
+            .select({
+                name: tenants.name,
+                platformName: tenants.platformName,
+                logoUrl: tenants.logoUrl,
+                config: tenants.config,
+            })
+            .from(tenants)
+            .where(eq(tenants.id, tenantId))
+            .limit(1);
+
+        if (!tenant) return {};
+
+        const config = (tenant.config && typeof tenant.config === 'object'
+            ? tenant.config
+            : {}) as Record<string, unknown>;
+        const accentColor = typeof config.brandColor === 'string' && BRAND_COLOR_RE.test(config.brandColor)
+            ? config.brandColor
+            : undefined;
+
+        return {
+            brandName: tenant.platformName || tenant.name || undefined,
+            logoUrl: tenant.logoUrl ?? null,
+            accentColor,
+        };
+    } catch (err) {
+        // El branding nunca tumba un envío: ante error de DB sale plataforma.
+        console.error('[Email] No se pudo resolver el branding del tenant:', err);
+        return {};
+    }
 }
 
-export async function sendWelcomeEmail(email: string, name: string): Promise<void> {
-    await sendEmail(email, 'Bienvenido a PeriodistApp!', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Bienvenido ${name}!</h2>
-            <p>Tu cuenta ha sido verificada exitosamente. Ya puedes comenzar a usar PeriodistApp.</p>
-            <p>Tu periodo de prueba gratuito de 7 dias ha comenzado. Durante este tiempo tendras acceso a:</p>
-            <ul>
-                <li>5 horas de procesamiento de pipeline</li>
-                <li>20 publicaciones</li>
-                <li>2 agentes custom</li>
-                <li>Generacion de imagenes con IA</li>
-            </ul>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/dashboard" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Ir al Dashboard
-                </a>
-            </p>
-        </div>
-    `);
+/** Opcional en todos los senders: con tenantId el mail sale brandeado. */
+interface SendOptions {
+    tenantId?: string | null;
 }
 
-export async function sendPasswordResetEmail(email: string, name: string, token: string): Promise<void> {
-    const url = `${FRONTEND_URL}/reset-password?token=${token}`;
-    await sendEmail(email, 'Resetear contrasena - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}</h2>
-            <p>Recibimos una solicitud para resetear tu contrasena. Haz clic en el siguiente enlace:</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${url}" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Resetear contrasena
-                </a>
-            </p>
-            <p style="color: #666; font-size: 14px;">Este enlace expira en 1 hora.</p>
-            <p style="color: #666; font-size: 14px;">Si no solicitaste esto, ignora este email.</p>
-        </div>
-    `);
+export async function sendVerificationEmail(
+    email: string,
+    name: string,
+    token: string,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildVerificationEmail({ name, token, branding });
+    await sendEmail(email, built.subject, built);
+}
+
+export async function sendWelcomeEmail(
+    email: string,
+    name: string,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildWelcomeEmail({ name, branding });
+    await sendEmail(email, built.subject, built);
+}
+
+export async function sendPasswordResetEmail(
+    email: string,
+    name: string,
+    token: string,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildPasswordResetEmail({ name, token, branding });
+    await sendEmail(email, built.subject, built);
 }
 
 /**
@@ -95,59 +147,43 @@ export async function sendTeamInviteEmail(
         role: string;
         token: string;
         expiresInHours: number;
+        tenantId?: string | null;
     },
 ): Promise<void> {
-    const url = `${FRONTEND_URL}/accept-invite?token=${opts.token}`;
-    const roleLabel = opts.role === 'viewer' ? 'lector (solo lectura)' : 'editor';
-
-    await sendEmail(email, `Te invitaron a ${opts.tenantName} - PeriodistApp`, `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola!</h2>
-            <p><strong>${opts.inviterName}</strong> te invitó a sumarte al equipo de
-            <strong>${opts.tenantName}</strong> en PeriodistApp como <strong>${roleLabel}</strong>.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${url}" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Aceptar invitación
-                </a>
-            </p>
-            <p style="color: #666; font-size: 14px;">Este enlace expira en ${opts.expiresInHours} horas.</p>
-            <p style="color: #666; font-size: 14px;">Si no esperabas esta invitación, ignorá este email.</p>
-        </div>
-    `);
+    const branding = await resolveEmailBranding(opts.tenantId);
+    const built = buildTeamInviteEmail({
+        tenantName: opts.tenantName,
+        inviterName: opts.inviterName,
+        role: opts.role,
+        token: opts.token,
+        expiresInHours: opts.expiresInHours,
+        branding,
+    });
+    await sendEmail(email, built.subject, built);
 }
 
 // ── Emails del ciclo de vida de suscripción (Épica B) ─────────────────────────
 // Todos pasan por sendEmail: sin SMTP configurado son no-op (log local).
 
-export async function sendTrialEndingEmail(email: string, name: string, daysLeft: number): Promise<void> {
-    await sendEmail(email, `Tu prueba termina en ${daysLeft} ${daysLeft === 1 ? 'día' : 'días'} - PeriodistApp`, `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}!</h2>
-            <p>Tu período de prueba en PeriodistApp termina en <strong>${daysLeft} ${daysLeft === 1 ? 'día' : 'días'}</strong>.</p>
-            <p>Para seguir transmitiendo sin interrupciones, elegí un plan que se ajuste a tu operación.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Elegir un plan
-                </a>
-            </p>
-        </div>
-    `);
+export async function sendTrialEndingEmail(
+    email: string,
+    name: string,
+    daysLeft: number,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildTrialEndingEmail({ name, daysLeft, branding });
+    await sendEmail(email, built.subject, built);
 }
 
-export async function sendTrialExpiredEmail(email: string, name: string): Promise<void> {
-    await sendEmail(email, 'Tu prueba terminó - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}</h2>
-            <p>Tu período de prueba en PeriodistApp terminó. Tus notas, clips e historial siguen disponibles,
-            pero ya no podés iniciar nuevas transmisiones.</p>
-            <p>Elegí un plan para volver a transmitir.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Ver planes
-                </a>
-            </p>
-        </div>
-    `);
+export async function sendTrialExpiredEmail(
+    email: string,
+    name: string,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildTrialExpiredEmail({ name, branding });
+    await sendEmail(email, built.subject, built);
 }
 
 export async function sendPaymentSucceededEmail(
@@ -156,19 +192,11 @@ export async function sendPaymentSucceededEmail(
     amount: number | string,
     currency: string,
     planDisplayName: string,
+    opts?: SendOptions,
 ): Promise<void> {
-    await sendEmail(email, 'Pago recibido - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Gracias ${name}!</h2>
-            <p>Recibimos tu pago de <strong>${amount} ${currency}</strong> por el plan <strong>${planDisplayName}</strong>.</p>
-            <p>Tu suscripción está activa y tu cuota de transmisiones ya está disponible.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Ver mi facturación
-                </a>
-            </p>
-        </div>
-    `);
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildPaymentSucceededEmail({ name, amount, currency, planDisplayName, branding });
+    await sendEmail(email, built.subject, built);
 }
 
 export async function sendPaymentFailedEmail(
@@ -176,21 +204,11 @@ export async function sendPaymentFailedEmail(
     name: string,
     attempt: number,
     graceEndsAt: Date,
+    opts?: SendOptions,
 ): Promise<void> {
-    const date = graceEndsAt.toLocaleDateString('es-AR');
-    await sendEmail(email, 'No pudimos cobrar tu suscripción - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}</h2>
-            <p>No pudimos procesar el pago de tu suscripción (intento <strong>${attempt}</strong>).</p>
-            <p>Tu servicio sigue activo hasta el <strong>${date}</strong>. Después de esa fecha la cuenta se suspende.</p>
-            <p>Actualizá tu medio de pago para evitar la suspensión.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Actualizar medio de pago
-                </a>
-            </p>
-        </div>
-    `);
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildPaymentFailedEmail({ name, attempt, graceEndsAt, branding });
+    await sendEmail(email, built.subject, built);
 }
 
 export async function sendAddonPurchasedEmail(
@@ -198,33 +216,19 @@ export async function sendAddonPurchasedEmail(
     name: string,
     transmissions: number,
     expiresAt: Date,
+    opts?: SendOptions,
 ): Promise<void> {
-    const date = expiresAt.toLocaleDateString('es-AR');
-    await sendEmail(email, `+${transmissions} transmisiones acreditadas - PeriodistApp`, `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Listo ${name}!</h2>
-            <p>Acreditamos <strong>${transmissions} transmisiones</strong> adicionales a tu ciclo vigente.</p>
-            <p>Están disponibles hasta el <strong>${date}</strong> (fin del ciclo actual) y no se acumulan al siguiente período.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Ver mi uso
-                </a>
-            </p>
-        </div>
-    `);
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildAddonPurchasedEmail({ name, transmissions, expiresAt, branding });
+    await sendEmail(email, built.subject, built);
 }
 
-export async function sendSubscriptionSuspendedEmail(email: string, name: string): Promise<void> {
-    await sendEmail(email, 'Tu suscripción fue suspendida - PeriodistApp', `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Hola ${name}</h2>
-            <p>Tu suscripción de PeriodistApp quedó <strong>suspendida</strong> por falta de pago.</p>
-            <p>Tus notas, clips e historial se conservan. Para volver a transmitir, regularizá el pago.</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="${FRONTEND_URL}/billing" style="background: #6366f1; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Regularizar pago
-                </a>
-            </p>
-        </div>
-    `);
+export async function sendSubscriptionSuspendedEmail(
+    email: string,
+    name: string,
+    opts?: SendOptions,
+): Promise<void> {
+    const branding = await resolveEmailBranding(opts?.tenantId);
+    const built = buildSubscriptionSuspendedEmail({ name, branding });
+    await sendEmail(email, built.subject, built);
 }

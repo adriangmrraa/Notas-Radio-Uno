@@ -174,7 +174,7 @@ export async function handlePaymentFailed(tenantId: string, provider: string): P
 
   const owner = await resolveOwnerContact(tenantId);
   if (owner) {
-    await safeSend(() => sendPaymentFailedEmail(owner.email, owner.name, attempts, graceEndsAt), 'payment_failed');
+    await safeSend(() => sendPaymentFailedEmail(owner.email, owner.name, attempts, graceEndsAt, { tenantId }), 'payment_failed');
   }
 }
 
@@ -239,7 +239,7 @@ export async function handlePaymentSucceeded(input: {
   const owner = await resolveOwnerContact(tenantId);
   if (owner) {
     await safeSend(
-      () => sendPaymentSucceededEmail(owner.email, owner.name, input.amount ?? '', input.currency ?? '', plan?.displayName ?? ''),
+      () => sendPaymentSucceededEmail(owner.email, owner.name, input.amount ?? '', input.currency ?? '', plan?.displayName ?? '', { tenantId }),
       'payment_succeeded',
     );
   }
@@ -274,7 +274,7 @@ export async function suspendSubscription(tenantId: string): Promise<void> {
 
   const owner = await resolveOwnerContact(tenantId);
   if (owner) {
-    await safeSend(() => sendSubscriptionSuspendedEmail(owner.email, owner.name), 'subscription_suspended');
+    await safeSend(() => sendSubscriptionSuspendedEmail(owner.email, owner.name, { tenantId }), 'subscription_suspended');
   }
 }
 
@@ -313,7 +313,7 @@ export async function evaluateTransitions(): Promise<{ processed: number }> {
             externalEventId: `trial-expired:${sub.id}`,
           });
           const owner = await resolveOwnerContact(sub.tenantId);
-          if (owner) await safeSend(() => sendTrialExpiredEmail(owner.email, owner.name), 'trial_expired');
+          if (owner) await safeSend(() => sendTrialExpiredEmail(owner.email, owner.name, { tenantId: sub.tenantId }), 'trial_expired');
           processed++;
           continue;
         }
@@ -328,7 +328,7 @@ export async function evaluateTransitions(): Promise<{ processed: number }> {
           });
           if (notified) {
             const owner = await resolveOwnerContact(sub.tenantId);
-            if (owner) await safeSend(() => sendTrialEndingEmail(owner.email, owner.name, daysLeft), 'trial_ending');
+            if (owner) await safeSend(() => sendTrialEndingEmail(owner.email, owner.name, daysLeft, { tenantId: sub.tenantId }), 'trial_ending');
             processed++;
           }
           continue;
