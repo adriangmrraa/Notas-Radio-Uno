@@ -108,4 +108,3 @@
 [2m      Tests [22m [1m[32m928 passed[39m[22m[90m (928)[39m
 [2m   Start at [22m 22:34:27
 [2m   Duration [22m 34.74s[2m (transform 3.80s, setup 0ms, collect 62.62s, tests 8.32s, environment 5.29s, prepare 10.61s)[22m
-
