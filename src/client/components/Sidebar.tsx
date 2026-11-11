@@ -21,6 +21,7 @@ import {
   PenLine,
   Radio,
   Send,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatures } from '../hooks/useFeature';
@@ -98,12 +99,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     <aside
       className={[
         'sidebar-root',
-        // Mobile: fixed overlay, slides in/out
+        // <lg (tablet/phone): fixed overlay, slides in/out
         'fixed inset-y-0 left-0 z-50',
         'transition-transform duration-300 ease-in-out',
         isOpen ? 'translate-x-0' : '-translate-x-full',
         // Desktop: always visible, part of normal flow
-        'md:relative md:translate-x-0 md:z-auto',
+        'lg:relative lg:translate-x-0 lg:z-auto',
       ].join(' ')}
     >
       {/* Ambient glow */}
@@ -112,6 +113,16 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 
       {/* Top accent line */}
       <div className="sidebar-accent-line" />
+
+      {/* Close button — drawer mode (<lg) only */}
+      <button
+        type="button"
+        onClick={onClose}
+        className="lg:hidden absolute top-5 right-4 w-11 h-11 z-10 rounded-lg flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/5 transition-colors"
+        aria-label="Cerrar navegación"
+      >
+        <X className="w-5 h-5" />
+      </button>
 
       {/* Logo */}
       <div className="sidebar-logo">
@@ -234,7 +245,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <p className="sidebar-user-org">{user?.tenant?.name || 'Organizacion'}</p>
           </div>
         </div>
-        <button onClick={logout} className="sidebar-logout" aria-label="Cerrar sesión" title="Cerrar sesión">
+        <button onClick={logout} className="sidebar-logout tap-target" aria-label="Cerrar sesión" title="Cerrar sesión">
           <LogOut className="w-4 h-4" />
         </button>
       </div>

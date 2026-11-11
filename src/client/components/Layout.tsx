@@ -65,6 +65,16 @@ export function Layout() {
     setSidebarOpen(false);
   }, [location.pathname]);
 
+  // Drawer mode: Escape closes the sidebar overlay (touch + keyboard parity).
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [sidebarOpen]);
+
   const toggleTheme = () => {
     const nextIsDark = !isDark;
     setIsDark(nextIsDark);
@@ -90,10 +100,10 @@ export function Layout() {
       <div className="layout-ambient-2" />
       <div className="layout-ambient-3" />
 
-      {/* Backdrop overlay — mobile only, when sidebar is open */}
+      {/* Backdrop overlay — drawer mode (<lg) only, when sidebar is open */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -104,10 +114,10 @@ export function Layout() {
         {/* Header */}
         <header className="layout-header">
           <div className="layout-header-left">
-            {/* Hamburger — mobile only */}
+            {/* Hamburger — drawer mode (<lg) only */}
             <button
               type="button"
-              className="md:hidden p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/5"
+              className="lg:hidden w-11 h-11 flex items-center justify-center rounded-lg text-white/70 hover:text-white hover:bg-white/5"
               onClick={() => setSidebarOpen(true)}
               aria-label="Abrir navegación"
               aria-expanded={sidebarOpen}
@@ -125,7 +135,7 @@ export function Layout() {
           <div className="layout-header-right">
             <button
               type="button"
-              className="theme-toggle hidden sm:inline-flex"
+              className="theme-toggle tap-target hidden sm:inline-flex"
               onClick={() => navigate(-1)}
               aria-label="Volver a la página anterior"
               title="Volver"
@@ -134,7 +144,7 @@ export function Layout() {
             </button>
             <button
               type="button"
-              className="theme-toggle"
+              className="theme-toggle tap-target"
               onClick={toggleTheme}
               aria-label={isDark ? 'Activar tema claro' : 'Activar tema oscuro'}
               title={isDark ? 'Activar tema claro' : 'Activar tema oscuro'}

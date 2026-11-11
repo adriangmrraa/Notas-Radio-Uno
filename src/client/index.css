@@ -168,6 +168,25 @@ input:-webkit-autofill {
 .newsroom-control { min-height: 2.25rem; border-radius: var(--ds-radius-md); }
 
 /* ============================================================
+   TOUCH TARGETS — drawer mode (<lg: tablet/phone)
+   44px minimum on interactive controls; desktop keeps its
+   denser sizing. `tap-target` bumps icon-only buttons.
+   ============================================================ */
+@media (max-width: 1023px) {
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .btn-white {
+    min-height: 44px;
+  }
+
+  .tap-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ============================================================
    SCROLLBAR
    ============================================================ */
 
@@ -400,7 +419,7 @@ input:-webkit-autofill {
   flex-shrink: 0;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .sidebar-root {
     position: fixed;
     inset: 0;

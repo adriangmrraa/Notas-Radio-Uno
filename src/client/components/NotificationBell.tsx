@@ -74,7 +74,8 @@ export function NotificationBell() {
         <div className="relative" ref={panelRef}>
             <button
                 onClick={() => setOpen(!open)}
-                className={`relative p-2.5 rounded-xl hover:bg-white/[0.06] transition-all duration-300 group ${pulse ? 'animate-scale-in' : ''}`}
+                aria-label={unreadCount > 0 ? `Notificaciones (${unreadCount} sin leer)` : 'Notificaciones'}
+                className={`tap-target relative p-2.5 rounded-xl hover:bg-white/[0.06] transition-all duration-300 group ${pulse ? 'animate-scale-in' : ''}`}
             >
                 <Bell className={`w-5 h-5 transition-colors duration-300 ${open ? 'text-cyan-400' : 'text-white/40 group-hover:text-white/60'}`} />
                 {unreadCount > 0 && (
@@ -85,7 +86,7 @@ export function NotificationBell() {
             </button>
 
             {open && (
-                <div className="absolute right-0 top-12 w-96 max-h-[28rem] bg-surface border border-white/[0.08] rounded-2xl shadow-elevated overflow-hidden z-50 animate-scale-in">
+                <div className="absolute right-0 top-12 w-96 max-w-[calc(100vw-2rem)] max-h-[28rem] bg-surface border border-white/[0.08] rounded-2xl shadow-elevated overflow-hidden z-50 animate-scale-in">
                     {/* Top gradient accent */}
                     <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-cyan-500/30 to-transparent" />
 
