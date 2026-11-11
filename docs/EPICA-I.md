@@ -26,7 +26,36 @@ PGlite). Fuente del texto/puntaje: la tarjeta del kanban.
     `tabla PI-01: job_queue (15 columnas, FK tenant cascade, índices tenant+status, claim (status,run_at) y tenant+created_at, migración 0020 idempotente)`
   - `git diff --check` → **EXIT 0**
 
-- [ ] PI-02 Logging estructurado + request-id + trazabilidad por transmisión [3]
+- [x] PI-02 Logging estructurado + request-id + trazabilidad por transmisión [3]
+
+  **Commits (branch `periodistapp/t_1da234af-periodistapp-epica-i-robustez-observabilidad-y-lanzamiento`):**
+  - `0fe3761` `feat(logging): add structured logger and request-id context`
+    — `src/server/lib/logger.ts` (JSON por evento en producción, línea legible
+    fuera, redacción de claves sensibles + URLs Postgres con credenciales,
+    `log.child`, `LOG_LEVEL`) y `src/server/lib/requestContext.ts`
+    (AsyncLocalStorage).
+  - `7b962ac` `feat(logging): add request-id middleware and wire it into the server`
+    — `src/server/middleware/requestId.ts` montado antes de `optionalAuth`:
+    adopta `X-Request-Id` seguro, si no genera uuid v4, lo devuelve en la
+    respuesta y emite finish-log (method/path/status/durationMs/tenantId).
+    `optionalAuth` empuja `tenantId` al contexto.
+  - `cd864cc` `feat(logging): migrate transmission, recorder and job queue logs to the structured logger`
+    — 43 call-sites: núcleo `index.ts` (14), `streamRecorderService` (8, con
+    `log.child({tenantId,transmissionId,recordingId})`), `transmissionSchedulerService`
+    (15), `jobQueueWorker` (4), rutas `jobQueue`/`admin` (2). Quedan 306
+    `console.*` en `src/server` para migración incremental posterior.
+  - `92c1bfc` `test(logging): add deterministic logger and request-id tests`
+    — `tests/logging.test.ts`: 14 tests (los 12 casos del brief + Error
+    serializado + request-id largo inválido).
+  - `34dc843` `test(logging): update segmentFinalizedHook spy for structured output`
+    — ajusta el spy de `liveAnalysisRunner.test.ts` a la emisión de una
+    línea por evento del logger.
+
+  **Evidencia de gates (todos con EXIT real, ejecutados sobre el HEAD `34dc843`):**
+  - `npx tsc --noEmit` → **EXIT 0**
+  - `npx vitest run` → **EXIT 0** — `Test Files 52 passed (52)`, `Tests 976 passed (976)`
+  - `npm run build` → **EXIT 0** — `No schema changes, nothing to migrate`
+  - `git diff --check` → **EXIT 0**
 - [ ] PI-03 Métricas de costo de IA por tenant/transmisión (alimenta super admin) [3]
 - [ ] PI-04 Manejo de fallos de ingesta (stream caído, cortes) con reanudación de crudo [5]
 - [ ] PI-05 Backup/retención de assets + política de borrado de crudos [2]
