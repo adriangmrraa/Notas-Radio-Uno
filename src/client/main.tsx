@@ -32,6 +32,7 @@ import { AdminLayout } from './pages/admin/AdminLayout';
 import { AdminTenants } from './pages/admin/AdminTenants';
 import { AdminTenantDetail } from './pages/admin/AdminTenantDetail';
 import { AdminPlans } from './pages/admin/AdminPlans';
+import { AdminJobs } from './pages/admin/AdminJobs';
 import './index.css';
 import './App.css';
 
@@ -90,6 +91,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="tenants" element={<AdminTenants />} />
               <Route path="tenants/:id" element={<AdminTenantDetail />} />
               <Route path="plans" element={<AdminPlans />} />
+              <Route path="jobs" element={<AdminJobs />} />
             </Route>
 
             <Route path="/" element={<Landing />} />
