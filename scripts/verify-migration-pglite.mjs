@@ -158,8 +158,9 @@ if (pc02Migration) {
 // 2) Idempotencia: la 0005 (Épica B), la 0006 (Épica C), la 0008 (PC-07), la
 //    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
 //    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo), la 0016
-//    (PG-03 auto-publicación) y la 0017 (PG-04 Zernio) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017', '0018']) {
+//    (PG-03 auto-publicación), la 0017 (PG-04 Zernio), la 0018 (PG-05 cola
+//    de publicación) y la 0020 (PI-01 cola genérica) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017', '0018', '0020']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -1473,6 +1474,149 @@ if (
 }
 await db.exec(`DELETE FROM tenants WHERE id = '${pg06Tenant}'`);
 
+// ============================================================================
+// PI-01: job_queue — cola de trabajo genérica con reintentos + dead-letter
+//        (0020)
+// ============================================================================
+const { rows: pi01Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename = 'job_queue'
+`);
+if (pi01Tables.length !== 1) {
+  console.error('PI-01: falta la tabla job_queue');
+  process.exit(1);
+}
+
+// Columnas: tipo, nullabilidad y DEFAULT. `run_at` es el gate del claim
+// (status='pending' AND run_at <= now); `dead_lettered_at` marca cuándo el
+// job agotó sus reintentos — la dead-letter es un estado en la misma tabla.
+const { rows: pi01Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'job_queue'
+`);
+const pi01ColInfo = new Map(pi01Cols.map((r) => [r.column_name, r]));
+const checkPi01Col = (col, dataType, nullable, needsDefault) => {
+  const c = pi01ColInfo.get(col);
+  if (!c) return `falta job_queue.${col}`;
+  if (c.data_type !== dataType) return `job_queue.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `job_queue.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `job_queue.${col} sin DEFAULT`;
+  return null;
+};
+const pi01ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['kind', 'character varying', 'NO', false],
+  ['status', 'character varying', 'NO', true],
+  ['payload', 'jsonb', 'NO', true],
+  ['attempts', 'integer', 'NO', true],
+  ['max_attempts', 'integer', 'NO', true],
+  ['run_at', 'timestamp with time zone', 'NO', true],
+  ['started_at', 'timestamp with time zone', 'YES', false],
+  ['finished_at', 'timestamp with time zone', 'YES', false],
+  ['dead_lettered_at', 'timestamp with time zone', 'YES', false],
+  ['last_error', 'text', 'YES', false],
+  ['error_category', 'character varying', 'YES', false],
+  ['created_at', 'timestamp with time zone', 'NO', true],
+  ['updated_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPi01Col(c, t, n, d)).filter(Boolean);
+if (pi01ColErrors.length > 0) {
+  console.error(`PI-01 columnas incorrectas:\n  ${pi01ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+const pi01StatusDef = pi01ColInfo.get('status')?.column_default ?? '';
+const pi01AttemptsDef = pi01ColInfo.get('attempts')?.column_default ?? '';
+const pi01MaxDef = pi01ColInfo.get('max_attempts')?.column_default ?? '';
+if (!pi01StatusDef.includes("'pending'") || !pi01AttemptsDef.includes('0') || !pi01MaxDef.includes('5')) {
+  console.error(`PI-01: defaults incorrectos (status=${pi01StatusDef}, attempts=${pi01AttemptsDef}, max_attempts=${pi01MaxDef})`);
+  process.exit(1);
+}
+
+// FK tenant_id → tenants ON DELETE CASCADE (borrar el tenant borra su cola).
+const { rows: pi01Fks } = await db.query(`
+  SELECT att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'job_queue'
+`);
+const pi01FkMap = new Map(pi01Fks.map((r) => [r.column_name, r]));
+const pi01TenantFk = pi01FkMap.get('tenant_id');
+if (!pi01TenantFk || pi01TenantFk.foreign_table !== 'tenants' || pi01TenantFk.confdeltype !== 'c') {
+  console.error(`PI-01: FK tenant_id incorrecta: ${JSON.stringify(pi01TenantFk ?? null)}`);
+  process.exit(1);
+}
+
+// Índices: tenant solo, (tenant_id, status), el del claim (status, run_at)
+// y (tenant_id, created_at) para los listados por antigüedad.
+const { rows: pi01Idx } = await db.query(`
+  SELECT indexname, indexdef FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'job_queue'
+`);
+const pi01IdxMap = new Map(pi01Idx.map((r) => [r.indexname, r.indexdef]));
+const expectedPi01Idx = [
+  'job_queue_tenant_id_idx',
+  'job_queue_tenant_id_status_idx',
+  'job_queue_status_run_at_idx',
+  'job_queue_tenant_id_created_at_idx',
+];
+const missingPi01Idx = expectedPi01Idx.filter((name) => !pi01IdxMap.has(name));
+if (missingPi01Idx.length > 0) {
+  console.error(`PI-01: faltan índices: ${missingPi01Idx.join(', ')}`);
+  process.exit(1);
+}
+const pi01ClaimIdx = pi01IdxMap.get('job_queue_status_run_at_idx') ?? '';
+if (!pi01ClaimIdx.includes('status') || !pi01ClaimIdx.includes('run_at')) {
+  console.error(`PI-01: el índice del claim no cubre (status, run_at): ${pi01ClaimIdx}`);
+  process.exit(1);
+}
+
+// Funcional: (a) defaults al insertar (status 'pending', attempts 0,
+// max_attempts 5, payload '{}', run_at no nulo); (b) re-aplicar la
+// migración 0020 es un no-op (idempotencia — ya se re-aplicó en la pasada
+// genérica; acá se verifica que la tabla sigue operativa después); (c)
+// cascade por tenant.
+const pi01Tenant = '00000000-0000-4000-8000-00000000ab01';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pi01Tenant}', 'Tenant pi01', 'tenant-pi01')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO job_queue (tenant_id, kind) VALUES ('${pi01Tenant}', 'retention.purge');
+`);
+const { rows: pi01Rows } = await db.query(`
+  SELECT status, attempts, max_attempts, payload, run_at FROM job_queue
+  WHERE tenant_id = '${pi01Tenant}'
+`);
+const pi01Row = pi01Rows[0];
+if (
+  pi01Rows.length !== 1 || pi01Row.status !== 'pending' || pi01Row.attempts !== 0 ||
+  pi01Row.max_attempts !== 5 || JSON.stringify(pi01Row.payload) !== '{}' || !pi01Row.run_at
+) {
+  console.error(`PI-01: defaults de job_queue incorrectos: ${JSON.stringify(pi01Rows)}`);
+  process.exit(1);
+}
+const pi01Migration = files.find((f) => f.startsWith('0020_'));
+await apply(pi01Migration);
+console.log(`re-applied ${pi01Migration} en sección PI-01 (idempotente)`);
+const { rows: pi01AfterReapply } = await db.query(`
+  SELECT COUNT(*)::int AS n FROM job_queue WHERE tenant_id = '${pi01Tenant}'
+`);
+if (pi01AfterReapply[0].n !== 1) {
+  console.error('PI-01: re-aplicar 0020 rompió la tabla o duplicó datos');
+  process.exit(1);
+}
+await db.exec(`DELETE FROM tenants WHERE id = '${pi01Tenant}'`);
+const { rows: pi01AfterCascade } = await db.query(`
+  SELECT COUNT(*)::int AS n FROM job_queue WHERE tenant_id = '${pi01Tenant}'
+`);
+if (pi01AfterCascade[0].n !== 0) {
+  console.error('PI-01: el cascade por tenant no borró los jobs');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -1493,5 +1637,6 @@ console.log('tabla PG-03: auto_publish_configs (12 columnas) + UNIQUE (tenant_id
 console.log('tablas PG-04: zernio_profiles (1/tenant UNIQUE) + social_connections (11 columnas, UNIQUE tenant+platform+account, FKs cascade, idx tenant+status)');
 console.log('tabla PG-05: publish_jobs (23 columnas, UNIQUE idempotency_key, FK tenant cascade + asset/publication/connection SET NULL, índices tenant+status y claim)');
 console.log('columna PG-06: publish_jobs.payload jsonb NOT NULL DEFAULT \'{}\' (composición por red: mentions/hashtags/excludedPersonIds/truncated)');
+console.log('tabla PI-01: job_queue (15 columnas, FK tenant cascade, índices tenant+status, claim (status,run_at) y tenant+created_at, migración 0020 idempotente)');
 await db.close();
 process.exit(0);

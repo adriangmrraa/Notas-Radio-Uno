@@ -29,6 +29,7 @@ export * from './assets.js';
 export * from './autoPublish.js';
 export * from './socialConnections.js';
 export * from './publishJobs.js';
+export * from './jobQueue.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';

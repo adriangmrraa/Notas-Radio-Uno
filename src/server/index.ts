@@ -54,9 +54,11 @@ import { autoPublishRouter } from "./routes/autoPublish.js";
 import { socialConnectionsRouter } from "./routes/socialConnections.js";
 import { publishJobsRouter } from "./routes/publishJobs.js";
 import { publishChannelsRouter } from "./routes/publishChannels.js";
+import { jobQueueRouter } from "./routes/jobQueue.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initPublishWorker } from "./services/publishWorker.js";
+import { initJobQueueWorker } from "./services/jobQueueWorker.js";
 import { initTransmissionScheduler } from "./services/transmissionSchedulerService.js";
 import { initNotificationService } from "./services/notificationService.js";
 import { initLiveAlertsService } from "./services/liveAlertsService.js";
@@ -292,6 +294,8 @@ app.use("/api/publish-jobs", publishJobsRouter);
 // PG-07: canal de publicación por tenant — modo, estado de migración,
 // marca legacy-only de assets.
 app.use("/api/publish-channels", publishChannelsRouter);
+// PI-01: cola genérica job_queue — list/detail/enqueue/retry/cancel.
+app.use("/api/job-queue", jobQueueRouter);
 
 // Initialize background services
 initNotificationService(io);
@@ -312,6 +316,11 @@ if (process.env.RENDER_WORKER_ENABLED !== "0") {
 // (mismo patrón que RENDER_WORKER_ENABLED para procesos API-only).
 if (process.env.PUBLISH_WORKER_ENABLED !== "0") {
   initPublishWorker(io);
+}
+// PI-01: worker de la cola genérica job_queue — JOB_QUEUE_WORKER_ENABLED=0
+// lo apaga (mismo patrón que RENDER_WORKER_ENABLED / PUBLISH_WORKER_ENABLED).
+if (process.env.JOB_QUEUE_WORKER_ENABLED !== "0") {
+  initJobQueueWorker(io);
 }
 initDossierScheduler();
 
