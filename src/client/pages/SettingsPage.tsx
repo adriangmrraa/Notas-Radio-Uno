@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Settings, Save, Key, Webhook, Users, Building2, CheckCircle, Shield, Palette, Upload, Trash2, ImageOff, Bell, Send } from 'lucide-react';
 import { TeamSettings } from '../components/team/TeamSettings';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../components/feedback';
+import { classifyError, type AsyncError } from '../lib/errors';
 import { useAuth } from '../contexts/AuthContext';
 import { AlertKeywordsSettings } from '../components/alerts/AlertKeywordsSettings';
 import { AutoPublishSettings } from '../components/AutoPublishSettings';
@@ -48,6 +51,7 @@ export function SettingsPage() {
     const [webhooks, setWebhooks] = useState({ webhook_pipeline: '', webhook_nuevo_boton: '', webhook_viejo_boton: '', webhook_tercer_boton: '' });
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [saveError, setSaveError] = useState('');
 
     // Branding state
     const [branding, setBranding] = useState<BrandingData>({ platformName: '', fontFamily: 'bebas-kai', templateId: 'gradient-dark' });
@@ -66,24 +70,41 @@ export function SettingsPage() {
         branding.fontFamily !== brandingOriginal.fontFamily ||
         branding.templateId !== brandingOriginal.templateId;
 
-    useEffect(() => {
-        fetchApi<Record<string, string>>('/settings/webhooks')
-            .then((data) => setWebhooks((prev) => ({ ...prev, ...data })))
-            .catch(() => {});
-    }, []);
+    const [brandingLoading, setBrandingLoading] = useState(false);
+    const [brandingError, setBrandingError] = useState<AsyncError | null>(null);
 
-    useEffect(() => {
-        if (activeTab !== 'branding') return;
-        // Fetch current branding
-        fetchApi<BrandingData>('/branding').then((data) => {
-            setBranding(data);
-            setBrandingOriginal(data);
-        }).catch(() => {});
-        // Fetch fonts
-        fetchApi<FontOption[]>('/branding/fonts').then(setFonts).catch(() => {});
-        // Fetch templates
-        fetchApi<TemplateOption[]>('/branding/templates').then(setTemplates).catch(() => {});
-        // Fetch logo as blob URL
+    const {
+        loading: webhooksLoading,
+        error: webhooksError,
+        reload: reloadWebhooks,
+    } = useAsyncData(
+        async () => {
+            const data = await fetchApi<Record<string, string>>('/settings/webhooks');
+            setWebhooks((prev) => ({ ...prev, ...data }));
+            return data;
+        },
+        [],
+    );
+
+    const loadBranding = async () => {
+        setBrandingLoading(true);
+        setBrandingError(null);
+        try {
+            const [brandingRes, fontsRes, templatesRes] = await Promise.allSettled([
+                fetchApi<BrandingData>('/branding'),
+                fetchApi<FontOption[]>('/branding/fonts'),
+                fetchApi<TemplateOption[]>('/branding/templates'),
+            ]);
+            if (brandingRes.status === 'rejected') throw brandingRes.reason;
+            setBranding(brandingRes.value);
+            setBrandingOriginal(brandingRes.value);
+            // Fonts/templates caen a los defaults locales si fallan.
+            if (fontsRes.status === 'fulfilled') setFonts(fontsRes.value);
+            if (templatesRes.status === 'fulfilled') setTemplates(templatesRes.value);
+        } catch (err: unknown) {
+            setBrandingError(classifyError(err));
+        }
+        // El logo es opcional — una falla no cuenta como error de la vista.
         fetchApi<Response>('/branding/logo').then(async () => {
             const res = await fetch('/api/branding/logo', { credentials: 'include' });
             if (res.ok) {
@@ -91,15 +112,27 @@ export function SettingsPage() {
                 setLogoUrl(URL.createObjectURL(blob));
             }
         }).catch(() => { setLogoUrl(null); });
+        setBrandingLoading(false);
+    };
+
+    useEffect(() => {
+        if (activeTab !== 'branding') return;
+        // Se difiere el load: setBrandingLoading(true) sincrónico dentro del
+        // efecto viola react-hooks/set-state-in-effect.
+        void Promise.resolve().then(() => loadBranding());
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- recarga al entrar a la tab
     }, [activeTab]);
 
     const saveWebhooks = async () => {
         setSaving(true);
+        setSaveError('');
         try {
             await fetchApi('/settings/webhooks', { method: 'POST', body: webhooks });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
-        } catch { /* ignore */ }
+        } catch {
+            setSaveError('No se pudo guardar la configuración. Probá de nuevo.');
+        }
         setSaving(false);
     };
 
@@ -217,6 +250,11 @@ export function SettingsPage() {
 
                 {/* Marca / Branding */}
                 {activeTab === 'branding' && (
+                    brandingLoading ? (
+                        <LoadingState rows={3} text="Cargando marca…" />
+                    ) : brandingError ? (
+                        <ErrorState error={brandingError} onRetry={() => void loadBranding()} />
+                    ) : (
                     <div className="space-y-6">
                         {/* Logo */}
                         <div className="glass-card-static p-6">
@@ -350,11 +388,18 @@ export function SettingsPage() {
                             </button>
                         </div>
                     </div>
+                    )
                 )}
 
                 {/* Webhooks */}
                 {activeTab === 'webhooks' && (
                     <div className="glass-card-static p-6 space-y-5">
+                        {webhooksLoading ? (
+                            <LoadingState rows={4} text="Cargando webhooks…" />
+                        ) : webhooksError ? (
+                            <ErrorState error={webhooksError} compact onRetry={() => void reloadWebhooks()} />
+                        ) : (
+                        <>
                         <p className="text-sm text-white/35 mb-2">Configura URLs de webhook para integrar con Make.com, N8N u otras plataformas</p>
                         {Object.entries(webhooks).map(([key, value]) => (
                             <div key={key}>
@@ -368,6 +413,9 @@ export function SettingsPage() {
                                 />
                             </div>
                         ))}
+                        {saveError && (
+                            <p className="text-sm text-red-400/80">{saveError}</p>
+                        )}
                         <button
                             onClick={saveWebhooks}
                             disabled={saving}
@@ -376,6 +424,8 @@ export function SettingsPage() {
                             {saved ? <CheckCircle className="w-4 h-4" /> : <Save className="w-4 h-4" />}
                             {saved ? 'Guardado!' : saving ? 'Guardando...' : 'Guardar Webhooks'}
                         </button>
+                        </>
+                        )}
                     </div>
                 )}
 

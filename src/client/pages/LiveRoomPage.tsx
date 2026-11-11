@@ -24,6 +24,9 @@ import {
     Square, WifiOff,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
+import { classifyError, type AsyncError } from '../lib/errors';
 import { useTransmissionEvents } from '../hooks/useTransmissionEvents';
 import { useToast } from '../components/ui/use-toast';
 import { LiveTimeline, formatMs } from '../components/live/LiveTimeline';
@@ -67,23 +70,14 @@ interface RunListItem {
 function TransmissionPicker() {
     const { fetchApi } = useApi();
     const navigate = useNavigate();
-    const [items, setItems] = useState<RunListItem[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-
-    useEffect(() => {
-        fetchApi<{ items: RunListItem[] }>('/transmissions?limit=15')
-            .then((d) => setItems(d.items))
-            .catch((err) => setError(err.message || 'Error al cargar transmisiones'))
-            .finally(() => setLoading(false));
-    }, [fetchApi]);
+    const { data, loading, error, reload } = useAsyncData(
+        () => fetchApi<{ items: RunListItem[] }>('/transmissions?limit=15'),
+        [],
+    );
+    const items = data?.items ?? [];
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center py-24 text-white/40">
-                <Loader2 className="w-5 h-5 animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando transmisiones…" />;
     }
 
     return (
@@ -98,16 +92,15 @@ function TransmissionPicker() {
                     momentos detectados y clips en tiempo real.
                 </p>
             </div>
-            {error && (
-                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-4">
-                    {error}
-                </p>
-            )}
-            {items.length === 0 ? (
-                <div className="glass-card-static p-10 text-center text-white/35 text-sm">
-                    No hay transmisiones recientes. Programá una desde Agenda o
-                    iniciá una captura en vivo.
-                </div>
+            {error ? (
+                <ErrorState error={error} onRetry={() => void reload()} />
+            ) : items.length === 0 ? (
+                <EmptyState
+                    icon={<Radio />}
+                    title="No hay transmisiones recientes"
+                    description="Programá una desde Agenda o iniciá una captura en vivo."
+                    action={{ label: 'Ir a Agenda', to: '/agenda' }}
+                />
             ) : (
                 <ul className="space-y-2">
                     {items.map((t) => (
@@ -151,7 +144,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
     const navigate = useNavigate();
     const [room, setRoom] = useState<LiveRoomState | null>(null);
     const [notFound, setNotFound] = useState(false);
-    const [error, setError] = useState('');
+    const [error, setError] = useState<AsyncError | null>(null);
     const [marking, setMarking] = useState<'clip' | 'note' | null>(null);
     const [stopping, setStopping] = useState(false);
     const [noteOpen, setNoteOpen] = useState(false);
@@ -164,14 +157,14 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
                 `/live/transmissions/${transmissionId}`,
             );
             setRoom(data);
-            setError('');
-        } catch (err: any) {
+            setError(null);
+        } catch (err: unknown) {
             // Un 404 estable no se "reintenta" con error parpadeante: la
             // transmisión no es de este tenant o no existe.
-            if (err?.message === 'Transmisión no encontrada') {
+            if ((err as { status?: number })?.status === 404) {
                 setNotFound(true);
             }
-            setError(err.message || 'Error al cargar la sala');
+            setError(classifyError(err));
         }
     }, [fetchApi, transmissionId]);
 
@@ -293,12 +286,10 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
     }
 
     if (!room) {
-        return (
-            <div className="flex flex-col items-center justify-center py-24 gap-3 text-white/40">
-                <Loader2 className="w-5 h-5 animate-spin" />
-                {error && <p className="text-sm text-red-400">{error}</p>}
-            </div>
-        );
+        if (error) {
+            return <ErrorState error={error} onRetry={() => void load()} />;
+        }
+        return <LoadingState text="Cargando sala…" />;
     }
 
     const tx = room.transmission;
@@ -445,7 +436,7 @@ function LiveRoom({ transmissionId }: { transmissionId: string }) {
 
             {error && room && (
                 <p className="text-xs text-amber-300/70">
-                    Último refresh falló: {error}
+                    La última actualización falló — se reintenta automáticamente.
                 </p>
             )}
 

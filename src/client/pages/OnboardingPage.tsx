@@ -17,6 +17,8 @@ import {
   Building2, Check, ChevronLeft, ChevronRight, Mic, Plus, Share2, Users,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { ErrorState } from '../components/feedback';
 import { useOnboarding } from '../components/OnboardingGuard';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -343,21 +345,20 @@ function ProgramStep({ fetchApi, busy, onSave }: {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [localErr, setLocalErr] = useState('');
-  const [loadingList, setLoadingList] = useState(true);
 
-  useEffect(() => {
-    fetchApi<{ programs: Program[] }>('/programs', { method: 'GET' })
-      .then((data) => {
-        const list = data.programs ?? [];
-        setPrograms(list);
-        if (list.length > 0) {
-          setMode('existing');
-          setProgramId(list[0].id);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoadingList(false));
-  }, [fetchApi]);
+  const { loading: loadingList, error: listError, reload: reloadList } = useAsyncData(
+    async () => {
+      const data = await fetchApi<{ programs: Program[] }>('/programs', { method: 'GET' });
+      const list = data.programs ?? [];
+      setPrograms(list);
+      if (list.length > 0) {
+        setMode('existing');
+        setProgramId(list[0].id);
+      }
+      return data;
+    },
+    [fetchApi],
+  );
 
   const submit = async () => {
     setLocalErr('');
@@ -377,6 +378,8 @@ function ProgramStep({ fetchApi, busy, onSave }: {
 
       {loadingList ? (
         <p className="hint">Cargando programas…</p>
+      ) : listError ? (
+        <ErrorState error={listError} compact onRetry={() => void reloadList()} />
       ) : (
         <>
           {programs.length > 0 && (
@@ -445,14 +448,15 @@ function PersonsStep({ fetchApi, busy, onSave }: {
   const [newRole, setNewRole] = useState('conductor');
   const [adding, setAdding] = useState(false);
   const [localErr, setLocalErr] = useState('');
-  const [loadingList, setLoadingList] = useState(true);
 
-  useEffect(() => {
-    fetchApi<{ items: Person[] }>('/persons?limit=200', { method: 'GET' })
-      .then((data) => setPersons(data.items ?? []))
-      .catch(() => {})
-      .finally(() => setLoadingList(false));
-  }, [fetchApi]);
+  const { loading: loadingList, error: listError, reload: reloadList } = useAsyncData(
+    async () => {
+      const data = await fetchApi<{ items: Person[] }>('/persons?limit=200', { method: 'GET' });
+      setPersons(data.items ?? []);
+      return data;
+    },
+    [fetchApi],
+  );
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -492,6 +496,8 @@ function PersonsStep({ fetchApi, busy, onSave }: {
 
       {loadingList ? (
         <p className="hint">Cargando personas…</p>
+      ) : listError ? (
+        <ErrorState error={listError} compact onRetry={() => void reloadList()} />
       ) : (
         <>
           {persons.length > 0 && (
@@ -546,18 +552,17 @@ function ChannelsStep({ fetchApi, busy, onSave }: {
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
   const [localErr, setLocalErr] = useState('');
-  const [loadingList, setLoadingList] = useState(true);
 
-  useEffect(() => {
-    fetchApi<Portfolio[]>('/connections/portfolios', { method: 'GET' })
-      .then((data) => {
-        const list = Array.isArray(data) ? data : [];
-        setPortfolios(list);
-        setSelected(new Set(list.filter((p) => p.isActive).map((p) => p.id)));
-      })
-      .catch(() => {})
-      .finally(() => setLoadingList(false));
-  }, [fetchApi]);
+  const { loading: loadingList, error: listError, reload: reloadList } = useAsyncData(
+    async () => {
+      const data = await fetchApi<Portfolio[]>('/connections/portfolios', { method: 'GET' });
+      const list = Array.isArray(data) ? data : [];
+      setPortfolios(list);
+      setSelected(new Set(list.filter((p) => p.isActive).map((p) => p.id)));
+      return data;
+    },
+    [fetchApi],
+  );
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -597,6 +602,8 @@ function ChannelsStep({ fetchApi, busy, onSave }: {
 
       {loadingList ? (
         <p className="hint">Cargando redes…</p>
+      ) : listError ? (
+        <ErrorState error={listError} compact onRetry={() => void reloadList()} />
       ) : (
         <>
           {portfolios.length > 0 && (

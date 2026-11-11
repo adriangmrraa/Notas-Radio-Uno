@@ -30,6 +30,9 @@ import {
   Send,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
+import { classifyError, type AsyncError } from '../lib/errors';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -512,7 +515,9 @@ function ContentVariantsPanel({ publicationId, pub, onVariantsUpdated }: Content
       if (variants) {
         onVariantsUpdated({ ...variants, [data.variant]: data.content });
       }
-    } catch { /* ignore */ }
+    } catch (err: any) {
+      alert(err.message || 'No se pudo regenerar la variante');
+    }
     setRegeneratingVariant(null);
   };
 
@@ -671,7 +676,7 @@ function PublishPreviewPanel({
   const { fetchApi } = useApi();
   const [preview, setPreview] = useState<PublishPreviewResult | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(true);
-  const [previewError, setPreviewError] = useState('');
+  const [previewError, setPreviewError] = useState<AsyncError | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [tagInput, setTagInput] = useState('');
   const [appliedTags, setAppliedTags] = useState<string[]>([]);
@@ -682,7 +687,7 @@ function PublishPreviewPanel({
   const loadPreview = useCallback(
     async (excludeIds: string[], hashtags: string[]) => {
       setLoadingPreview(true);
-      setPreviewError('');
+      setPreviewError(null);
       try {
         const data = await fetchApi<PublishPreviewResult>(
           `/review/${publicationId}/publish-preview`,
@@ -702,8 +707,8 @@ function PublishPreviewPanel({
           }
           return next;
         });
-      } catch (err: any) {
-        setPreviewError(err.message || 'Error al generar la previsualización');
+      } catch (err: unknown) {
+        setPreviewError(classifyError(err));
       }
       setLoadingPreview(false);
     },
@@ -711,7 +716,9 @@ function PublishPreviewPanel({
   );
 
   useEffect(() => {
-    void loadPreview([], []);
+    // Se difiere el load: setLoadingPreview(true) sincrónico dentro del efecto
+    // viola react-hooks/set-state-in-effect.
+    void Promise.resolve().then(() => loadPreview([], []));
   }, [loadPreview]);
 
   const togglePerson = (personId: string) => {
@@ -747,10 +754,11 @@ function PublishPreviewPanel({
 
   if (previewError && !preview) {
     return (
-      <div className="rounded-2xl bg-red-500/[0.06] border border-red-500/15 p-4 flex items-start gap-3 text-red-400 text-xs">
-        <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        <span>{previewError}</span>
-      </div>
+      <ErrorState
+        error={previewError}
+        compact
+        onRetry={() => void loadPreview(Array.from(excluded), appliedTags)}
+      />
     );
   }
 
@@ -846,7 +854,7 @@ function PublishPreviewPanel({
       </div>
 
       {previewError && (
-        <p className="text-xs text-red-400">{previewError}</p>
+        <p className="text-xs text-red-400">No se pudo actualizar la previsualización.</p>
       )}
 
       {/* Una tarjeta por cuenta destino con el texto exacto que se envía. */}
@@ -942,7 +950,8 @@ function ReviewDetailModal({
 
   const [pub, setPub] = useState<ReviewPublication | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState<AsyncError | null>(null);
+  const [actionError, setActionError] = useState('');
 
   // Modal content tab: 'content' | 'variants'
   const [modalTab, setModalTab] = useState<'content' | 'variants'>('content');
@@ -980,18 +989,20 @@ function ReviewDetailModal({
 
   const loadPublication = useCallback(async () => {
     setLoading(true);
-    setError('');
+    setLoadError(null);
     try {
       const data = await fetchApi<ReviewPublication>(`/review/${publicationId}`);
       setPub(data);
-    } catch (err: any) {
-      setError(err.message || 'Error al cargar la publicación');
+    } catch (err: unknown) {
+      setLoadError(classifyError(err));
     }
     setLoading(false);
   }, [publicationId, fetchApi]);
 
   useEffect(() => {
-    loadPublication();
+    // Se difiere el load: setLoading(true) sincrónico dentro del efecto viola
+    // react-hooks/set-state-in-effect.
+    void Promise.resolve().then(() => loadPublication());
   }, [loadPublication]);
 
   const handleApprove = async () => {
@@ -1018,7 +1029,7 @@ function ReviewDetailModal({
       onApprove(pub.id, notice);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Error al aprobar');
+      setActionError(err.message || 'Error al aprobar');
     }
     setApproving(false);
   };
@@ -1031,7 +1042,7 @@ function ReviewDetailModal({
       onReject(pub.id);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Error al rechazar');
+      setActionError(err.message || 'Error al rechazar');
     }
     setRejecting(false);
   };
@@ -1149,21 +1160,16 @@ function ReviewDetailModal({
         {/* Body */}
         <div className="modal-body">
           {loading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-            </div>
-          ) : error && !pub ? (
-            <div className="flex items-start gap-3 p-4 rounded-xl bg-red-500/[0.06] border border-red-500/15 text-red-400 text-sm">
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </div>
+            <LoadingState text="" />
+          ) : loadError && !pub ? (
+            <ErrorState error={loadError} compact onRetry={() => void loadPublication()} />
           ) : pub ? (
             <div className="space-y-6">
               {/* Error banner */}
-              {error && (
+              {actionError && (
                 <div className="flex items-start gap-3 p-4 rounded-xl bg-red-500/[0.06] border border-red-500/15 text-red-400 text-sm">
                   <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                  <span>{error}</span>
+                  <span>{actionError}</span>
                 </div>
               )}
 
@@ -1532,37 +1538,28 @@ export function ReviewPage() {
   const { fetchApi } = useApi();
 
   const [activeTab, setActiveTab] = useState<ReviewStatus>('pending_review');
-  const [publications, setPublications] = useState<ReviewPublication[]>([]);
   const [tabCounts, setTabCounts] = useState<Record<ReviewStatus, number>>({
     pending_review: 0,
     published: 0,
     rejected: 0,
   });
-  const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
 
-  const loadPublications = useCallback(
-    async (status: ReviewStatus) => {
-      setLoading(true);
-      setSelectedIds(new Set());
-      setActionError('');
-      try {
-        const data = await fetchApi<{ publications: ReviewPublication[]; total: number }>(
-          `/review?status=${status}&limit=50&offset=0`
-        );
-        setPublications(data.publications ?? []);
-        setTabCounts((prev) => ({ ...prev, [status]: data.total ?? 0 }));
-      } catch {
-        setPublications([]);
-      }
-      setLoading(false);
+  const { data, loading, error, reload, setData } = useAsyncData(
+    async () => {
+      const d = await fetchApi<{ publications: ReviewPublication[]; total: number }>(
+        `/review?status=${activeTab}&limit=50&offset=0`
+      );
+      setTabCounts((prev) => ({ ...prev, [activeTab]: d.total ?? 0 }));
+      return d;
     },
-    [fetchApi]
+    [activeTab],
   );
+  const publications = data?.publications ?? [];
 
   const loadAllCounts = useCallback(async () => {
     const statuses: ReviewStatus[] = ['pending_review', 'published', 'rejected'];
@@ -1582,11 +1579,9 @@ export function ReviewPage() {
     loadAllCounts();
   }, [loadAllCounts]);
 
-  useEffect(() => {
-    loadPublications(activeTab);
-  }, [activeTab, loadPublications]);
-
   const handleTabChange = (tab: ReviewStatus) => {
+    setSelectedIds(new Set());
+    setActionError('');
     setActiveTab(tab);
   };
 
@@ -1621,7 +1616,7 @@ export function ReviewPage() {
         // PG-05: las aprobadas con redes conectadas quedaron encoladas.
         setActionNotice(`${res.processed} aprobada${res.processed !== 1 ? 's' : ''} — las que tienen cuentas conectadas se encolaron para publicar.`);
       }
-      await loadPublications(activeTab);
+      await reload();
       await loadAllCounts();
     } catch (err: any) {
       setActionError(err.message || 'Error en la operación');
@@ -1631,7 +1626,7 @@ export function ReviewPage() {
 
   const handleApproveOne = async (id: string, notice?: string) => {
     if (notice) setActionNotice(notice);
-    setPublications((prev) => prev.filter((p) => p.id !== id));
+    setData((prev) => prev ? { ...prev, publications: prev.publications.filter((p) => p.id !== id) } : prev);
     setTabCounts((prev) => ({
       ...prev,
       pending_review: Math.max(0, prev.pending_review - 1),
@@ -1640,7 +1635,7 @@ export function ReviewPage() {
   };
 
   const handleRejectOne = async (id: string) => {
-    setPublications((prev) => prev.filter((p) => p.id !== id));
+    setData((prev) => prev ? { ...prev, publications: prev.publications.filter((p) => p.id !== id) } : prev);
     setTabCounts((prev) => ({
       ...prev,
       pending_review: Math.max(0, prev.pending_review - 1),
@@ -1773,24 +1768,20 @@ export function ReviewPage() {
 
       {/* Content list */}
       {loading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="skeleton h-24 rounded-2xl" />
-          ))}
-        </div>
+        <LoadingState rows={3} />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => void reload()} />
       ) : publications.length === 0 ? (
-        <div className="glass-card-static p-16 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-            <ClipboardCheck className="w-6 h-6 text-white/15" />
-          </div>
-          <p className="text-white/30 text-sm">
-            {activeTab === 'pending_review'
+        <EmptyState
+          icon={<ClipboardCheck />}
+          title={
+            activeTab === 'pending_review'
               ? 'No hay contenido pendiente de revisión'
               : activeTab === 'published'
               ? 'No hay publicaciones aprobadas todavía'
-              : 'No hay publicaciones rechazadas'}
-          </p>
-        </div>
+              : 'No hay publicaciones rechazadas'
+          }
+        />
       ) : (
         <div className="space-y-3">
           {/* Select all row — only for pending */}
@@ -1913,7 +1904,7 @@ export function ReviewPage() {
             handleRejectOne(id);
             loadAllCounts();
           }}
-          onUpdated={() => loadPublications(activeTab)}
+          onUpdated={() => void reload()}
         />
       )}
     </div>

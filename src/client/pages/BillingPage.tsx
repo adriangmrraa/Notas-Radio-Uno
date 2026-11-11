@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Check, X, AlertTriangle, Zap, Clock, Sparkles, Radio, RotateCcw, PlusCircle } from 'lucide-react';
+import { Check, X, AlertTriangle, Zap, Clock, Sparkles, Radio, RotateCcw, PlusCircle, RefreshCw } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../components/feedback';
 import { useAuth } from '../contexts/AuthContext';
 import type { QuotaInfo } from '../lib/billing';
 
@@ -83,27 +85,47 @@ const FEATURE_LABELS: Record<string, string> = {
 export function BillingPage() {
     const { fetchApi } = useApi();
     const { user } = useAuth();
-    const [plans, setPlans] = useState<Plan[]>([]);
-    const [subscription, setSubscription] = useState<Subscription | null>(null);
-    const [usage, setUsage] = useState<Usage | null>(null);
-    const [quota, setQuota] = useState<QuotaInfo | null>(null);
-    const [addons, setAddons] = useState<Addon[]>([]);
-    const [invoices, setInvoices] = useState<Invoice[]>([]);
     const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('monthly');
     const [currency, setCurrency] = useState<'USD' | 'ARS'>('USD');
-    const [loading, setLoading] = useState(true);
     const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
 
-    const reload = async () => {
-        const [s, q] = await Promise.all([
-            fetchApi<{ subscription: Subscription | null }>('/billing/my-subscription').catch(() => ({ subscription: null })),
-            fetchApi<QuotaInfo>('/billing/quota', { skipRedirect: true }).catch(() => null),
+    // Cada endpoint de billing se tolera por separado (una cuenta sin
+    // suscripción puede 404ear en /quota y eso no es un error de vista).
+    // Falla total → ErrorState bloqueante; parcial → banner con reintento.
+    const { data, loading, error, reload } = useAsyncData(async () => {
+        const results = await Promise.allSettled([
+            fetchApi<Plan[]>('/billing/plans'),
+            fetchApi<{ subscription: Subscription | null }>('/billing/my-subscription'),
+            fetchApi<Usage>('/billing/usage'),
+            fetchApi<QuotaInfo>('/billing/quota', { skipRedirect: true }),
+            fetchApi<{ addons: Addon[] }>('/billing/addons'),
+            fetchApi<Invoice[]>('/billing/invoices'),
         ]);
-        setSubscription(s.subscription);
-        setQuota(q);
-    };
+        if (results.every((r) => r.status === 'rejected')) {
+            throw (results[0] as PromiseRejectedResult).reason;
+        }
+        const partialFailure = results.some((r) => r.status === 'rejected');
+        const ok = <T,>(i: number, fallback: T): T =>
+            results[i].status === 'fulfilled' ? (results[i] as PromiseFulfilledResult<T>).value : fallback;
+        return {
+            plans: ok<Plan[]>(0, []),
+            subscription: ok<{ subscription: Subscription | null }>(1, { subscription: null }).subscription,
+            usage: ok<Usage | null>(2, null),
+            quota: ok<QuotaInfo | null>(3, null),
+            addons: ok<{ addons: Addon[] }>(4, { addons: [] }).addons,
+            invoices: ok<Invoice[]>(5, []),
+            partialFailure,
+        };
+    }, []);
+    const plans = data?.plans ?? [];
+    const subscription = data?.subscription ?? null;
+    const usage = data?.usage ?? null;
+    const quota = data?.quota ?? null;
+    const addons = data?.addons ?? [];
+    const invoices = data?.invoices ?? [];
+    const partialFailure = data?.partialFailure ?? false;
 
     useEffect(() => {
         const status = new URLSearchParams(window.location.search).get('status');
@@ -111,23 +133,6 @@ export function BillingPage() {
         if (status === 'addon_success') setNotice('Add-on acreditado. Las transmisiones ya están en tu ciclo.');
         if (status === 'pending') setNotice('Pago pendiente de confirmación por el proveedor.');
         if (status === 'cancel') setNotice('El pago fue cancelado. No se realizó ningún cargo.');
-
-        Promise.all([
-            fetchApi<Plan[]>('/billing/plans').catch(() => []),
-            fetchApi<{ subscription: Subscription | null }>('/billing/my-subscription').catch(() => ({ subscription: null })),
-            fetchApi<Usage>('/billing/usage').catch(() => null),
-            fetchApi<QuotaInfo>('/billing/quota', { skipRedirect: true }).catch(() => null),
-            fetchApi<{ addons: Addon[] }>('/billing/addons').catch(() => ({ addons: [] })),
-            fetchApi<Invoice[]>('/billing/invoices').catch(() => []),
-        ]).then(([p, s, u, q, a, i]) => {
-            setPlans(p);
-            setSubscription(s.subscription);
-            setUsage(u);
-            setQuota(q);
-            setAddons(a.addons);
-            setInvoices(i);
-            setLoading(false);
-        });
     }, []);
 
     const handleCheckout = async (planName: string, provider: 'stripe' | 'mercadopago') => {
@@ -237,11 +242,11 @@ export function BillingPage() {
     const formatLimit = (v: number) => v === -1 ? 'Ilimitado' : String(v);
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando facturación…" className="h-full" />;
+    }
+
+    if (error) {
+        return <ErrorState error={error} onRetry={() => void reload()} />;
     }
 
     const isActive = subscription?.status === 'active';
@@ -261,6 +266,22 @@ export function BillingPage() {
         <div className="p-4 md:p-8 max-w-6xl mx-auto">
             {/* Banners */}
             <div className="space-y-4">
+                {partialFailure && (
+                    <div className="toast toast-error flex items-center justify-between gap-3 animate-slide-up">
+                        <div className="flex items-center gap-3">
+                            <AlertTriangle className="w-5 h-5 shrink-0" />
+                            <p className="text-sm">No pudimos cargar toda la información de facturación.</p>
+                        </div>
+                        <button
+                            onClick={() => void reload()}
+                            className="text-xs text-cyan-300 hover:text-cyan-200 transition-colors flex items-center gap-1 shrink-0"
+                        >
+                            <RefreshCw className="w-3 h-3" />
+                            Reintentar
+                        </button>
+                    </div>
+                )}
+
                 {notice && (
                     <div className="toast toast-info flex items-center justify-between gap-3 animate-slide-up">
                         <p className="text-sm">{notice}</p>

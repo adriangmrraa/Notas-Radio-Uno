@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { CalendarClock, Plus, Play, Pause, Trash2, Clock, Square, ChevronDown, ChevronUp, Radio, Zap, X } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 interface Job {
     id: string;
@@ -35,8 +37,7 @@ const STRUCTURES = ['flash', 'corta', 'completa', 'cronica'];
 
 export function ScheduledJobsPage() {
     const { fetchApi } = useApi();
-    const [jobs, setJobs] = useState<Job[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { data: jobs, loading, error, reload } = useAsyncData<Job[]>(() => fetchApi<Job[]>('/jobs'));
     const [showForm, setShowForm] = useState(false);
     const [expandedJob, setExpandedJob] = useState<string | null>(null);
     const [executions, setExecutions] = useState<Execution[]>([]);
@@ -46,16 +47,6 @@ export function ScheduledJobsPage() {
         daysOfWeek: [1, 2, 3, 4, 5] as number[],
         tone: 'formal', structure: 'completa', imageModel: 'gemini', autoPublish: true,
     });
-
-    const loadJobs = useCallback(async () => {
-        try {
-            const data = await fetchApi<Job[]>('/jobs');
-            setJobs(data);
-        } catch { /* */ }
-        setLoading(false);
-    }, []);
-
-    useEffect(() => { loadJobs(); }, []);
 
     const createJob = async () => {
         if (!form.name.trim() || !form.streamUrl.trim()) return;
@@ -72,25 +63,25 @@ export function ScheduledJobsPage() {
             });
             setShowForm(false);
             setForm({ name: '', streamUrl: '', startTime: '08:00', durationMinutes: 120, daysOfWeek: [1, 2, 3, 4, 5], tone: 'formal', structure: 'completa', imageModel: 'gemini', autoPublish: true });
-            await loadJobs();
+            await reload();
         } catch (err: any) { alert(err.message); }
         setSaving(false);
     };
 
     const toggleJob = async (id: string) => {
         await fetchApi(`/jobs/${id}/toggle`, { method: 'POST' });
-        await loadJobs();
+        await reload();
     };
 
     const stopJob = async (id: string) => {
         await fetchApi(`/jobs/${id}/stop`, { method: 'POST' });
-        await loadJobs();
+        await reload();
     };
 
     const deleteJob = async (id: string) => {
         if (!confirm('Eliminar este job programado?')) return;
         await fetchApi(`/jobs/${id}`, { method: 'DELETE' });
-        await loadJobs();
+        await reload();
     };
 
     const toggleDay = (day: number) => {
@@ -107,7 +98,7 @@ export function ScheduledJobsPage() {
         setExpandedJob(jobId);
     };
 
-    if (loading) return <div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" /></div>;
+    if (loading) return <LoadingState text="Cargando jobs…" className="h-full" />;
 
     return (
         <div className="p-4 md:p-8 max-w-4xl mx-auto">
@@ -210,20 +201,21 @@ export function ScheduledJobsPage() {
                 </div>
             )}
 
+            {error && <ErrorState error={error} className="mb-6" onRetry={() => void reload()} />}
+
             {/* Empty State */}
-            {jobs.length === 0 && !showForm && (
-                <div className="glass-card-static p-12 text-center animate-in">
-                    <div className="w-16 h-16 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-                        <Radio className="w-7 h-7 text-white/15" />
-                    </div>
-                    <h3 className="text-lg font-medium mb-2">Sin jobs programados</h3>
-                    <p className="text-white/25 text-sm">Configura un job y el sistema detectara el live automaticamente a la hora indicada</p>
-                </div>
+            {!error && (jobs ?? []).length === 0 && !showForm && (
+                <EmptyState
+                    icon={<Radio />}
+                    title="Sin jobs programados"
+                    description="Configurá un job y el sistema detecta el live automáticamente a la hora indicada."
+                    action={{ label: 'Nuevo Job', onClick: () => setShowForm(true) }}
+                />
             )}
 
             {/* Jobs List */}
             <div className="space-y-4 stagger-children">
-                {jobs.map((job) => (
+                {(jobs ?? []).map((job) => (
                     <div key={job.id} className={`glass-card overflow-hidden ${job.isRunning ? '!border-emerald-500/20' : ''}`}>
                         {/* Running glow */}
                         {job.isRunning && (

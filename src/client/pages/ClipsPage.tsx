@@ -5,7 +5,7 @@
  * video preview, hook text, duración, estado y acciones de revisión.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Film,
   Play,
@@ -21,6 +21,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -374,36 +376,24 @@ function ClipCard({ clip, onPreview, onApprove, onReject, onDelete, loading }: C
 
 export function ClipsPage() {
   const { fetchApi } = useApi();
-  const [clips, setClips] = useState<Clip[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<FilterStatus>('all');
   const [previewClip, setPreviewClip] = useState<Clip | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null); // clip id being actioned
 
-  const loadClips = useCallback(async (filter: FilterStatus) => {
-    setLoading(true);
-    try {
-      const params = filter !== 'all' ? `?status=${filter}` : '';
-      const data = await fetchApi<{ clips: Clip[]; total: number }>(`/clips${params}`);
-      setClips(data.clips || []);
-      setTotal(data.total || 0);
-    } catch (err) {
-      console.error('[ClipsPage] Error cargando clips:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchApi]);
-
-  useEffect(() => {
-    loadClips(activeFilter);
-  }, [activeFilter, loadClips]);
+  const { data, loading, error, reload, setData } = useAsyncData(
+    () => fetchApi<{ clips: Clip[]; total: number }>(
+      `/clips${activeFilter !== 'all' ? `?status=${activeFilter}` : ''}`,
+    ),
+    [activeFilter],
+  );
+  const clips = data?.clips ?? [];
+  const total = data?.total ?? 0;
 
   const handleApprove = async (id: string) => {
     setActionLoading(id);
     try {
       await fetchApi(`/clips/${id}/approve`, { method: 'POST' });
-      setClips(prev => prev.map(c => c.id === id ? { ...c, status: 'ready' } : c));
+      setData(prev => prev ? { ...prev, clips: prev.clips.map(c => c.id === id ? { ...c, status: 'ready' } : c) } : prev);
       if (previewClip?.id === id) setPreviewClip(p => p ? { ...p, status: 'ready' } : p);
     } catch (err) {
       console.error('[ClipsPage] Error aprobando clip:', err);
@@ -417,8 +407,7 @@ export function ClipsPage() {
     setActionLoading(id);
     try {
       await fetchApi(`/clips/${id}`, { method: 'DELETE' });
-      setClips(prev => prev.filter(c => c.id !== id));
-      setTotal(t => Math.max(0, t - 1));
+      setData(prev => prev ? { clips: prev.clips.filter(c => c.id !== id), total: Math.max(0, prev.total - 1) } : prev);
       if (previewClip?.id === id) setPreviewClip(null);
     } catch (err) {
       console.error('[ClipsPage] Error rechazando clip:', err);
@@ -432,8 +421,7 @@ export function ClipsPage() {
     setActionLoading(id);
     try {
       await fetchApi(`/clips/${id}`, { method: 'DELETE' });
-      setClips(prev => prev.filter(c => c.id !== id));
-      setTotal(t => Math.max(0, t - 1));
+      setData(prev => prev ? { clips: prev.clips.filter(c => c.id !== id), total: Math.max(0, prev.total - 1) } : prev);
       if (previewClip?.id === id) setPreviewClip(null);
     } catch (err) {
       console.error('[ClipsPage] Error eliminando clip:', err);
@@ -479,7 +467,7 @@ export function ClipsPage() {
         </div>
 
         <button
-          onClick={() => loadClips(activeFilter)}
+          onClick={() => void reload()}
           className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-white/50 border border-white/10 hover:bg-white/5 hover:text-white transition-all"
         >
           <Film className="w-4 h-4" />
@@ -516,22 +504,15 @@ export function ClipsPage() {
 
       {/* Content */}
       {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="text-center">
-            <Loader2 className="w-10 h-10 text-violet-400 animate-spin mx-auto mb-3" />
-            <p className="text-white/40 text-sm">Cargando clips...</p>
-          </div>
-        </div>
+        <LoadingState text="Cargando clips…" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => void reload()} />
       ) : clips.length === 0 ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="text-center">
-            <Film className="w-16 h-16 text-white/10 mx-auto mb-4" />
-            <p className="text-white/40 font-medium mb-1">No hay clips aún</p>
-            <p className="text-white/25 text-sm max-w-xs mx-auto">
-              Los clips se generan automáticamente cuando el pipeline detecta momentos virales en el stream con AssemblyAI activo.
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          icon={<Film />}
+          title="No hay clips aún"
+          description="Los clips se generan automáticamente cuando el pipeline detecta momentos virales en el stream con AssemblyAI activo."
+        />
       ) : (
         <>
           {/* Stats bar */}

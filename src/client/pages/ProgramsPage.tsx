@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Plus, Pencil, Trash2, Mic, Users, Link2, Star, X, ChevronDown, Calendar, FileSearch, RefreshCw, Copy, Check, AlertTriangle, BookOpen, Lightbulb, MessageSquare, Tag, ChevronRight, ExternalLink, Globe } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1404,8 +1406,6 @@ export function ProgramsPage() {
     const { fetchApi } = useApi();
 
     // Programs
-    const [programs, setPrograms] = useState<Program[]>([]);
-    const [loadingPrograms, setLoadingPrograms] = useState(true);
     const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
     const [programDialog, setProgramDialog] = useState<{ open: boolean; program: Partial<Program> | null }>({ open: false, program: null });
 
@@ -1413,46 +1413,55 @@ export function ProgramsPage() {
     const [activeTab, setActiveTab] = useState<'conductors' | 'guests'>('conductors');
 
     // Conductors
-    const [conductors, setConductors] = useState<Conductor[]>([]);
-    const [loadingConductors, setLoadingConductors] = useState(false);
     const [conductorDialog, setConductorDialog] = useState<{ open: boolean; conductor: Partial<Conductor> | null }>({ open: false, conductor: null });
 
     // Guests
-    const [guests, setGuests] = useState<Guest[]>([]);
-    const [loadingGuests, setLoadingGuests] = useState(false);
     const [guestDialog, setGuestDialog] = useState<{ open: boolean; guest: Partial<Guest> | null }>({ open: false, guest: null });
     const [guestDateFilter, setGuestDateFilter] = useState(new Date().toISOString().split('T')[0]);
     const [dossierStatuses, setDossierStatuses] = useState<Record<string, string>>({});
 
-    const loadPrograms = async () => {
-        setLoadingPrograms(true);
-        try {
-            const data = await fetchApi<{ programs: Program[] }>('/programs');
-            setPrograms(data.programs);
-        } catch { /* ignore */ }
-        setLoadingPrograms(false);
-    };
+    const {
+        data: programsData,
+        loading: loadingPrograms,
+        error: programsError,
+        reload: reloadPrograms,
+    } = useAsyncData(
+        () => fetchApi<{ programs: Program[] }>('/programs').then((d) => d.programs),
+        [],
+    );
+    const programs = programsData ?? [];
 
-    const loadConductors = async (programId: string) => {
-        setLoadingConductors(true);
-        try {
-            const data = await fetchApi<{ conductors: Conductor[] }>(`/conductors?programId=${programId}`);
-            setConductors(data.conductors);
-        } catch { /* ignore */ }
-        setLoadingConductors(false);
-    };
+    const {
+        data: conductorsData,
+        loading: loadingConductors,
+        error: conductorsError,
+        reload: reloadConductors,
+    } = useAsyncData(
+        () => selectedProgram
+            ? fetchApi<{ conductors: Conductor[] }>(`/conductors?programId=${selectedProgram.id}`).then((d) => d.conductors)
+            : Promise.resolve([]),
+        [selectedProgram?.id],
+    );
+    const conductors = conductorsData ?? [];
 
-    const loadGuests = async (programId: string, date?: string) => {
-        setLoadingGuests(true);
-        try {
-            const dateParam = date || guestDateFilter;
-            const data = await fetchApi<{ guests: Guest[] }>(`/guests?programId=${programId}&date=${dateParam}`);
-            setGuests(data.guests);
+    const {
+        data: guestsData,
+        loading: loadingGuests,
+        error: guestsError,
+        reload: reloadGuests,
+    } = useAsyncData(
+        async () => {
+            if (!selectedProgram || activeTab !== 'guests') return [];
+            const d = await fetchApi<{ guests: Guest[] }>(
+                `/guests?programId=${selectedProgram.id}&date=${guestDateFilter}`
+            );
             // Load dossier statuses for all guests
-            loadDossierStatuses(data.guests.map((g) => g.id));
-        } catch { /* ignore */ }
-        setLoadingGuests(false);
-    };
+            void loadDossierStatuses(d.guests.map((g) => g.id));
+            return d.guests;
+        },
+        [selectedProgram?.id, activeTab, guestDateFilter],
+    );
+    const guests = guestsData ?? [];
 
     const loadDossierStatuses = async (guestIds: string[]) => {
         const statuses: Record<string, string> = {};
@@ -1465,24 +1474,12 @@ export function ProgramsPage() {
         setDossierStatuses(statuses);
     };
 
-    useEffect(() => { loadPrograms(); }, []);
-
-    useEffect(() => {
-        if (selectedProgram) loadConductors(selectedProgram.id);
-        else setConductors([]);
-    }, [selectedProgram]);
-
-    useEffect(() => {
-        if (selectedProgram && activeTab === 'guests') loadGuests(selectedProgram.id);
-        else setGuests([]);
-    }, [selectedProgram, activeTab, guestDateFilter]);
-
     const deleteProgram = async (id: string) => {
         if (!window.confirm('¿Eliminar este programa y todos sus conductores?')) return;
         try {
             await fetchApi(`/programs/${id}`, { method: 'DELETE' });
             if (selectedProgram?.id === id) setSelectedProgram(null);
-            await loadPrograms();
+            await reloadPrograms();
         } catch (err: any) {
             alert(err.message || 'Error al eliminar');
         }
@@ -1492,7 +1489,7 @@ export function ProgramsPage() {
         if (!window.confirm('¿Eliminar este conductor?')) return;
         try {
             await fetchApi(`/conductors/${id}`, { method: 'DELETE' });
-            if (selectedProgram) await loadConductors(selectedProgram.id);
+            if (selectedProgram) await reloadConductors();
         } catch (err: any) {
             alert(err.message || 'Error al eliminar');
         }
@@ -1502,8 +1499,10 @@ export function ProgramsPage() {
         if (!window.confirm('¿Eliminar este invitado?')) return;
         try {
             await fetchApi(`/guests/${id}`, { method: 'DELETE' });
-            if (selectedProgram) loadGuests(selectedProgram.id);
-        } catch { /* ignore */ }
+            if (selectedProgram) void reloadGuests();
+        } catch (err: any) {
+            alert(err.message || 'Error al eliminar');
+        }
     };
 
     const roleLabelFor = (value: string) => CONDUCTOR_ROLES.find((r) => r.value === value)?.label ?? value;
@@ -1532,18 +1531,15 @@ export function ProgramsPage() {
                     </div>
 
                     {loadingPrograms ? (
-                        <div className="space-y-3">
-                            {[1, 2, 3].map((i) => (
-                                <div key={i} className="skeleton h-20 rounded-2xl" />
-                            ))}
-                        </div>
+                        <LoadingState rows={3} text="Cargando programas…" />
+                    ) : programsError ? (
+                        <ErrorState error={programsError} onRetry={() => void reloadPrograms()} />
                     ) : programs.length === 0 ? (
-                        <div className="glass-card-static p-10 text-center">
-                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                                <Mic className="w-6 h-6 text-white/15" />
-                            </div>
-                            <p className="text-white/30 text-sm">Aún no tenés programas. ¡Creá el primero!</p>
-                        </div>
+                        <EmptyState
+                            icon={<Mic />}
+                            title="Aún no tenés programas. ¡Creá el primero!"
+                            action={{ label: 'Nuevo programa', onClick: () => setProgramDialog({ open: true, program: null }) }}
+                        />
                     ) : (
                         <div className="space-y-3">
                             {programs.map((program) => (
@@ -1668,18 +1664,15 @@ export function ProgramsPage() {
                                     </div>
 
                                     {loadingConductors ? (
-                                        <div className="space-y-3">
-                                            {[1, 2].map((i) => (
-                                                <div key={i} className="skeleton h-20 rounded-2xl" />
-                                            ))}
-                                        </div>
+                                        <LoadingState rows={2} text="Cargando conductores…" />
+                                    ) : conductorsError ? (
+                                        <ErrorState error={conductorsError} compact onRetry={() => void reloadConductors()} />
                                     ) : conductors.length === 0 ? (
-                                        <div className="glass-card-static p-10 text-center">
-                                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                                                <Users className="w-6 h-6 text-white/15" />
-                                            </div>
-                                            <p className="text-white/30 text-sm">Este programa todavía no tiene conductores.</p>
-                                        </div>
+                                        <EmptyState
+                                            icon={<Users />}
+                                            title="Este programa todavía no tiene conductores."
+                                            action={{ label: 'Nuevo conductor', onClick: () => setConductorDialog({ open: true, conductor: null }) }}
+                                        />
                                     ) : (
                                         <div className="space-y-3">
                                             {conductors.map((conductor) => {
@@ -1767,18 +1760,15 @@ export function ProgramsPage() {
                                     </div>
 
                                     {loadingGuests ? (
-                                        <div className="space-y-3">
-                                            {[1, 2].map((i) => (
-                                                <div key={i} className="skeleton h-16 rounded-2xl" />
-                                            ))}
-                                        </div>
+                                        <LoadingState rows={2} text="Cargando invitados…" />
+                                    ) : guestsError ? (
+                                        <ErrorState error={guestsError} compact onRetry={() => void reloadGuests()} />
                                     ) : guests.length === 0 ? (
-                                        <div className="glass-card-static p-10 text-center">
-                                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                                                <Users className="w-6 h-6 text-white/15" />
-                                            </div>
-                                            <p className="text-white/30 text-sm">No hay invitados para esta fecha.</p>
-                                        </div>
+                                        <EmptyState
+                                            icon={<Users />}
+                                            title="No hay invitados para esta fecha."
+                                            action={{ label: 'Nuevo invitado', onClick: () => setGuestDialog({ open: true, guest: null }) }}
+                                        />
                                     ) : (
                                         <div className="space-y-2">
                                             {guests.map((guest) => {
@@ -1843,12 +1833,11 @@ export function ProgramsPage() {
                             )}
                         </>
                     ) : (
-                        <div className="glass-card-static p-10 text-center h-full flex flex-col items-center justify-center min-h-[200px]">
-                            <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                                <Users className="w-6 h-6 text-white/15" />
-                            </div>
-                            <p className="text-white/25 text-sm">Seleccioná un programa para ver sus conductores e invitados</p>
-                        </div>
+                        <EmptyState
+                            icon={<Users />}
+                            title="Seleccioná un programa para ver sus conductores e invitados"
+                            className="h-full min-h-[200px] flex flex-col justify-center"
+                        />
                     )}
                 </div>
             </div>
@@ -1858,7 +1847,7 @@ export function ProgramsPage() {
                 <ProgramDialog
                     program={programDialog.program}
                     onClose={() => setProgramDialog({ open: false, program: null })}
-                    onSaved={loadPrograms}
+                    onSaved={() => void reloadPrograms()}
                 />
             )}
 
@@ -1867,7 +1856,7 @@ export function ProgramsPage() {
                     conductor={conductorDialog.conductor}
                     programId={selectedProgram.id}
                     onClose={() => setConductorDialog({ open: false, conductor: null })}
-                    onSaved={() => loadConductors(selectedProgram.id)}
+                    onSaved={() => void reloadConductors()}
                 />
             )}
 
@@ -1876,7 +1865,7 @@ export function ProgramsPage() {
                     guest={guestDialog.guest}
                     programId={selectedProgram.id}
                     onClose={() => setGuestDialog({ open: false, guest: null })}
-                    onSaved={() => loadGuests(selectedProgram.id)}
+                    onSaved={() => void reloadGuests()}
                 />
             )}
         </div>

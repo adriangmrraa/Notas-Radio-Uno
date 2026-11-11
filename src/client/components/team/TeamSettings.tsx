@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Users, Mail, UserPlus, Trash2, Send, Shield, Eye, PenLine, Crown, AlertCircle, CheckCircle,
 } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../feedback';
 import { useAuth } from '../../contexts/AuthContext';
 
 type Role = 'owner' | 'editor' | 'viewer';
@@ -71,9 +73,6 @@ export function TeamSettings() {
   const { user } = useAuth();
   const { fetchApi } = useApi();
 
-  const [data, setData] = useState<TeamData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -87,21 +86,11 @@ export function TeamSettings() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const load = useCallback(async () => {
-    try {
-      const result = await fetchApi<TeamData>('/team');
-      setData(result);
-      setError('');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'No se pudo cargar el equipo');
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchApi]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { data, loading, error, reload } = useAsyncData(
+    () => fetchApi<TeamData>('/team'),
+    [],
+  );
+  const load = reload;
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,22 +166,11 @@ export function TeamSettings() {
   };
 
   if (loading) {
-    return (
-      <div className="glass-card-static p-6">
-        <p className="text-sm text-white/35">Cargando equipo…</p>
-      </div>
-    );
+    return <LoadingState text="Cargando equipo…" />;
   }
 
   if (error) {
-    return (
-      <div className="glass-card-static p-6">
-        <div className="flex items-center gap-3 text-red-400 text-sm">
-          <AlertCircle className="w-4 h-4" />
-          {error}
-        </div>
-      </div>
-    );
+    return <ErrorState error={error} compact onRetry={() => void reload()} />;
   }
 
   const seats = data?.seats ?? { used: 0, limit: 1 };

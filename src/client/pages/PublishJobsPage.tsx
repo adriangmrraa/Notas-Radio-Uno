@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
     Send, RefreshCw, ExternalLink, XCircle, RotateCcw,
     CalendarClock, AlertTriangle, AtSign, Hash, Scissors,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 import { useSocket } from '../hooks/useSocket';
 
 // ------------------------------------------------------------------
@@ -103,29 +104,19 @@ const shortId = (id: string) => (id.length > 12 ? `${id.slice(0, 8)}…` : id);
 export function PublishJobsPage() {
     const { fetchApi } = useApi();
     const { socket } = useSocket();
-    const [jobs, setJobs] = useState<PublishJob[]>([]);
-    const [total, setTotal] = useState(0);
     const [status, setStatus] = useState('');
-    const [loading, setLoading] = useState(true);
     const [acting, setActing] = useState<string | null>(null);
     const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
     const [connections, setConnections] = useState<SocialConnectionLite[]>([]);
 
-    const loadJobs = useCallback(async (statusFilter: string) => {
-        try {
-            const q = statusFilter ? `?status=${statusFilter}&` : '?';
-            const data = await fetchApi<{ jobs: PublishJob[]; total: number }>(
-                `/publish-jobs${q}limit=100&offset=0`,
-            );
-            setJobs(data.jobs);
-            setTotal(data.total);
-        } catch { /* la lista queda como estaba */ }
-        setLoading(false);
-    }, [fetchApi]);
-
-    useEffect(() => {
-        loadJobs(status);
-    }, [status, loadJobs]);
+    const { data, loading, error, reload } = useAsyncData(
+        () => fetchApi<{ jobs: PublishJob[]; total: number }>(
+            `/publish-jobs${status ? `?status=${status}&` : '?'}limit=100&offset=0`,
+        ),
+        [status],
+    );
+    const jobs = data?.jobs ?? [];
+    const total = data?.total ?? 0;
 
     useEffect(() => {
         fetchApi<{ connections: SocialConnectionLite[] }>('/social-connections')
@@ -136,7 +127,7 @@ export function PublishJobsPage() {
     // El worker emite publish:job:* por room tenant — refrescamos la lista.
     useEffect(() => {
         if (!socket) return;
-        const refresh = () => { void loadJobs(status); };
+        const refresh = () => { void reload(); };
         for (const ev of ['published', 'partial', 'failed', 'cancelled']) {
             socket.on(`publish:job:${ev}`, refresh);
         }
@@ -145,7 +136,7 @@ export function PublishJobsPage() {
                 socket.off(`publish:job:${ev}`, refresh);
             }
         };
-    }, [socket, status, loadJobs]);
+    }, [socket, reload]);
 
     const retry = async (id: string) => {
         setActing(id);
@@ -153,7 +144,7 @@ export function PublishJobsPage() {
         try {
             await fetchApi(`/publish-jobs/${id}/retry`, { method: 'POST' });
             setFeedback({ kind: 'ok', text: 'Job re-encolado para reintentar.' });
-            await loadJobs(status);
+            await reload();
         } catch (err: any) {
             setFeedback({ kind: 'error', text: err.message || 'No se pudo reintentar.' });
         }
@@ -166,7 +157,7 @@ export function PublishJobsPage() {
         setFeedback(null);
         try {
             await fetchApi(`/publish-jobs/${id}/cancel`, { method: 'POST' });
-            await loadJobs(status);
+            await reload();
         } catch (err: any) {
             setFeedback({ kind: 'error', text: err.message || 'No se pudo cancelar.' });
         }
@@ -184,11 +175,7 @@ export function PublishJobsPage() {
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando publicaciones…" className="h-full" />;
     }
 
     return (
@@ -208,7 +195,7 @@ export function PublishJobsPage() {
                     </div>
                 </div>
                 <button
-                    onClick={() => { setLoading(true); void loadJobs(status); }}
+                    onClick={() => void reload()}
                     className="btn-secondary inline-flex items-center gap-2 text-xs !py-2"
                 >
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -243,17 +230,15 @@ export function PublishJobsPage() {
                 ))}
             </div>
 
-            {jobs.length === 0 ? (
-                <div className="glass-card-static p-12 text-center animate-in">
-                    <div className="w-16 h-16 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-                        <Send className="w-7 h-7 text-white/15" />
-                    </div>
-                    <h3 className="text-lg font-medium mb-2">Sin jobs de publicación</h3>
-                    <p className="text-white/25 text-sm">
-                        Cuando apruebes contenido con cuentas conectadas, cada publicación encola un job por red.
-                        {' '}Conectá cuentas en <Link to="/connections" className="text-cyan-400 hover:underline">Conexiones</Link>.
-                    </p>
-                </div>
+            {error ? (
+                <ErrorState error={error} onRetry={() => void reload()} />
+            ) : jobs.length === 0 ? (
+                <EmptyState
+                    icon={<Send />}
+                    title="Sin jobs de publicación"
+                    description="Cuando apruebes contenido con cuentas conectadas, cada publicación encola un job por red."
+                    action={{ label: 'Conectar cuentas', to: '/connections' }}
+                />
             ) : (
                 <div className="space-y-3 stagger-children">
                     {jobs.map((job) => (

@@ -4,6 +4,8 @@ import {
     ChevronLeft, ChevronRight, Search, ScanFace, ShieldCheck, UserX,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -652,11 +654,8 @@ function PersonDialog({ person, programs, onClose, onSaved }: PersonDialogProps)
 export function PersonsPage() {
     const { fetchApi } = useApi();
 
-    const [persons, setPersons] = useState<Person[]>([]);
-    const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
+    const [actionError, setActionError] = useState('');
 
     const [search, setSearch] = useState('');
     const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -682,10 +681,8 @@ export function PersonsPage() {
         }
     }, [fetchApi]);
 
-    const loadPersons = useCallback(async () => {
-        setLoading(true);
-        setError('');
-        try {
+    const { data, loading, error, reload } = useAsyncData(
+        () => {
             const params = new URLSearchParams();
             if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
             if (roleFilter) params.set('role', roleFilter);
@@ -693,30 +690,28 @@ export function PersonsPage() {
             params.set('active', activeFilter);
             params.set('page', String(page));
             params.set('limit', String(PAGE_SIZE));
+            return fetchApi<{ items: Person[]; total: number }>(`/persons?${params.toString()}`);
+        },
+        [debouncedSearch, roleFilter, programFilter, activeFilter, page],
+    );
+    const persons = data?.items ?? [];
+    const total = data?.total ?? 0;
 
-            const data = await fetchApi<{ items: Person[]; total: number }>(`/persons?${params.toString()}`);
-            setPersons(data.items);
-            setTotal(data.total);
-        } catch (err: any) {
-            setError(err.message || 'Error al cargar las personas');
-        }
-        setLoading(false);
-    }, [fetchApi, debouncedSearch, roleFilter, programFilter, activeFilter, page]);
-
-    useEffect(() => { loadPrograms(); }, [loadPrograms]);
-    useEffect(() => { loadPersons(); }, [loadPersons]);
+    useEffect(() => { void loadPrograms(); }, [loadPrograms]);
 
     useEffect(() => { setPage(1); }, [debouncedSearch, roleFilter, programFilter, activeFilter]);
+
+    const hasFilters = !!(debouncedSearch || roleFilter || programFilter || activeFilter !== 'all');
 
     const deletePerson = async (person: Person) => {
         if (!window.confirm(`¿Eliminar a ${person.name}? Esta acción no se puede deshacer.`)) return;
         setDeleting(person.id);
-        setError('');
+        setActionError('');
         try {
             await fetchApi(`/persons/${person.id}`, { method: 'DELETE' });
-            await loadPersons();
+            await reload();
         } catch (err: any) {
-            setError(err.message || 'Error al eliminar la persona');
+            setActionError(err.message || 'Error al eliminar la persona');
         }
         setDeleting(null);
     };
@@ -784,30 +779,36 @@ export function PersonsPage() {
                 </button>
             </div>
 
-            {error && (
-                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{error}</p>
+            {actionError && (
+                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{actionError}</p>
             )}
 
             {/* Table */}
             <div className="glass-card-static overflow-hidden">
                 {loading ? (
-                    <div className="p-4 space-y-3">
-                        {[1, 2, 3].map((i) => (
-                            <div key={i} className="skeleton h-14 rounded-xl" />
-                        ))}
+                    <div className="p-4">
+                        <LoadingState rows={3} text="Cargando personas…" />
                     </div>
+                ) : error ? (
+                    <ErrorState error={error} compact onRetry={() => void reload()} />
                 ) : persons.length === 0 ? (
-                    <div className="p-14 text-center">
-                        <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                            <Users className="w-6 h-6 text-white/15" />
-                        </div>
-                        <p className="text-white/40 text-sm font-medium">
-                            {debouncedSearch || roleFilter || programFilter || activeFilter !== 'all'
-                                ? 'No hay personas que coincidan con los filtros.'
-                                : 'Todavía no hay personas.'}
-                        </p>
-                        <p className="text-white/25 text-xs mt-1">Creá la primera persona del canal para empezar.</p>
-                    </div>
+                    hasFilters ? (
+                        <EmptyState
+                            compact
+                            icon={<Users />}
+                            title="No hay personas que coincidan con los filtros."
+                            className="!py-14"
+                        />
+                    ) : (
+                        <EmptyState
+                            compact
+                            icon={<Users />}
+                            title="Todavía no hay personas."
+                            description="Creá la primera persona del canal para empezar."
+                            action={{ label: 'Nueva persona', onClick: () => setDialog({ open: true, person: null }) }}
+                            className="!py-14"
+                        />
+                    )
                 ) : (
                     <table className="w-full text-sm">
                         <thead>
@@ -916,7 +917,7 @@ export function PersonsPage() {
                     person={dialog.person}
                     programs={programs}
                     onClose={() => setDialog({ open: false, person: null })}
-                    onSaved={loadPersons}
+                    onSaved={() => void reload()}
                 />
             )}
         </div>

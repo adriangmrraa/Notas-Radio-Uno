@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
 import { BarChart3, TrendingUp, FileText, Mic, Cpu, Activity } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { ErrorState, LoadingState } from '../components/feedback';
 
 interface Usage {
     pipelineHoursUsed: number;
@@ -12,22 +13,17 @@ interface Usage {
 
 export function AnalyticsPage() {
     const { fetchApi } = useApi();
-    const [usage, setUsage] = useState<Usage | null>(null);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        fetchApi<Usage>('/billing/usage')
-            .then(setUsage)
-            .catch(() => {})
-            .finally(() => setLoading(false));
-    }, []);
+    const { data: usage, loading, error, reload } = useAsyncData<Usage>(
+        () => fetchApi<Usage>('/billing/usage'),
+        [],
+    );
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando métricas…" className="h-full" />;
+    }
+
+    if (error) {
+        return <ErrorState error={error} onRetry={() => void reload()} />;
     }
 
     const metrics = [

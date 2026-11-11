@@ -4,6 +4,8 @@ import {
     ChevronLeft, ChevronRight, List, Calendar, Radio, Zap, Globe,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -397,11 +399,8 @@ function buildMonthCells(cursor: Date): CalCell[] {
 
 export function AgendaPage() {
     const { fetchApi } = useApi();
-    const [items, setItems] = useState<AgendaItem[]>([]);
     const [runs, setRuns] = useState<RunItem[]>([]);
     const [programs, setPrograms] = useState<Program[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
     const [notice, setNotice] = useState('');
     const [view, setView] = useState<'calendar' | 'list'>('calendar');
     const [cursor, setCursor] = useState(() => new Date());
@@ -410,16 +409,11 @@ export function AgendaPage() {
 
     const monthParam = `${cursor.getFullYear()}-${pad2(cursor.getMonth() + 1)}`;
 
-    const load = useCallback(async () => {
-        try {
-            const data = await fetchApi<{ items: AgendaItem[] }>(`/transmissions/scheduled?month=${monthParam}`);
-            setItems(data.items);
-            setError('');
-        } catch (err: any) {
-            setError(err.message || 'Error al cargar la agenda');
-        }
-        setLoading(false);
-    }, [monthParam]);
+    const { data, loading, error, reload } = useAsyncData(
+        () => fetchApi<{ items: AgendaItem[] }>(`/transmissions/scheduled?month=${monthParam}`),
+        [monthParam],
+    );
+    const items = data?.items ?? [];
 
     const loadRuns = useCallback(async () => {
         try {
@@ -435,7 +429,6 @@ export function AgendaPage() {
         } catch { /* el selector queda vacío */ }
     }, []);
 
-    useEffect(() => { load(); }, [load]);
     useEffect(() => { loadRuns(); loadPrograms(); }, []);
 
     // Instantes → bucket por fecha local EN LA TIMEZONE DE CADA ENTRADA.
@@ -475,7 +468,7 @@ export function AgendaPage() {
                 { method: 'POST' },
             );
             setNotice(`Transmisión disparada: "${item.name}" quedó en estado ${data.transmission.status}.`);
-            await Promise.all([load(), loadRuns()]);
+            await Promise.all([reload(), loadRuns()]);
         } catch (err: any) {
             setNotice(`Error al disparar: ${err.message}`);
         }
@@ -489,7 +482,7 @@ export function AgendaPage() {
                 method: 'PUT',
                 body: { isActive: !item.isActive },
             });
-            await load();
+            await reload();
         } catch (err: any) {
             alert(err.message);
         }
@@ -501,7 +494,7 @@ export function AgendaPage() {
         setBusyId(item.id);
         try {
             await fetchApi(`/transmissions/scheduled/${item.id}`, { method: 'DELETE' });
-            await load();
+            await reload();
         } catch (err: any) {
             alert(err.message);
         }
@@ -509,11 +502,7 @@ export function AgendaPage() {
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando agenda…" className="h-full" />;
     }
 
     return (
@@ -545,22 +534,21 @@ export function AgendaPage() {
                 </div>
             </div>
 
-            {error && <p className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{error}</p>}
+            {error && <ErrorState error={error} compact className="mb-4" onRetry={() => void reload()} />}
             {notice && <p className="mb-4 text-sm text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3">{notice}</p>}
 
             {/* Empty state */}
-            {items.length === 0 && (
-                <div className="glass-card-static p-12 text-center animate-in">
-                    <div className="w-16 h-16 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-                        <CalendarDays className="w-7 h-7 text-white/15" />
-                    </div>
-                    <h3 className="text-lg font-medium mb-2">Todavía no hay transmisiones programadas</h3>
-                    <p className="text-white/25 text-sm">Programá una emisión puntual o recurrente y va a aparecer en el calendario.</p>
-                </div>
+            {!error && items.length === 0 && (
+                <EmptyState
+                    icon={<CalendarDays />}
+                    title="Todavía no hay transmisiones programadas"
+                    description="Programá una emisión puntual o recurrente y va a aparecer en el calendario."
+                    action={{ label: 'Nueva transmisión', onClick: () => setDialog({ item: null }) }}
+                />
             )}
 
             {/* Calendar view */}
-            {items.length > 0 && view === 'calendar' && (
+            {!error && items.length > 0 && view === 'calendar' && (
                 <div className="glass-card-static p-5">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="font-semibold capitalize">
@@ -626,7 +614,7 @@ export function AgendaPage() {
             )}
 
             {/* List view */}
-            {items.length > 0 && view === 'list' && (
+            {!error && items.length > 0 && view === 'list' && (
                 <div className="space-y-4 stagger-children">
                     {items.map((item) => (
                         <div key={item.id} className="glass-card overflow-hidden">
@@ -721,7 +709,7 @@ export function AgendaPage() {
                     item={dialog.item}
                     programs={programs}
                     onClose={() => setDialog(null)}
-                    onSaved={load}
+                    onSaved={reload}
                 />
             )}
         </div>

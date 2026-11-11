@@ -14,6 +14,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Save, Trash2, CheckCircle, AlertTriangle, Send, Clock, Globe2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { ErrorState, LoadingState } from './feedback';
 
 type AutoPublishMode = 'off' | 'on_approval' | 'scheduled';
 
@@ -74,7 +76,6 @@ const DEFAULT_TIMEZONE = 'America/Argentina/Buenos_Aires';
 
 export function AutoPublishSettings() {
   const { fetchApi } = useApi();
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
@@ -93,22 +94,20 @@ export function AutoPublishSettings() {
   const [publishTime, setPublishTime] = useState('09:00');
   const [timezone, setTimezone] = useState(DEFAULT_TIMEZONE);
 
-  const loadConfigs = async () => {
-    try {
+  const { loading, error, reload } = useAsyncData(
+    async () => {
       const data = await fetchApi<AutoPublishResponse>('/auto-publish');
       setConfigs(data.configs ?? []);
       setPlanAllows(data.planAllowsAutoPublish);
       setMaxPlatforms(data.maxPlatforms);
       setUsedPlatforms(data.usedPlatforms);
-    } catch {
-      /* la UI queda con el estado de error vacío */
-    } finally {
-      setLoading(false);
-    }
-  };
+      return data;
+    },
+    [],
+  );
+  const loadConfigs = reload;
 
   useEffect(() => {
-    void loadConfigs();
     fetchApi<{ programs: ProgramOption[] }>('/programs')
       .then((data) => setPrograms(data.programs ?? []))
       .catch(() => {});
@@ -193,13 +192,11 @@ export function AutoPublishSettings() {
   };
 
   if (loading) {
-    return (
-      <div className="space-y-3">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-8 rounded-xl bg-white/[0.04] animate-pulse" />
-        ))}
-      </div>
-    );
+    return <LoadingState rows={3} text="Cargando auto-publicación…" />;
+  }
+
+  if (error) {
+    return <ErrorState error={error} compact onRetry={() => void reload()} />;
   }
 
   return (

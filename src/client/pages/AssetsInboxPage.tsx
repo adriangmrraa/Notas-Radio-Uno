@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FilterX, Inbox, Sparkles } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 type Asset = { id: string; kind: string; title: string | null; status: string };
 type Page = { assets: Asset[]; total: number; page: number; pageSize: number };
@@ -51,7 +53,6 @@ export function AssetsInboxPage() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [transmissions, setTransmissions] = useState<Transmission[]>([]);
   const [page, setPage] = useState(1);
-  const [data, setData] = useState<Page>({ assets: [], total: 0, page: 1, pageSize: 25 });
   const [feedback, setFeedback] = useState<string | null>(null);
   const [action, setAction] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEditState | null>(null);
@@ -78,11 +79,21 @@ export function AssetsInboxPage() {
     return q;
   }, [kind, status, programId, transmissionId, page]);
 
-  useEffect(() => {
-    fetchApi<Page>(`/assets?${query}`)
-      .then(setData)
-      .catch(() => setData({ assets: [], total: 0, page, pageSize: 25 }));
-  }, [fetchApi, query, page, refreshTick]);
+  const { data, loading, error, reload } = useAsyncData<Page>(
+    () => fetchApi<Page>(`/assets?${query}`),
+    [query, refreshTick],
+  );
+
+  const assets = data?.assets ?? [];
+  const hasFilters = Boolean(kind || status || programId || transmissionId);
+
+  const clearFilters = () => {
+    setKind('');
+    setStatus('');
+    setProgramId('');
+    setTransmissionId('');
+    setPage(1);
+  };
 
   const errorMessage = (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback;
@@ -184,13 +195,7 @@ export function AssetsInboxPage() {
         </div>
         <button
           type="button"
-          onClick={() => {
-            setKind('');
-            setStatus('');
-            setProgramId('');
-            setTransmissionId('');
-            setPage(1);
-          }}
+          onClick={clearFilters}
           className="btn-secondary"
         >
           <FilterX className="w-4 h-4" />
@@ -243,14 +248,29 @@ export function AssetsInboxPage() {
         </label>
       </div>
 
-      {data.assets.length === 0 ? (
-        <div className="p-12 text-center">
-          <Inbox className="mx-auto" />
-          <h3>No hay assets para estos filtros</h3>
-        </div>
+      {loading ? (
+        <LoadingState text="Cargando assets…" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => void reload()} />
+      ) : assets.length === 0 ? (
+        hasFilters ? (
+          <EmptyState
+            icon={<Inbox />}
+            title="No hay assets para estos filtros"
+            description="Probá con otros filtros o limpialos para ver todo el material."
+            action={{ label: 'Limpiar filtros', onClick: clearFilters }}
+          />
+        ) : (
+          <EmptyState
+            icon={<Inbox />}
+            title="Todavía no hay materiales"
+            description="Los assets se generan a partir de tus transmisiones, clips y notas."
+            action={{ label: 'Ir a En vivo', to: '/en-vivo' }}
+          />
+        )
       ) : (
         <ul>
-          {data.assets.map((asset) => (
+          {assets.map((asset) => (
             <li key={asset.id} className="p-4">
               <strong>{asset.title || 'Asset sin título'}</strong>
               <p>
@@ -349,9 +369,9 @@ export function AssetsInboxPage() {
           Anterior
         </button>
         <span>
-          {data.total} assets · página {page}
+          {data?.total ?? 0} assets · página {page}
         </span>
-        <button type="button" disabled={page * 25 >= data.total} onClick={() => setPage(page + 1)}>
+        <button type="button" disabled={page * 25 >= (data?.total ?? 0)} onClick={() => setPage(page + 1)}>
           Siguiente
         </button>
       </nav>

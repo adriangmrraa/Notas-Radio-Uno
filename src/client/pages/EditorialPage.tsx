@@ -3,6 +3,9 @@ import {
     ChevronDown, Newspaper, PenLine, Plus, RotateCcw, X,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
+import { classifyError, type AsyncError } from '../lib/errors';
 
 // ─── Types (espejo de editorialService) ──────────────────────────────────────
 
@@ -552,31 +555,37 @@ function ProgramOverrideDialog({
     const [saving, setSaving] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState('');
+    const [loadError, setLoadError] = useState<AsyncError | null>(null);
     const [form, setForm] = useState<FormState | null>(null);
     const [inherited, setInherited] = useState<EditorialShape>(EMPTY_SHAPE);
     const [hasOverride, setHasOverride] = useState(false);
     const [storedFields, setStoredFields] = useState<string[]>([]);
 
-    useEffect(() => {
-        let cancelled = false;
+    const loadOverride = useCallback(async () => {
         setLoading(true);
-        fetchApi<ProfileResponse>(`/editorial/profile?programId=${program.id}`)
-            .then((data) => {
-                if (cancelled) return;
-                const tenantShape = shapeFromRow(data.tenantProfile);
-                setInherited(tenantShape);
-                setStoredFields(data.effective.sources.overriddenFields);
-                setHasOverride(!!data.programOverride);
-                setForm(
-                    data.programOverride
-                        ? formFromShape(shapeFromRow(data.programOverride))
-                        : emptyForm(tenantShape),
-                );
-            })
-            .catch((err) => { if (!cancelled) setError(err.message || 'Error al cargar el override'); })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
+        setLoadError(null);
+        try {
+            const data = await fetchApi<ProfileResponse>(`/editorial/profile?programId=${program.id}`);
+            const tenantShape = shapeFromRow(data.tenantProfile);
+            setInherited(tenantShape);
+            setStoredFields(data.effective.sources.overriddenFields);
+            setHasOverride(!!data.programOverride);
+            setForm(
+                data.programOverride
+                    ? formFromShape(shapeFromRow(data.programOverride))
+                    : emptyForm(tenantShape),
+            );
+        } catch (err: unknown) {
+            setLoadError(classifyError(err));
+        }
+        setLoading(false);
     }, [fetchApi, program.id]);
+
+    useEffect(() => {
+        // Se difiere el load: setLoading(true) sincrónico dentro del efecto viola
+        // react-hooks/set-state-in-effect.
+        void Promise.resolve().then(() => loadOverride());
+    }, [loadOverride]);
 
     const save = async () => {
         if (!form) return;
@@ -630,13 +639,13 @@ function ProgramOverrideDialog({
                 </div>
                 <div className="modal-body">
                     {error && <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-5">{error}</p>}
-                    {loading || !form ? (
-                        <div className="space-y-3">
-                            {[1, 2, 3, 4].map((i) => <div key={i} className="skeleton h-14 rounded-xl" />)}
-                        </div>
-                    ) : (
+                    {loading ? (
+                        <LoadingState rows={4} text="Cargando override…" />
+                    ) : loadError && !form ? (
+                        <ErrorState error={loadError} compact onRetry={() => void loadOverride()} />
+                    ) : form ? (
                         <ProfileForm form={form} onChange={setForm} inherited={inherited} />
-                    )}
+                    ) : null}
                 </div>
                 <div className="modal-footer">
                     {hasOverride && (
@@ -670,37 +679,27 @@ function ProgramOverrideDialog({
 export function EditorialPage() {
     const { fetchApi } = useApi();
 
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
     const [saveError, setSaveError] = useState('');
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
 
-    const [tenantProfile, setTenantProfile] = useState<ProfileRow | null>(null);
-    const [overrides, setOverrides] = useState<ProgramOverrideSummary[]>([]);
-    const [programs, setPrograms] = useState<Program[]>([]);
     const [form, setForm] = useState<FormState | null>(null);
     const [dialogProgram, setDialogProgram] = useState<Program | null>(null);
 
-    const load = useCallback(async () => {
-        setLoading(true);
-        setError('');
-        try {
+    const { data, loading, error, reload, setData } = useAsyncData(
+        async () => {
             const [profileData, programsData] = await Promise.all([
                 fetchApi<ProfileResponse>('/editorial/profile'),
                 fetchApi<{ items: Program[] }>('/editorial/programs'),
             ]);
-            setTenantProfile(profileData.tenantProfile);
-            setOverrides(profileData.programOverrides);
-            setPrograms(programsData.items);
             setForm(formFromShape(shapeFromRow(profileData.tenantProfile)));
-        } catch (err: any) {
-            setError(err.message || 'Error al cargar la línea editorial');
-        }
-        setLoading(false);
-    }, [fetchApi]);
-
-    useEffect(() => { load(); }, [load]);
+            return { profileData, programsData };
+        },
+        [],
+    );
+    const tenantProfile = data?.profileData.tenantProfile ?? null;
+    const overrides = data?.profileData.programOverrides ?? [];
+    const programs = data?.programsData.items ?? [];
 
     const saveTenant = async () => {
         if (!form) return;
@@ -712,7 +711,11 @@ export function EditorialPage() {
                 method: 'PUT',
                 body: bodyFromForm(form),
             });
-            setTenantProfile(res.profile);
+            setData((prev) =>
+                prev
+                    ? { ...prev, profileData: { ...prev.profileData, tenantProfile: res.profile } }
+                    : prev,
+            );
             setForm(formFromShape(shapeFromRow(res.profile)));
             setSaved(true);
             setTimeout(() => setSaved(false), 3000);
@@ -726,10 +729,10 @@ export function EditorialPage() {
 
     return (
         <div className="space-y-5">
-            {error && (
-                <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{error}</p>
-            )}
-
+            {error ? (
+                <ErrorState error={error} onRetry={() => void reload()} />
+            ) : (
+            <>
             {/* Perfil del canal */}
             <div className="glass-card-static p-6">
                 <div className="flex items-start justify-between gap-4 mb-6">
@@ -752,9 +755,7 @@ export function EditorialPage() {
                 </div>
 
                 {loading || !form ? (
-                    <div className="space-y-3">
-                        {[1, 2, 3, 4, 5].map((i) => <div key={i} className="skeleton h-14 rounded-xl" />)}
-                    </div>
+                    <LoadingState rows={5} text="Cargando línea editorial…" />
                 ) : (
                     <>
                         {!tenantProfile && (
@@ -791,17 +792,16 @@ export function EditorialPage() {
                 </div>
 
                 {loading ? (
-                    <div className="space-y-3">
-                        {[1, 2].map((i) => <div key={i} className="skeleton h-14 rounded-xl" />)}
-                    </div>
+                    <LoadingState rows={2} text="Cargando programas…" />
                 ) : programs.length === 0 ? (
-                    <div className="p-10 text-center">
-                        <div className="w-14 h-14 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3 ring-1 ring-white/[0.06]">
-                            <PenLine className="w-6 h-6 text-white/15" />
-                        </div>
-                        <p className="text-white/40 text-sm font-medium">No hay programas creados.</p>
-                        <p className="text-white/25 text-xs mt-1">Creá un programa para poder definirle un override editorial.</p>
-                    </div>
+                    <EmptyState
+                        compact
+                        icon={<PenLine />}
+                        title="No hay programas creados."
+                        description="Creá un programa para poder definirle un override editorial."
+                        action={{ label: 'Ir a Programas', to: '/programs' }}
+                        className="!py-10"
+                    />
                 ) : (
                     <div className="space-y-2">
                         {programs.map((program) => {
@@ -848,11 +848,13 @@ export function EditorialPage() {
                 )}
             </div>
 
+            </>
+            )}
             {dialogProgram && (
                 <ProgramOverrideDialog
                     program={dialogProgram}
                     onClose={() => setDialogProgram(null)}
-                    onSaved={load}
+                    onSaved={() => void reload()}
                 />
             )}
         </div>

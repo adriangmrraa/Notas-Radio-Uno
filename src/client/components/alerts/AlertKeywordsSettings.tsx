@@ -5,9 +5,11 @@
  * cuando se mencionan en la transmisión (sin esperar análisis IA).
  */
 
-import { useState, useEffect, KeyboardEvent } from 'react';
+import { useState, KeyboardEvent } from 'react';
 import { Plus, X, Save, Tag, CheckCircle, AlertTriangle } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../feedback';
 
 const EXAMPLE_KEYWORDS = ['renuncia', 'inflación', 'dólar', 'crisis', 'elecciones'];
 
@@ -15,19 +17,18 @@ export function AlertKeywordsSettings() {
   const { fetchApi } = useApi();
   const [keywords, setKeywords] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  useEffect(() => {
-    fetchApi<{ keywords: string[] }>('/settings/alert-keywords')
-      .then(data => {
-        setKeywords(data.keywords || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
+  const { loading, error, reload } = useAsyncData(
+    async () => {
+      const data = await fetchApi<{ keywords: string[] }>('/settings/alert-keywords');
+      setKeywords(data.keywords || []);
+      return data;
+    },
+    [],
+  );
 
   const showToast = (type: 'success' | 'error', msg: string) => {
     setToast({ type, msg });
@@ -85,13 +86,11 @@ export function AlertKeywordsSettings() {
   };
 
   if (loading) {
-    return (
-      <div className="space-y-3">
-        {[1, 2].map(i => (
-          <div key={i} className="h-8 rounded-xl bg-white/[0.04] animate-pulse" />
-        ))}
-      </div>
-    );
+    return <LoadingState rows={2} text="Cargando keywords…" />;
+  }
+
+  if (error) {
+    return <ErrorState error={error} compact onRetry={() => void reload()} />;
   }
 
   return (
@@ -176,13 +175,13 @@ export function AlertKeywordsSettings() {
 
       {/* Empty state */}
       {keywords.length === 0 && (
-        <div className="py-6 text-center border border-dashed border-white/[0.07] rounded-2xl">
-          <Tag className="w-6 h-6 text-white/15 mx-auto mb-2" />
-          <p className="text-sm text-white/25">Sin keywords configurados</p>
-          <p className="text-xs text-white/15 mt-1">
-            Agregá palabras clave para disparar alertas instantáneas
-          </p>
-        </div>
+        <EmptyState
+          compact
+          icon={<Tag />}
+          title="Sin keywords configurados"
+          description="Agregá palabras clave para disparar alertas instantáneas"
+          className="border border-dashed border-white/[0.07] rounded-2xl"
+        />
       )}
 
       {/* Sugerencias */}

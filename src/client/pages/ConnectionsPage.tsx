@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Share2, Plus, Trash2, ExternalLink, Unplug, Globe, MessageCircle, AtSign, FolderOpen, RefreshCw, Link2 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { EmptyState, ErrorState, LoadingState } from '../components/feedback';
 
 interface Asset {
     id: string;
@@ -125,62 +127,50 @@ const channelBadge = (channel: ChannelPlatformStatus['channel']) => {
 
 export function ConnectionsPage() {
     const { fetchApi } = useApi();
-    const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
-    const [loading, setLoading] = useState(true);
     const [newName, setNewName] = useState('');
     const [creating, setCreating] = useState(false);
     const [connectingMeta, setConnectingMeta] = useState<string | null>(null);
     const [connectingTwitter, setConnectingTwitter] = useState<string | null>(null);
 
-    const [social, setSocial] = useState<SocialConnection[]>([]);
-    const [socialPlan, setSocialPlan] = useState<{ maxPlatforms: number | null; usedPlatforms: number } | null>(null);
-    const [socialLoading, setSocialLoading] = useState(true);
     const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
     const [syncing, setSyncing] = useState(false);
     const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-    // PG-07: canal de publicación — modo del tenant + estado por plataforma.
-    const [channels, setChannels] = useState<PublishChannelsResponse | null>(null);
-    const [channelsLoading, setChannelsLoading] = useState(true);
-    const [channelsError, setChannelsError] = useState<string | null>(null);
     const [modeDraft, setModeDraft] = useState<PublishChannelMode>('hybrid');
     const [savingMode, setSavingMode] = useState(false);
     const [togglingAsset, setTogglingAsset] = useState<string | null>(null);
 
-    const loadPortfolios = useCallback(async () => {
-        try {
-            const data = await fetchApi<Portfolio[]>('/connections/portfolios');
-            setPortfolios(data);
-        } catch { /* ignore */ }
-        setLoading(false);
-    }, []);
+    const {
+        data: portfoliosData,
+        loading,
+        error: portfoliosError,
+        reload: reloadPortfolios,
+    } = useAsyncData(() => fetchApi<Portfolio[]>('/connections/portfolios'), []);
+    const portfolios = portfoliosData ?? [];
 
-    const loadSocial = useCallback(async () => {
-        try {
-            const data = await fetchApi<SocialConnectionsResponse>('/social-connections');
-            setSocial(data.connections);
-            setSocialPlan(data.plan);
-        } catch { /* ignore — el listado legacy sigue funcionando */ }
-        setSocialLoading(false);
-    }, []);
+    const {
+        data: socialData,
+        loading: socialLoading,
+        error: socialError,
+        reload: reloadSocial,
+        setData: setSocialData,
+    } = useAsyncData(() => fetchApi<SocialConnectionsResponse>('/social-connections'), []);
+    const social = socialData?.connections ?? [];
+    const socialPlan = socialData?.plan ?? null;
 
-    const loadChannels = useCallback(async () => {
-        try {
-            const data = await fetchApi<PublishChannelsResponse>('/publish-channels');
-            setChannels(data);
-            setModeDraft(data.mode);
-            setChannelsError(null);
-        } catch (err: any) {
-            setChannelsError(err?.message || 'No se pudo leer el estado de canales.');
-        }
-        setChannelsLoading(false);
+    // PG-07: canal de publicación — modo del tenant + estado por plataforma.
+    const {
+        data: channels,
+        loading: channelsLoading,
+        error: channelsError,
+        reload: reloadChannels,
+    } = useAsyncData(async () => {
+        const data = await fetchApi<PublishChannelsResponse>('/publish-channels');
+        setModeDraft(data.mode);
+        return data;
     }, []);
 
     useEffect(() => {
-        loadPortfolios();
-        loadSocial();
-        loadChannels();
-
         // Resultado del callback OAuth de Zernio (redirect con
         // ?social_connected=<platform> o ?social_error=<code>).
         const params = new URLSearchParams(window.location.search);
@@ -199,9 +189,9 @@ export function ConnectionsPage() {
             url.searchParams.delete('social_connected');
             url.searchParams.delete('social_error');
             window.history.replaceState({}, '', url.toString());
-            loadSocial();
+            void reloadSocial();
         }
-    }, []);
+    }, [reloadSocial]);
 
     const createPortfolio = async () => {
         if (!newName.trim()) return;
@@ -209,7 +199,7 @@ export function ConnectionsPage() {
         try {
             await fetchApi('/connections/portfolios', { method: 'POST', body: { name: newName.trim() } });
             setNewName('');
-            await loadPortfolios();
+            await reloadPortfolios();
         } catch (err: any) {
             alert(err.message);
         }
@@ -219,12 +209,12 @@ export function ConnectionsPage() {
     const deletePortfolio = async (id: string) => {
         if (!confirm('Eliminar este portfolio y desconectar sus redes?')) return;
         await fetchApi(`/connections/portfolios/${id}`, { method: 'DELETE' });
-        await loadPortfolios();
+        await reloadPortfolios();
     };
 
     const disconnectAsset = async (id: string) => {
         await fetchApi(`/connections/assets/${id}`, { method: 'DELETE' });
-        await loadPortfolios();
+        await reloadPortfolios();
     };
 
     const connectMeta = async (portfolioId: string) => {
@@ -269,7 +259,7 @@ export function ConnectionsPage() {
                         method: 'POST',
                         body: { accessToken, code },
                     });
-                    await loadPortfolios();
+                    await reloadPortfolios();
                 }
                 setConnectingMeta(null);
             }, loginParams);
@@ -315,7 +305,7 @@ export function ConnectionsPage() {
                                     redirectUri: sessionStorage.getItem('twitter_redirect_uri'),
                                 },
                             });
-                            await loadPortfolios();
+                            await reloadPortfolios();
                         }
                         setConnectingTwitter(null);
                     }
@@ -350,7 +340,7 @@ export function ConnectionsPage() {
         if (!confirm('Desconectar esta cuenta? Vas a poder volver a conectarla cuando quieras.')) return;
         try {
             await fetchApi(`/social-connections/${id}`, { method: 'DELETE' });
-            await loadSocial();
+            await reloadSocial();
         } catch (err: any) {
             setFeedback({ kind: 'error', text: err.message || 'No se pudo desconectar.' });
         }
@@ -364,7 +354,9 @@ export function ConnectionsPage() {
                 '/social-connections/sync',
                 { method: 'POST' },
             );
-            setSocial(result.connections);
+            setSocialData((prev) => prev
+                ? { ...prev, connections: result.connections }
+                : { connections: result.connections, plan: { maxPlatforms: null, usedPlatforms: result.connections.length } });
             setFeedback({
                 kind: 'ok',
                 text: `Sincronización lista: ${result.synced} cuenta${result.synced !== 1 ? 's' : ''} actualizada${result.synced !== 1 ? 's' : ''}.`,
@@ -381,7 +373,7 @@ export function ConnectionsPage() {
         setFeedback(null);
         try {
             await fetchApi('/publish-channels', { method: 'PUT', body: { mode: modeDraft } });
-            await loadChannels();
+            await reloadChannels();
             setFeedback({ kind: 'ok', text: 'Modo de publicación guardado.' });
         } catch (err: any) {
             setFeedback({ kind: 'error', text: err.message || 'No se pudo guardar el modo.' });
@@ -398,7 +390,7 @@ export function ConnectionsPage() {
                 method: 'PUT',
                 body: { legacyOnly: next },
             });
-            await Promise.all([loadPortfolios(), loadChannels()]);
+            await Promise.all([reloadPortfolios(), reloadChannels()]);
         } catch (err: any) {
             setFeedback({ kind: 'error', text: err.message || 'No se pudo actualizar el asset.' });
         }
@@ -426,11 +418,11 @@ export function ConnectionsPage() {
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <div className="w-8 h-8 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            </div>
-        );
+        return <LoadingState text="Cargando conexiones…" className="h-full" />;
+    }
+
+    if (portfoliosError) {
+        return <ErrorState error={portfoliosError} onRetry={() => void reloadPortfolios()} />;
     }
 
     return (
@@ -486,12 +478,15 @@ export function ConnectionsPage() {
 
                 {/* Connected accounts */}
                 {socialLoading ? (
-                    <div className="space-y-2">
-                        <div className="skeleton h-12" />
-                        <div className="skeleton h-12" />
-                    </div>
+                    <LoadingState rows={2} text="Cargando cuentas…" />
+                ) : socialError ? (
+                    <ErrorState error={socialError} compact onRetry={() => void reloadSocial()} />
                 ) : social.length === 0 ? (
-                    <p className="text-white/25 text-sm">Todavía no conectaste ninguna cuenta.</p>
+                    <EmptyState
+                        compact
+                        icon={<AtSign />}
+                        title="Todavía no conectaste ninguna cuenta."
+                    />
                 ) : (
                     <div className="space-y-2">
                         {social.map((conn) => (
@@ -538,14 +533,9 @@ export function ConnectionsPage() {
                 </p>
 
                 {channelsLoading ? (
-                    <div className="space-y-2">
-                        <div className="skeleton h-10" />
-                        <div className="skeleton h-10" />
-                    </div>
+                    <LoadingState rows={2} text="Cargando canales…" />
                 ) : channelsError ? (
-                    <div className="px-4 py-3 rounded-xl text-sm border bg-red-500/[0.06] border-red-500/15 text-red-300">
-                        {channelsError}
-                    </div>
+                    <ErrorState error={channelsError} compact onRetry={() => void reloadChannels()} />
                 ) : channels ? (
                     <>
                         {/* Modo del tenant */}
@@ -651,12 +641,11 @@ export function ConnectionsPage() {
 
             {/* Empty State */}
             {portfolios.length === 0 && (
-                <div className="glass-card-static p-12 text-center animate-in">
-                    <div className="w-16 h-16 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-4 ring-1 ring-white/[0.06]">
-                        <Share2 className="w-7 h-7 text-white/15" />
-                    </div>
-                    <p className="text-white/25 text-sm">Crea tu primer portfolio para conectar redes sociales</p>
-                </div>
+                <EmptyState
+                    icon={<Share2 />}
+                    title="Crea tu primer portfolio para conectar redes sociales"
+                    className="animate-in"
+                />
             )}
 
             {/* Portfolios */}
