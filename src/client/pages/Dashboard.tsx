@@ -64,7 +64,7 @@ const initialData: DashboardData = { transmissions: [], scheduled: [], jobs: [],
 
 const transmissionLabels: Record<Transmission['status'], string> = {
   scheduled: 'Programada',
-  waiting: 'Esperando seÃ±al',
+  waiting: 'Esperando señal',
   live: 'En vivo',
   processing: 'Procesando',
   done: 'Finalizada',
@@ -109,7 +109,7 @@ export function Dashboard() {
       jobs: jobs.status === 'fulfilled' ? jobs.value.jobs : [],
       quota: quota.status === 'fulfilled' ? quota.value : null,
     });
-    setError(failures.length > 0 ? 'No pudimos actualizar toda la informaciÃ³n del tablero.' : null);
+    setError(failures.length > 0 ? 'No pudimos actualizar toda la información del tablero.' : null);
     setLoading(false);
   }, [fetchApi]);
 
@@ -139,7 +139,7 @@ export function Dashboard() {
             {new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">Ahora, {firstName}</h1>
-          <p className="mt-1 text-sm text-white/45">Estado operativo de tu producciÃ³n editorial.</p>
+          <p className="mt-1 text-sm text-white/45">Estado operativo de tu producción editorial.</p>
         </div>
         <button onClick={() => void loadDashboard()} className="btn-secondary self-start sm:self-auto" disabled={loading}>
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -159,7 +159,7 @@ export function Dashboard() {
           <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
             <div className="flex items-center gap-3">
               <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-500/15 text-rose-300"><Radio className="h-4 w-4" /></span>
-              <div><h2 className="font-semibold">En vivo ahora</h2><p className="text-xs text-white/40">SeÃ±al y procesamiento en curso</p></div>
+              <div><h2 className="font-semibold">En vivo ahora</h2><p className="text-xs text-white/40">Señal y procesamiento en curso</p></div>
             </div>
             <Link to="/en-vivo" className="text-sm text-cyan-300 hover:text-cyan-200">Abrir sala</Link>
           </div>
@@ -168,12 +168,12 @@ export function Dashboard() {
               <div className="space-y-3">
                 {liveTransmissions.map((transmission) => (
                   <Link key={transmission.id} to={`/en-vivo/${transmission.id}`} className="flex items-center justify-between gap-4 rounded-xl border border-white/[0.06] bg-white/[0.025] p-4 transition hover:border-cyan-400/30">
-                    <div className="min-w-0"><p className="truncate font-medium">{transmission.programName || transmission.scheduledName || 'TransmisiÃ³n sin programa'}</p><p className="mt-1 text-xs text-white/40">{transmission.startedAt ? `IniciÃ³ ${formatDate(transmission.startedAt)}` : 'AÃºn sin hora de inicio'}</p></div>
+                    <div className="min-w-0"><p className="truncate font-medium">{transmission.programName || transmission.scheduledName || 'Transmisión sin programa'}</p><p className="mt-1 text-xs text-white/40">{transmission.startedAt ? `Inició ${formatDate(transmission.startedAt)}` : 'Aún sin hora de inicio'}</p></div>
                     <span className={`badge shrink-0 ${statusClass(transmission.status)}`}>{transmission.status === 'live' && <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}{transmissionLabels[transmission.status]}</span>
                   </Link>
                 ))}
               </div>
-            ) : <EmptyState icon={<WifiOff className="h-5 w-5" />} text="No hay transmisiones activas." action="Iniciar transmisiÃ³n" to="/en-vivo" />}
+            ) : <EmptyState icon={<WifiOff className="h-5 w-5" />} text="No hay transmisiones activas." action="Iniciar transmisión" to="/en-vivo" />}
           </div>
         </div>
 
@@ -181,7 +181,7 @@ export function Dashboard() {
       </section>
 
       <section className="grid gap-5 lg:grid-cols-2">
-        <Panel title="PrÃ³ximas transmisiones" subtitle="Agenda activa" icon={<CalendarClock className="h-4 w-4" />} actionTo="/agenda" action="Ver agenda">
+        <Panel title="Próximas transmisiones" subtitle="Agenda activa" icon={<CalendarClock className="h-4 w-4" />} actionTo="/agenda" action="Ver agenda">
           {loading ? <LoadingRows count={3} /> : upcoming.length > 0 ? <div className="divide-y divide-white/[0.06]">{upcoming.map((item) => <div key={item.id} className="flex items-center justify-between gap-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-xs text-white/40">{item.programName || 'Sin programa asociado'}</p></div><p className="shrink-0 text-right text-xs text-white/60">{formatDate(item.nextRunAt)}</p></div>)}</div> : <EmptyState icon={<CalendarClock className="h-5 w-5" />} text="No hay transmisiones programadas." action="Programar" to="/agenda" />}
         </Panel>
 
@@ -191,16 +191,16 @@ export function Dashboard() {
       </section>
 
       <section className="grid gap-4 sm:grid-cols-3">
-        <QuickLink to="/en-vivo" icon={<Wifi className="h-5 w-5" />} title="Nueva transmisiÃ³n" description="AbrÃ­ la sala de producciÃ³n en vivo." />
-        <QuickLink to="/assets" icon={<Upload className="h-5 w-5" />} title="Gestionar activos" description="RevisÃ¡ el material listo para producir." />
-        <QuickLink to="/settings" icon={<Settings2 className="h-5 w-5" />} title="ConfiguraciÃ³n" description="AjustÃ¡ fuentes, equipo y preferencias." />
+        <QuickLink to="/en-vivo" icon={<Wifi className="h-5 w-5" />} title="Nueva transmisión" description="Abrí la sala de producción en vivo." />
+        <QuickLink to="/assets" icon={<Upload className="h-5 w-5" />} title="Gestionar activos" description="Revisá el material listo para producir." />
+        <QuickLink to="/settings" icon={<Settings2 className="h-5 w-5" />} title="Configuración" description="Ajustá fuentes, equipo y preferencias." />
       </section>
     </div>
   );
 }
 
 function CapacityCard({ loading, quota }: { loading: boolean; quota: Quota | null }) {
-  return <div className="glass-card-static rounded-2xl p-5"><div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-300"><Clock3 className="h-4 w-4" /></span><div><h2 className="font-semibold">Capacidad del ciclo</h2><p className="text-xs text-white/40">Transmisiones incluidas en tu plan</p></div></div>{loading ? <div className="mt-6 h-20 animate-pulse rounded-xl bg-white/[0.05]" /> : quota ? <div className="mt-6"><div className="flex items-end justify-between gap-3"><p className="text-3xl font-bold">{quota.unlimited ? 'Ilimitada' : `${quota.used} / ${quota.included + quota.addon + quota.extra}`}</p>{!quota.unlimited && <p className="text-sm text-white/50">{quota.remaining} restantes</p>}</div>{!quota.unlimited && <><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className={`h-full rounded-full ${quota.percentUsed > 90 ? 'bg-rose-400' : quota.percentUsed > 70 ? 'bg-amber-400' : 'bg-cyan-400'}`} style={{ width: `${Math.min(quota.percentUsed, 100)}%` }} /></div><p className="mt-3 text-xs text-white/40">{quota.periodEnd ? `Ciclo hasta ${new Date(`${quota.periodEnd}T00:00:00`).toLocaleDateString('es-AR')}` : 'Ciclo vigente'}</p></>}</div> : <EmptyState icon={<Clock3 className="h-5 w-5" />} text="La capacidad no estÃ¡ disponible." action="Ver facturaciÃ³n" to="/billing" />}</div>;
+  return <div className="glass-card-static rounded-2xl p-5"><div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-300"><Clock3 className="h-4 w-4" /></span><div><h2 className="font-semibold">Capacidad del ciclo</h2><p className="text-xs text-white/40">Transmisiones incluidas en tu plan</p></div></div>{loading ? <div className="mt-6 h-20 animate-pulse rounded-xl bg-white/[0.05]" /> : quota ? <div className="mt-6"><div className="flex items-end justify-between gap-3"><p className="text-3xl font-bold">{quota.unlimited ? 'Ilimitada' : `${quota.used} / ${quota.included + quota.addon + quota.extra}`}</p>{!quota.unlimited && <p className="text-sm text-white/50">{quota.remaining} restantes</p>}</div>{!quota.unlimited && <><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className={`h-full rounded-full ${quota.percentUsed > 90 ? 'bg-rose-400' : quota.percentUsed > 70 ? 'bg-amber-400' : 'bg-cyan-400'}`} style={{ width: `${Math.min(quota.percentUsed, 100)}%` }} /></div><p className="mt-3 text-xs text-white/40">{quota.periodEnd ? `Ciclo hasta ${new Date(`${quota.periodEnd}T00:00:00`).toLocaleDateString('es-AR')}` : 'Ciclo vigente'}</p></>}</div> : <EmptyState icon={<Clock3 className="h-5 w-5" />} text="La capacidad no está disponible." action="Ver facturación" to="/billing" />}</div>;
 }
 
 function Panel({ title, subtitle, icon, action, actionTo, children }: { title: string; subtitle: string; icon: React.ReactNode; action: string; actionTo: string; children: React.ReactNode }) {
