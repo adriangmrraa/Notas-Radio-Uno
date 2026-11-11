@@ -25,6 +25,7 @@ import { recordAuditEvent } from '../services/auditService.js';
 import type { UserRole } from '../db/schema/enums.js';
 import type { AuthPayload } from './auth.js';
 import { getActiveMembership } from '../services/membershipService.js';
+import { setRequestContext } from '../lib/requestContext.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 
@@ -118,6 +119,9 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   }
 
   req.auth = payload;
+  // PI-02: el tenant ya resuelto entra al contexto de logging — toda línea
+  // posterior dentro del scope de la request lo lleva sin pasarlo a mano.
+  if (payload.tenantId) setRequestContext({ tenantId: payload.tenantId });
   next();
 }
 

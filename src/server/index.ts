@@ -35,6 +35,7 @@ import { registerPublicPageRoutes } from "./routes/publicPages.js";
 import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { optionalAuth, viewerWriteGuard } from "./middleware/authz.js";
+import { requestIdMiddleware } from "./middleware/requestId.js";
 import { billingRouter } from "./routes/billing.js";
 import { teamRouter } from "./routes/team.js";
 import { adminRouter } from "./routes/admin.js";
@@ -198,6 +199,12 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   maxAge: 600,
 }));
+
+// PI-02: request-id + contexto de logging — primero de los middlewares de
+// aplicación, antes de optionalAuth y de las rutas: toda línea de log
+// emitida dentro de la request lleva el X-Request-Id, y el finish-log
+// resume method/path/status/durationMs por petición.
+app.use(requestIdMiddleware);
 
 // Stripe exige el body crudo para verificar la firma del webhook. Se monta
 // ANTES de express.json(): body-parser marca req._body y el parser JSON lo omite.
