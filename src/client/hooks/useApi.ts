@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { QuotaExceededError, type QuotaInfo, type QuotaUpsell } from '../lib/billing';
+import { ApiError } from '../lib/errors';
 
 interface FetchOptions {
   method?: string;
@@ -68,19 +69,19 @@ export function useApi() {
       if (!options.skipRedirect && !window.location.pathname.startsWith('/billing')) {
         window.location.href = '/billing';
       }
-      throw new Error(payload.error || 'Suscripción requerida');
+      throw new ApiError(payload.error || 'Suscripción requerida', 402);
     }
 
     if (response.status === 401) {
       if (!options.skipRedirect && !window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';
       }
-      throw new Error('No autenticado');
+      throw new ApiError('No autenticado', 401);
     }
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(parseErrorMessage(text, response.status));
+      throw new ApiError(parseErrorMessage(text, response.status), response.status);
     }
 
     const contentType = response.headers.get('content-type');
