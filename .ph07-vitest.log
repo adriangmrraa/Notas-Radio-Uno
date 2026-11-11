@@ -1,0 +1,118 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.4 [39m[90mC:/Users/Asus/orca/workspaces/periodistapp/ph-07-responsive[39m
+
+ [32m✓[39m tests/useAsyncData.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 706[2mms[22m[39m
+ [32m✓[39m tests/pages-states.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 734[2mms[22m[39m
+   [33m[2m✓[22m[39m AssetsInboxPage[2m > [22mlista vacía ⇒ EmptyState con acción "Ir a En vivo" [33m 331[2mms[22m[39m
+ [32m✓[39m tests/layout-drawer.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 1898[2mms[22m[39m
+   [33m[2m✓[22m[39m Layout — drawer de navegación (<lg)[2m > [22mel sidebar arranca cerrado (fuera de pantalla) [33m 305[2mms[22m[39m
+   [33m[2m✓[22m[39m Layout — drawer de navegación (<lg)[2m > [22mel breakpoint del drawer es lg: el sidebar vuelve al flujo en lg, no en md [33m 389[2mms[22m[39m
+ [32m✓[39m tests/responsive-table.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[32m 284[2mms[22m[39m
+ [32m✓[39m tests/feedback-states.test.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 558[2mms[22m[39m
+[90mstderr[2m | tests/rawRetentionService.test.ts[2m > [22m[2mpurga de retención en el tick del scheduler[2m > [22m[2muna purga que lanza no tumba el scheduler
+[22m[39m[TransmissionScheduler] purga de retención falló: DB caída
+
+ [32m✓[39m tests/rawRetentionService.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 861[2mms[22m[39m
+   [33m[2m✓[22m[39m purga de retención en el tick del scheduler[2m > [22mcorre la purga en el primer tick (catch-up post-boot) y no en el siguiente [33m 502[2mms[22m[39m
+ [32m✓[39m tests/clipRecut.test.ts [2m([22m[2m32 tests[22m[2m)[22m[33m 508[2mms[22m[39m
+ [32m✓[39m tests/assets.test.ts [2m([22m[2m43 tests[22m[2m)[22m[33m 734[2mms[22m[39m
+[90mstderr[2m | tests/streamRecorderService.test.ts[2m > [22m[2mstartRecording — loop de captura[2m > [22m[2mstream caído → re-resuelve y sigue grabando en el MISMO recordingId
+[22m[39m[recorder] ffmpeg cayó (intento 1/2); re-resolviendo en 4000 ms…
+
+ [32m✓[39m tests/streamRecorderService.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 844[2mms[22m[39m
+   [33m[2m✓[22m[39m startRecording — loop de captura[2m > [22mgraba segmentos anclados a wall-clock, cierra la grabación y deja crudo_ref = storagePrefix [33m 561[2mms[22m[39m
+[90mstdout[2m | tests/transmissionSocket.test.ts[2m > [22m[2msocket.io — autenticación y rooms de transmisiones[2m > [22m[2mtoken válido + membresía → conecta y entra a tenant:{tenantId}
+[22m[39m[Socket.IO] Client connected to tenant:tenant-a
+
+[90mstdout[2m | tests/transmissionSocket.test.ts[2m > [22m[2msocket.io — autenticación y rooms de transmisiones[2m > [22m[2mtransmission:subscribe propio → entra a transmission:{id}
+[22m[39m[Socket.IO] Client connected to tenant:tenant-a
+
+[90mstdout[2m | tests/transmissionSocket.test.ts[2m > [22m[2msocket.io — autenticación y rooms de transmisiones[2m > [22m[2msubscribe a transmisión de OTRO tenant → transmission:error, sin join
+[22m[39m[Socket.IO] Client connected to tenant:tenant-a
+
+[90mstdout[2m | tests/transmissionSocket.test.ts[2m > [22m[2msocket.io — autenticación y rooms de transmisiones[2m > [22m[2mtransmission:unsubscribe sale del room
+[22m[39m[Socket.IO] Client connected to tenant:tenant-a
+
+ [32m✓[39m tests/transmissionSocket.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 556[2mms[22m[39m
+[90mstderr[2m | tests/transmissionsVodUpload.test.ts[2m > [22m[2mPOST /api/transmissions/vod-upload[2m > [22m[2mffprobe no disponible → 201 igual (fallback extensión+tamaño)
+[22m[39m[Transmissions] VOD upload: ffprobe no disponible — pista de video sin verificar
+
+ [32m✓[39m tests/transmissionsVodUpload.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 795[2mms[22m[39m
+ [32m✓[39m tests/publishChannels.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 560[2mms[22m[39m
+[90mstderr[2m | tests/publishJobs.test.ts[2m > [22m[2mpublishWorker — claim + publishPost + mapping Zernio[2m > [22m[2m(b) publica mandando la Idempotency-Key de la fila y content/media/target
+[22m[39m[PublishWorker] syncSourceStatus: publication 22222222-2222-4222-8222-222222222222 a 'published' falló: __vite_ssr_import_0__.db.update is not a function
+
+[90mstderr[2m | tests/publishJobs.test.ts[2m > [22m[2mpublishWorker — claim + publishPost + mapping Zernio[2m > [22m[2m(c) 200 replay idempotente → publica igual (post.status published)
+[22m[39m[PublishWorker] syncSourceStatus: publication 22222222-2222-4222-8222-222222222222 a 'published' falló: __vite_ssr_import_0__.db.update is not a function
+
+[90mstderr[2m | tests/publishJobs.test.ts[2m > [22m[2mpublishWorker — claim + publishPost + mapping Zernio[2m > [22m[2mel claim es global pero respeta next_attempt_at futuro
+[22m[39m[PublishWorker] syncSourceStatus: publication 22222222-2222-4222-8222-222222222222 a 'published' falló: __vite_ssr_import_0__.db.update is not a function
+
+[90mstdout[2m | tests/publishJobs.test.ts[2m > [22m[2minitPublishWorker — guard de una sola instancia[2m > [22m[2muna segunda init se ignora con warning
+[22m[39m[PublishWorker] Inicializado — claim cada 10000 ms
+
+ [32m✓[39m tests/publishJobs.test.ts [2m([22m[2m38 tests[22m[2m)[22m[33m 403[2mms[22m[39m
+ [32m✓[39m tests/autoPublish.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 396[2mms[22m[39m
+[90mstderr[2m | tests/liveAnalysisRunner.test.ts[2m > [22m[2mhandleSegmentFinalized[2m > [22m[2mengine que rechaza → error tolerado, no propaga ni emite
+[22m[39m[live-analysis] segmento 00000000-0000-4000-8000-0000000000r1#3 falló: extractAudio: ffmpeg not found
+
+ [32m✓[39m tests/liveAnalysisRunner.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 317[2mms[22m[39m
+ [32m✓[39m tests/noteFactory.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 304[2mms[22m[39m
+ [32m✓[39m tests/publishMentions.test.ts [2m([22m[2m37 tests[22m[2m)[22m[33m 306[2mms[22m[39m
+ [32m✓[39m tests/liveRoomApi.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 484[2mms[22m[39m
+ [32m✓[39m tests/socialConnections.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 437[2mms[22m[39m
+ [32m✓[39m tests/networkVariants.test.ts [2m([22m[2m34 tests[22m[2m)[22m[33m 386[2mms[22m[39m
+[90mstderr[2m | tests/transmissionScheduler.test.ts[2m > [22m[2mdispatch con live al aire[2m > [22m[2mcrea la corrida live_capture, la pasa a live y arranca la grabación
+[22m[39m[TransmissionScheduler] purga de retención falló: executor.select is not a function
+
+[90mstdout[2m | tests/transmissionScheduler.test.ts[2m > [22m[2minitTransmissionScheduler / stopTransmissionScheduler[2m > [22m[2minit registra el intervalo y stop lo limpia sin lanzar
+[22m[39m[TransmissionScheduler] Inicializado — chequeo cada 60s
+
+ [32m✓[39m tests/transmissionScheduler.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 235[2mms[22m[39m
+ [32m✓[39m tests/clipReframe.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 257[2mms[22m[39m
+ [32m✓[39m tests/publishApprove.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 269[2mms[22m[39m
+ [32m✓[39m tests/quoteFlyers.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 246[2mms[22m[39m
+ [32m✓[39m tests/clipSubtitles.test.ts [2m([22m[2m36 tests[22m[2m)[22m[33m 1048[2mms[22m[39m
+ [32m✓[39m tests/scheduleRules.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+ [32m✓[39m tests/transmissionService.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 228[2mms[22m[39m
+ [32m✓[39m tests/rawStorageService.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 183[2mms[22m[39m
+ [32m✓[39m tests/rrule.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+ [32m✓[39m tests/onboarding.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 84[2mms[22m[39m
+ [32m✓[39m tests/clipCutter.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 113[2mms[22m[39m
+ [32m✓[39m tests/imageModels.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 64[2mms[22m[39m
+[90mstderr[2m | tests/analysisEngine.test.ts[2m > [22m[2mtranscripción vacía[2m > [22m[2msin utterances ni texto → no escribe nada ni llama analyze ni alerts
+[22m[39m[AnalysisEngine] segmento rec-1#0: transcripción sin utterances, no se escribe nada
+
+[90mstderr[2m | tests/analysisEngine.test.ts[2m > [22m[2mtranscripción vacía[2m > [22m[2mtexto plano sin utterances (whisper) → alertas igual, sin inserts ni análisis
+[22m[39m[AnalysisEngine] segmento rec-1#0: transcripción sin utterances, no se escribe nada
+
+ [32m✓[39m tests/analysisEngine.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m tests/personIdentity.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+ [32m✓[39m tests/analysisProviders.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 42[2mms[22m[39m
+ [32m✓[39m tests/face-enrollment.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m tests/streamSourceResolver.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m tests/clipRenderQueue.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 38[2mms[22m[39m
+ [32m✓[39m tests/editorial-resolution.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m tests/emailTemplates.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m tests/transmissionStateMachine.test.ts [2m([22m[2m73 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m tests/streamSources.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+[90mstderr[2m | tests/editorial-prompts.test.ts[2m > [22m[2mresolveEditorialPromptContext[2m > [22m[2mstore que falla ⇒ contexto vacío (degradación, no throw)
+[22m[39m[Editorial] No se pudo resolver la linea editorial (se genera sin ella): db caido
+
+[90mstderr[2m | tests/editorial-prompts.test.ts[2m > [22m[2mprogramBelongsToTenant[2m > [22m[2mstore que falla ⇒ false (no se puede probar pertenencia)
+[22m[39m[Editorial] Error validando el programa del request: db caido
+
+ [32m✓[39m tests/editorial-prompts.test.ts [2m([22m[2m24 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m tests/attributedQuotes.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m tests/liveAlerts.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m tests/errors.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m tests/dossier-transmission.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m tests/programService.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m tests/useApi-error.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m tests/transmissionSegments.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m50 passed[39m[22m[90m (50)[39m
+[2m      Tests [22m [1m[32m939 passed[39m[22m[90m (939)[39m
+[2m   Start at [22m 23:03:21
+[2m   Duration [22m 50.89s[2m (transform 7.28s, setup 0ms, collect 88.79s, tests 15.48s, environment 10.04s, prepare 13.98s)[22m
+
