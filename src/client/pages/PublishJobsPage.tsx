@@ -288,7 +288,7 @@ export function PublishJobsPage() {
                                             href={job.platformPostUrl}
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300"
                                             title="Ver en la red"
                                         >
                                             <ExternalLink className="w-4 h-4" />
@@ -309,7 +309,7 @@ export function PublishJobsPage() {
                                         <button
                                             onClick={() => cancel(job.id)}
                                             disabled={acting === job.id}
-                                            className="p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300"
                                             title="Cancelar"
                                         >
                                             <XCircle className="w-4 h-4" />

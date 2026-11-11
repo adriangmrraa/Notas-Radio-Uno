@@ -232,14 +232,14 @@ export function ScheduledJobsPage() {
                                 </div>
                                 <div className="flex items-center gap-1.5">
                                     {job.isRunning && (
-                                        <button onClick={() => stopJob(job.id)} className="p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300" title="Detener">
+                                        <button onClick={() => stopJob(job.id)} className="tap-target p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300" title="Detener">
                                             <Square className="w-4 h-4" />
                                         </button>
                                     )}
-                                    <button onClick={() => toggleJob(job.id)} className="p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300" title={job.isActive ? 'Pausar' : 'Activar'}>
+                                    <button onClick={() => toggleJob(job.id)} className="tap-target p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300" title={job.isActive ? 'Pausar' : 'Activar'}>
                                         {job.isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                                     </button>
-                                    <button onClick={() => deleteJob(job.id)} className="p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300" title="Eliminar">
+                                    <button onClick={() => deleteJob(job.id)} className="tap-target p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300" title="Eliminar">
                                         <Trash2 className="w-4 h-4" />
                                     </button>
                                 </div>

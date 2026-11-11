@@ -236,7 +236,7 @@ function ScheduleDialog({ item, programs, onClose, onSaved }: ScheduleDialogProp
                     <h2 className="text-base font-semibold text-white/85">
                         {isEdit ? 'Editar transmisión programada' : 'Nueva transmisión programada'}
                     </h2>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -555,13 +555,13 @@ export function AgendaPage() {
                             {MONTH_NAMES[cursor.getMonth()]} {cursor.getFullYear()}
                         </h2>
                         <div className="flex items-center gap-1">
-                            <button onClick={() => shiftMonth(-1)} className="p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.05] transition-colors">
+                            <button onClick={() => shiftMonth(-1)} className="tap-target p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.05] transition-colors">
                                 <ChevronLeft className="w-4 h-4" />
                             </button>
                             <button onClick={() => setCursor(new Date())} className="px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors">
                                 Hoy
                             </button>
-                            <button onClick={() => shiftMonth(1)} className="p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.05] transition-colors">
+                            <button onClick={() => shiftMonth(1)} className="tap-target p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.05] transition-colors">
                                 <ChevronRight className="w-4 h-4" />
                             </button>
                         </div>
@@ -632,22 +632,22 @@ export function AgendaPage() {
                                     </div>
                                     <div className="flex items-center gap-1.5 flex-shrink-0">
                                         <button onClick={() => startNow(item)} disabled={busyId === item.id}
-                                            className="p-2 rounded-lg text-white/25 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all duration-300"
                                             title="Disparar ahora">
                                             <Play className="w-4 h-4" />
                                         </button>
                                         <button onClick={() => setDialog({ item })}
-                                            className="p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all duration-300"
                                             title="Editar">
                                             <Pencil className="w-4 h-4" />
                                         </button>
                                         <button onClick={() => toggleActive(item)} disabled={busyId === item.id}
-                                            className="p-2 rounded-lg text-white/25 hover:text-amber-400 hover:bg-amber-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-amber-400 hover:bg-amber-500/5 transition-all duration-300"
                                             title={item.isActive ? 'Desactivar' : 'Activar'}>
                                             <Power className="w-4 h-4" />
                                         </button>
                                         <button onClick={() => remove(item)} disabled={busyId === item.id}
-                                            className="p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300"
+                                            className="tap-target p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300"
                                             title="Eliminar">
                                             <Trash2 className="w-4 h-4" />
                                         </button>

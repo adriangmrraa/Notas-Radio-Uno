@@ -238,7 +238,7 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
                     <h2 className="text-base font-semibold text-white/85">
                         {isEdit ? 'Editar programa' : 'Nuevo programa'}
                     </h2>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -331,7 +331,7 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
                                             <button
                                                 type="button"
                                                 onClick={copyPublicUrl}
-                                                className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
+                                                className="tap-target w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
                                                 title="Copiar URL"
                                             >
                                                 {copied
@@ -343,7 +343,7 @@ function ProgramDialog({ program, onClose, onSaved }: ProgramDialogProps) {
                                                 href={publicUrl}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
+                                                className="tap-target w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
                                                 title="Abrir página pública"
                                             >
                                                 <ExternalLink className="w-3 h-3 text-white/40" />
@@ -526,7 +526,7 @@ function ConductorDialog({ conductor, programId, onClose, onSaved }: ConductorDi
                     <h2 className="text-base font-semibold text-white/85">
                         {isEdit ? (justCreated ? 'Conductor creado' : 'Editar conductor') : 'Nuevo conductor'}
                     </h2>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -1172,7 +1172,7 @@ function GuestDialog({ guest, programId, onClose, onSaved }: GuestDialogProps) {
                     <h2 className="text-base font-semibold text-white/85">
                         {isEdit ? (justCreated ? 'Invitado creado' : 'Editar invitado') : 'Nuevo invitado'}
                     </h2>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -1585,7 +1585,7 @@ export function ProgramsPage() {
                                                     href={`/p/${program.slug}`}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
-                                                    className="w-8 h-8 rounded-lg bg-cyan-400/[0.06] hover:bg-cyan-400/[0.12] flex items-center justify-center transition-colors text-cyan-400/60 hover:text-cyan-400"
+                                                    className="tap-target w-8 h-8 rounded-lg bg-cyan-400/[0.06] hover:bg-cyan-400/[0.12] flex items-center justify-center transition-colors text-cyan-400/60 hover:text-cyan-400"
                                                     title="Ver página pública"
                                                 >
                                                     <ExternalLink className="w-3.5 h-3.5" />
@@ -1593,13 +1593,13 @@ export function ProgramsPage() {
                                             )}
                                             <button
                                                 onClick={() => setProgramDialog({ open: true, program })}
-                                                className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
                                             >
                                                 <Pencil className="w-3.5 h-3.5" />
                                             </button>
                                             <button
                                                 onClick={() => deleteProgram(program.id)}
-                                                className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
+                                                className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
                                             >
                                                 <Trash2 className="w-3.5 h-3.5" />
                                             </button>
@@ -1706,13 +1706,13 @@ export function ProgramsPage() {
                                                             <div className="flex items-center gap-1.5 shrink-0">
                                                                 <button
                                                                     onClick={() => setConductorDialog({ open: true, conductor })}
-                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
                                                                 >
                                                                     <Pencil className="w-3.5 h-3.5" />
                                                                 </button>
                                                                 <button
                                                                     onClick={() => deleteConductor(conductor.id)}
-                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
+                                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
                                                                 >
                                                                     <Trash2 className="w-3.5 h-3.5" />
                                                                 </button>
@@ -1812,13 +1812,13 @@ export function ProgramsPage() {
                                                                 )}
                                                                 <button
                                                                     onClick={() => setGuestDialog({ open: true, guest })}
-                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
                                                                 >
                                                                     <Pencil className="w-3.5 h-3.5" />
                                                                 </button>
                                                                 <button
                                                                     onClick={() => deleteGuest(guest.id)}
-                                                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
+                                                                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-red-500/10 flex items-center justify-center transition-colors text-white/40 hover:text-red-400"
                                                                 >
                                                                     <Trash2 className="w-3.5 h-3.5" />
                                                                 </button>

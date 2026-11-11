@@ -345,7 +345,7 @@ function InstagramCarouselPreview({
           <button
             key={i}
             onClick={() => setActiveSlide(i)}
-            className={`w-7 h-7 rounded-lg text-xs font-bold transition-all duration-150 ${
+            className={`tap-target w-7 h-7 rounded-lg text-xs font-bold transition-all duration-150 ${
               activeSlide === i
                 ? 'bg-pink-400/20 text-pink-400 border border-pink-400/40'
                 : 'bg-white/[0.04] text-white/30 border border-white/[0.08] hover:bg-white/[0.08]'
@@ -1121,7 +1121,7 @@ function ReviewDetailModal({
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
+            className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors"
           >
             <X className="w-4 h-4 text-white/50" />
           </button>
@@ -1861,7 +1861,7 @@ export function ReviewPage() {
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => setDetailId(pub.id)}
-                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
+                    className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors text-white/40 hover:text-white/70"
                     title="Ver detalle"
                   >
                     <Eye className="w-3.5 h-3.5" />
@@ -1870,14 +1870,14 @@ export function ReviewPage() {
                     <>
                       <button
                         onClick={() => handleApproveCard(pub.id)}
-                        className="w-8 h-8 rounded-lg bg-green-500/[0.08] hover:bg-green-500/[0.15] flex items-center justify-center transition-colors text-green-400"
+                        className="tap-target w-8 h-8 rounded-lg bg-green-500/[0.08] hover:bg-green-500/[0.15] flex items-center justify-center transition-colors text-green-400"
                         title="Aprobar"
                       >
                         <Check className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => handleRejectCard(pub.id)}
-                        className="w-8 h-8 rounded-lg bg-red-500/[0.08] hover:bg-red-500/[0.15] flex items-center justify-center transition-colors text-red-400"
+                        className="tap-target w-8 h-8 rounded-lg bg-red-500/[0.08] hover:bg-red-500/[0.15] flex items-center justify-center transition-colors text-red-400"
                         title="Rechazar"
                       >
                         <X className="w-3.5 h-3.5" />

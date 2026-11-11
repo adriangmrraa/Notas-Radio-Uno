@@ -660,7 +660,7 @@ export function ConnectionsPage() {
                                 <h3 className="text-lg font-semibold truncate">{portfolio.name}</h3>
                                 <span className="badge badge-info shrink-0">{portfolio.assets.length} conectado{portfolio.assets.length !== 1 ? 's' : ''}</span>
                             </div>
-                            <button onClick={() => deletePortfolio(portfolio.id)} className="p-2 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300 shrink-0">
+                            <button onClick={() => deletePortfolio(portfolio.id)} className="tap-target p-2 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/5 transition-all duration-300 shrink-0">
                                 <Trash2 className="w-4 h-4" />
                             </button>
                         </div>

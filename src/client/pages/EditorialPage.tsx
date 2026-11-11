@@ -633,7 +633,7 @@ function ProgramOverrideDialog({
                             )}
                         </p>
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors shrink-0">
+                    <button onClick={onClose} className="tap-target w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] flex items-center justify-center transition-colors shrink-0">
                         <X className="w-4 h-4 text-white/50" />
                     </button>
                 </div>
@@ -728,7 +728,7 @@ export function EditorialPage() {
     const overrideByProgram = new Map(overrides.map((o) => [o.programId, o]));
 
     return (
-        <div className="space-y-5">
+        <div className="p-4 md:p-8 space-y-5">
             {error ? (
                 <ErrorState error={error} onRetry={() => void reload()} />
             ) : (
