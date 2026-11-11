@@ -350,6 +350,9 @@ adminRouter.post('/jobs/:id/retry', mutationLimiter, async (req: Request, res: R
       res.status(404).json({ error: 'Job no encontrado', code: 'job_not_found' });
       return;
     }
+    // Capturar ANTES del retry: stores que devuelven la misma fila mutable
+    // (memory store de tests) la mutarían a 'pending' al re-encolar.
+    const previousStatus = existing.status;
     const job = await svc.retryJob(req.params.id, existing.tenantId);
     if (!job) {
       res.status(409).json({
@@ -364,7 +367,7 @@ adminRouter.post('/jobs/:id/retry', mutationLimiter, async (req: Request, res: R
       metadata: {
         tenantId: job.tenantId,
         kind: job.kind,
-        previousStatus: existing.status,
+        previousStatus,
       },
     });
     res.json({ job });
