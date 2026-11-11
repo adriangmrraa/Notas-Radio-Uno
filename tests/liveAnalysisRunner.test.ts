@@ -368,9 +368,10 @@ describe('setSegmentFinalizedHook en streamRecorderService', () => {
         expect(outcome.status).toBe('completed');
         expect(outcome.segmentCount).toBe(2);
         await vi.waitFor(() => expect(calls).toBe(2));
+        // PI-02: el logger estructurado emite UNA línea por evento (sin el
+        // segundo argumento suelto del console.error anterior).
         expect(errors).toHaveBeenCalledWith(
-            expect.stringContaining('[recorder] segmentFinalizedHook falló:'),
-            expect.anything(),
+            expect.stringContaining('[recorder] segmentFinalizedHook falló'),
         );
         errors.mockRestore();
     });
