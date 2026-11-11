@@ -10,6 +10,8 @@
  * Usage: node scripts/responsive-smoke.mjs [--port N] [--headed]
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { chromium } from 'playwright';
 
 const PORT = Number(process.env.SMOKE_PORT || 5199);
@@ -322,8 +324,12 @@ const ROUTES = [
 ];
 
 function startServer() {
-  const bin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const proc = spawn(bin, ['vite', '--port', String(PORT), '--strictPort'], {
+  // Node 22+ refuses to spawn .cmd/.bat without a shell (EINVAL on Windows),
+  // and vite's package exports do not expose ./bin/vite.js, so resolve the
+  // CLI entrypoint from the local node_modules and run it with this node.
+  const viteBin = path.join(process.cwd(), 'node_modules', 'vite', 'bin', 'vite.js');
+  if (!existsSync(viteBin)) throw new Error(`vite CLI not found at ${viteBin}`);
+  const proc = spawn(process.execPath, [viteBin, '--port', String(PORT), '--strictPort'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, BROWSER: 'none' },
   });
@@ -407,7 +413,9 @@ async function main() {
   let exitCode = 0;
   try {
     await waitForServer();
-    const browser = await chromium.launch({ headless: !HEADED });
+    // `channel: 'chromium'` uses the full chromium build (installed here) and
+    // avoids the missing chromium_headless_shell revision of playwright 1.49.
+    const browser = await chromium.launch({ headless: !HEADED, channel: 'chromium' });
     const context = await browser.newContext({
       viewport: { width: 768, height: 1024 },
       deviceScaleFactor: 1,
