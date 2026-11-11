@@ -62,6 +62,7 @@ import {
   purgeExpiredRecordings,
   type PurgeOutcome,
 } from './rawRetentionService.js';
+import { log } from '../lib/logger.js';
 
 /** Intervalo de claim por default: 10 s (env `JOB_QUEUE_WORKER_POLL_MS`). */
 export const POLL_MS = 10_000;
@@ -185,7 +186,7 @@ function emitToTenant(
   try {
     io.to(`tenant:${tenantId}`).emit(event, payload);
   } catch (err) {
-    console.error(`[JobQueueWorker] emit ${event} falló:`, errorMessage(err));
+    log.error(`[JobQueueWorker] emit ${event} falló`, { tenantId, event, err });
   }
 }
 
@@ -292,9 +293,7 @@ export function initJobQueueWorker(
   deps: JobQueueWorkerDeps = {},
 ): void {
   if (workerInterval) {
-    console.warn(
-      '[JobQueueWorker] Ya inicializado — se ignora la segunda llamada',
-    );
+    log.warn('[JobQueueWorker] Ya inicializado — se ignora la segunda llamada');
     return;
   }
   const worker = createJobQueueWorker(deps, io);
@@ -303,10 +302,10 @@ export function initJobQueueWorker(
     // Fire-and-forget por tick: NO se espera — el próximo tick claimea
     // aunque un handler siga corriendo (concurrencia intencional).
     worker.tick().catch((err) => {
-      console.error('[JobQueueWorker] Error en el tick:', err);
+      log.error('[JobQueueWorker] Error en el tick', { err });
     });
   }, pollMs);
-  console.log(`[JobQueueWorker] Inicializado — claim cada ${pollMs} ms`);
+  log.info(`[JobQueueWorker] Inicializado — claim cada ${pollMs} ms`, { pollMs });
 }
 
 export function stopJobQueueWorker(): void {

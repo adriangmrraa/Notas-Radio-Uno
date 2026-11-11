@@ -23,6 +23,7 @@ import { Router, type Request, type Response } from 'express';
 
 import { requireAuth } from '../middleware/auth.js';
 import { AppError } from '../lib/errors.js';
+import { log } from '../lib/logger.js';
 import {
   createJobQueueService,
   isJobQueueKind,
@@ -52,7 +53,8 @@ const handleError = (res: Response, error: unknown, fallback: string): void => {
     });
     return;
   }
-  console.error(`[JobQueue] ${fallback}:`, error);
+  // El requestId lo inyecta el logger desde el contexto (sigue vivo en el catch).
+  log.error(`[JobQueue] ${fallback}`, { err: error });
   res.status(500).json({ error: fallback });
 };
 

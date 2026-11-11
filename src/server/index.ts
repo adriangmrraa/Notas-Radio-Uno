@@ -36,6 +36,7 @@ import { initDossierScheduler } from "./services/dossierService.js";
 import { authRouter } from "./routes/auth.js";
 import { optionalAuth, viewerWriteGuard } from "./middleware/authz.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
+import { log } from "./lib/logger.js";
 import { billingRouter } from "./routes/billing.js";
 import { teamRouter } from "./routes/team.js";
 import { adminRouter } from "./routes/admin.js";
@@ -98,22 +99,22 @@ try {
     if (path.extname(file) === ".mp3") {
       const filePath = path.join(OUTPUT_DIR, file);
       fs.unlinkSync(filePath);
-      console.log("Archivo eliminado:", filePath);
+      log.info("Archivo eliminado", { filePath });
     }
   }
 } catch (err) {
-  console.error("Error al leer el directorio de output:", err);
+  log.error("Error al leer el directorio de output", { err });
 }
 
 // Reset transcription file
 if (fs.existsSync(TRANSCRIPTION_FILE)) {
   fs.unlinkSync(TRANSCRIPTION_FILE);
-  console.log("Archivo de transcripciones eliminado.");
+  log.info("Archivo de transcripciones eliminado.");
 }
 
 const initialData = { transcriptions: [] as unknown[] };
 fs.writeFileSync(TRANSCRIPTION_FILE, JSON.stringify(initialData, null, 4), "utf-8");
-console.log("Archivo JSON de transcripciones inicializado.");
+log.info("Archivo JSON de transcripciones inicializado.");
 
 // ---------------------------------------------------------------------------
 // Express + Socket.IO setup
@@ -172,7 +173,7 @@ function buildAllowedOrigins(): string[] {
   if (configured.length > 0) return configured;
 
   if (process.env.NODE_ENV === "production") {
-    console.warn("[CORS] FRONTEND_URL no configurada: se rechazan todos los orígenes cruzados.");
+    log.warn("[CORS] FRONTEND_URL no configurada: se rechazan todos los orígenes cruzados.");
     return [];
   }
 
@@ -191,7 +192,7 @@ app.use(cors({
     // Sin Origin = requests server-to-server, curl o mismo origen.
     if (!origin) return callback(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    console.warn(`[CORS] Origen rechazado: ${origin}`);
+    log.warn("[CORS] Origen rechazado", { origin });
     return callback(null, false);
   },
   credentials: true,
@@ -265,7 +266,7 @@ app.get("/api/get-transcriptions", (_req, res) => {
     const transcriptionData = fs.readFileSync(TRANSCRIPTION_FILE, "utf-8");
     res.json(JSON.parse(transcriptionData));
   } catch (error) {
-    console.error("Error al leer el archivo de transcripciones:", error);
+    log.error("Error al leer el archivo de transcripciones", { err: error });
     res.status(500).json({ transcriptions: [] });
   }
 });
@@ -357,12 +358,12 @@ registerClipRoutes(app);
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 async function gracefulShutdown(): Promise<void> {
-  console.log("\n[Server] Cerrando servidor...");
+  log.info("[Server] Cerrando servidor...");
 
   await disconnectDb();
 
   httpServer.close(() => {
-    console.log("[Server] Servidor cerrado.");
+    log.info("[Server] Servidor cerrado.");
     process.exit(0);
   });
 
@@ -393,7 +394,7 @@ app.get("*", (_req, res) => {
   try {
     await runMigrations();
   } catch (err) {
-    console.error("[Server] Error running migrations:", err);
+    log.error("[Server] Error running migrations", { err });
     process.exit(1);
   }
 
@@ -403,7 +404,7 @@ app.get("*", (_req, res) => {
     await seedPlans();
     await seedAddons();
   } catch (err) {
-    console.error("[Seed] No se pudo ejecutar el seed de billing:", err);
+    log.error("[Seed] No se pudo ejecutar el seed de billing", { err });
   }
 
   // Register all fonts from /fonts directory
@@ -411,13 +412,13 @@ app.get("*", (_req, res) => {
 
   // Diarization provider status
   if (process.env.ASSEMBLYAI_API_KEY) {
-    console.log('[Diarization] AssemblyAI configured — speaker diarization enabled');
+    log.info('[Diarization] AssemblyAI configured — speaker diarization enabled');
   } else {
-    console.log('[Diarization] AssemblyAI not configured — using Whisper (no diarization)');
+    log.info('[Diarization] AssemblyAI not configured — using Whisper (no diarization)');
   }
 
   httpServer.listen(PORT, () => {
-    console.log(`[Server] Servidor corriendo en http://localhost:${PORT}`);
+    log.info(`[Server] Servidor corriendo en http://localhost:${PORT}`, { port: PORT });
   });
 })();
 

@@ -79,6 +79,7 @@ import type {
   TransmissionStatus,
 } from '../db/schema/enums.js';
 import { nextOccurrence } from '../lib/rrule.js';
+import { log } from '../lib/logger.js';
 import {
   detectLiveStream,
   type LiveDetectionResult,
@@ -512,10 +513,7 @@ function safeNextOccurrence(
   try {
     return nextOccurrence(rrule, from, timezone);
   } catch (err) {
-    console.error(
-      `[TransmissionScheduler] RRULE inválido (${rrule}, tz ${timezone}):`,
-      errorMessage(err),
-    );
+    log.error('[TransmissionScheduler] RRULE inválido', { rrule, timezone, err });
     return null;
   }
 }
@@ -668,10 +666,11 @@ async function attemptRun(
         reason: 'start_failed',
       })
       .catch((err) =>
-        console.error(
-          `[TransmissionScheduler] releaseQuota ${run.id} falló:`,
-          errorMessage(err),
-        ),
+        log.error('[TransmissionScheduler] releaseQuota falló', {
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          err,
+        }),
       );
     return 0;
   }
@@ -707,10 +706,11 @@ async function attemptRun(
   } catch (err) {
     // Un detector que lanza equivale a "no encontrado": se reintenta dentro
     // de la ventana igual que un found:false.
-    console.error(
-      `[TransmissionScheduler] detectLive falló para ${run.id}:`,
-      errorMessage(err),
-    );
+    log.error('[TransmissionScheduler] detectLive falló', {
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      err,
+    });
   }
 
   if (result?.found) {
@@ -723,9 +723,11 @@ async function attemptRun(
     if (!transitioned.ok) {
       // La FSM rechazó (p.ej. la corrida cambió de estado entre el scan y
       // el intento): no se arranca la grabación sobre un estado inválido.
-      console.error(
-        `[TransmissionScheduler] ${run.id}: no se pudo pasar a live: ${transitioned.reason}`,
-      );
+      log.error('[TransmissionScheduler] no se pudo pasar a live', {
+        tenantId: run.tenantId,
+        transmissionId: run.id,
+        reason: transitioned.reason,
+      });
       return 0;
     }
     lastAttemptAt.delete(run.id);
@@ -777,16 +779,19 @@ function runRecordingInBackground(
               : (outcome.errorMessage ?? 'La grabación terminó con error'),
         })
         .catch((err: unknown) => {
-          console.error(
-            `[TransmissionScheduler] transición final ${run.id} falló:`,
-            errorMessage(err),
-          );
+          log.error('[TransmissionScheduler] transición final falló', {
+            tenantId: run.tenantId,
+            transmissionId: run.id,
+            err,
+          });
           return { ok: false as const, reason: errorMessage(err) };
         });
       if (res && !res.ok) {
-        console.error(
-          `[TransmissionScheduler] ${run.id}: transición final rechazada: ${res.reason}`,
-        );
+        log.error('[TransmissionScheduler] transición final rechazada', {
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          reason: res.reason,
+        });
       }
     } catch (err) {
       await deps
@@ -799,10 +804,11 @@ function runRecordingInBackground(
         .catch(() => {});
     }
   })().catch((err) =>
-    console.error(
-      `[TransmissionScheduler] recorder ${run.id} falló:`,
-      errorMessage(err),
-    ),
+    log.error('[TransmissionScheduler] recorder falló', {
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      err,
+    }),
   );
 }
 
@@ -852,10 +858,11 @@ export async function reconcileOrphanedRuns(
         });
       }
     } catch (err) {
-      console.error(
-        `[TransmissionScheduler] reconcile ${run.id} falló:`,
-        errorMessage(err),
-      );
+      log.error('[TransmissionScheduler] reconcile falló', {
+        tenantId: run.tenantId,
+        transmissionId: run.id,
+        err,
+      });
     }
   }
 }
@@ -891,10 +898,11 @@ export async function checkAndRunScheduledTransmissions(
         const run = await dispatchScheduled(scheduled, now, deps);
         if (run) fresh.push(run);
       } catch (err) {
-        console.error(
-          `[TransmissionScheduler] dispatch de ${scheduled.id} falló:`,
-          errorMessage(err),
-        );
+        log.error('[TransmissionScheduler] dispatch falló', {
+          tenantId: scheduled.tenantId,
+          scheduledTransmissionId: scheduled.id,
+          err,
+        });
       }
     }
 
@@ -915,10 +923,11 @@ export async function checkAndRunScheduledTransmissions(
       try {
         inFlight += await attemptRun(run, inFlight, resolved, deps, now);
       } catch (err) {
-        console.error(
-          `[TransmissionScheduler] intento de ${run.id} falló:`,
-          errorMessage(err),
-        );
+        log.error('[TransmissionScheduler] intento falló', {
+          tenantId: run.tenantId,
+          transmissionId: run.id,
+          err,
+        });
       }
     }
 
@@ -941,17 +950,16 @@ export async function checkAndRunScheduledTransmissions(
       try {
         const outcome = await deps.purgeRetention(now);
         if (outcome.purged > 0 || outcome.errors.length > 0) {
-          console.log(
-            `[TransmissionScheduler] purga de retención: ${outcome.purged}/${outcome.scanned} grabaciones, ` +
-              `${outcome.bytesFreed} bytes liberados, ${outcome.skipped} salteadas, ` +
-              `${outcome.errors.length} errores`,
-          );
+          log.info('[TransmissionScheduler] purga de retención', {
+            purged: outcome.purged,
+            scanned: outcome.scanned,
+            bytesFreed: outcome.bytesFreed,
+            skipped: outcome.skipped,
+            errors: outcome.errors.length,
+          });
         }
       } catch (err) {
-        console.error(
-          '[TransmissionScheduler] purga de retención falló:',
-          errorMessage(err),
-        );
+        log.error('[TransmissionScheduler] purga de retención falló', { err });
       }
     }
   } finally {
@@ -979,19 +987,16 @@ export function initTransmissionScheduler(
   if (schedulerInterval) clearInterval(schedulerInterval);
 
   reconcileOrphanedRuns(opts).catch((err) => {
-    console.error(
-      '[TransmissionScheduler] Error en reconcileOrphanedRuns (startup):',
-      err,
-    );
+    log.error('[TransmissionScheduler] Error en reconcileOrphanedRuns (startup)', { err });
   });
 
   schedulerInterval = setInterval(() => {
     checkAndRunScheduledTransmissions(storedOpts).catch((err) => {
-      console.error('[TransmissionScheduler] Error en el loop:', err);
+      log.error('[TransmissionScheduler] Error en el loop', { err });
     });
   }, TICK_MS);
 
-  console.log('[TransmissionScheduler] Inicializado — chequeo cada 60s');
+  log.info('[TransmissionScheduler] Inicializado — chequeo cada 60s', { tickMs: TICK_MS });
 }
 
 export function stopTransmissionScheduler(): void {

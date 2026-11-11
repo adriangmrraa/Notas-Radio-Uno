@@ -33,6 +33,7 @@ import {
   type JobQueueStore,
 } from '../services/jobQueueService.js';
 import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
+import { log } from '../lib/logger.js';
 
 export const adminRouter = Router();
 
@@ -71,7 +72,8 @@ function fail(res: Response, err: unknown, context: string): void {
     res.status(err.statusCode).json({ error: err.message, code: err.code });
     return;
   }
-  console.error(`[Admin] ${context}:`, err);
+  // El requestId lo inyecta el logger desde el contexto (sigue vivo en el catch).
+  log.error(`[Admin] ${context}`, { err });
   res.status(500).json({ error: 'Error interno del servidor' });
 }
 

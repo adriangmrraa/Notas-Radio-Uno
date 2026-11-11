@@ -57,6 +57,7 @@ import {
   type ResolvedStream,
 } from './streamSourceResolver.js';
 import { canTransition } from '../lib/transmissionStateMachine.js';
+import { log } from '../lib/logger.js';
 import {
   transitionTransmission,
   type TransitionOptions,
@@ -127,10 +128,22 @@ function fireSegmentFinalized(info: SegmentFinalizedInfo): void {
   if (!segmentFinalizedHook) return;
   try {
     Promise.resolve(segmentFinalizedHook(info)).catch((err) =>
-      console.error('[recorder] segmentFinalizedHook falló:', errorMessage(err)),
+      log.error('[recorder] segmentFinalizedHook falló', {
+        tenantId: info.tenantId,
+        transmissionId: info.transmissionId,
+        recordingId: info.recordingId,
+        sequence: info.sequence,
+        err,
+      }),
     );
   } catch (err) {
-    console.error('[recorder] segmentFinalizedHook falló:', errorMessage(err));
+    log.error('[recorder] segmentFinalizedHook falló', {
+      tenantId: info.tenantId,
+      transmissionId: info.transmissionId,
+      recordingId: info.recordingId,
+      sequence: info.sequence,
+      err,
+    });
   }
 }
 
@@ -542,6 +555,10 @@ export async function startRecording(
   await fs.mkdir(segDir, { recursive: true });
   const outputPattern = path.join(segDir, 'seg-%Y%m%d-%H%M%S.mp4');
 
+  // PI-02: logger derivado con trazabilidad — TODA línea del recorder lleva
+  // tenantId/transmissionId/recordingId sin repetir los campos por call-site.
+  const rlog = log.child({ tenantId, transmissionId, recordingId });
+
   // ── Estado interno ──
   let proc: RecorderProcess | null = null;
   let procSettled = true;
@@ -614,7 +631,12 @@ export async function startRecording(
             prevPending.sequence,
             Math.max(prevPending.startMs, startMs),
           )
-          .catch((err) => console.error('[recorder] setSegmentEndMs falló:', errorMessage(err)));
+          .catch((err) =>
+            rlog.error('[recorder] setSegmentEndMs falló', {
+              sequence: prevPending.sequence,
+              err,
+            }),
+          );
         prevPending.closed = true;
         // PE-04: el segmento cerró → análisis en vivo (fire-and-forget).
         fireSegmentFinalized({
@@ -636,7 +658,13 @@ export async function startRecording(
           fileRef: name,
           bytes: stat.size,
         })
-        .catch((err) => console.error('[recorder] insertSegment falló:', errorMessage(err)));
+        .catch((err) =>
+          rlog.error('[recorder] insertSegment falló', {
+            sequence: seq,
+            fileName: name,
+            err,
+          }),
+        );
     }
   }
 
@@ -685,8 +713,9 @@ export async function startRecording(
     // Stream caído: reintentar re-resolviendo la URL, mismo recordingId.
     if (shouldRetryFfmpeg({ exitCode: code, stopRequested, attempt, maxRetries })) {
       attempt += 1;
-      console.warn(
+      rlog.warn(
         `[recorder] ffmpeg cayó (intento ${attempt}/${maxRetries}); re-resolviendo en ${backoffMs(attempt)} ms…`,
+        { attempt, maxRetries },
       );
       await sleep(backoffMs(attempt));
       if (finished || stopRequested) {
@@ -782,7 +811,13 @@ export async function startRecording(
         totalBytes,
         endedAt,
       })
-      .catch((err) => console.error('[recorder] finalizeRecording falló:', errorMessage(err)));
+      .catch((err) =>
+        rlog.error('[recorder] finalizeRecording falló', {
+          status,
+          totalBytes,
+          err,
+        }),
+      );
 
     // La transición final (live → processing con crudo_ref, o → error) va
     // por la FSM y emite los eventos tras el commit. Si es rechazada (p.ej.
@@ -806,14 +841,13 @@ export async function startRecording(
     )
       .then((res) => {
         if (!res.ok) {
-          console.error(
-            `[recorder] transición final de ${transmissionId} rechazada: ${res.reason}`,
-          );
+          rlog.error('[recorder] transición final rechazada', {
+            to: status === 'completed' ? 'processing' : 'error',
+            reason: res.reason,
+          });
         }
       })
-      .catch((err) =>
-        console.error('[recorder] transitionRun falló:', errorMessage(err)),
-      );
+      .catch((err) => rlog.error('[recorder] transitionRun falló', { err }));
 
     finishResolve({
       status,
