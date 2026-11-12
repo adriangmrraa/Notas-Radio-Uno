@@ -76,6 +76,37 @@ export function createMemoryRecorderStore(seed: {
             return { id };
         },
 
+        async resumeRecording(tenantId, transmissionId, recordingId) {
+            const rec = state.recordings.get(`${tenantId}/${recordingId}`);
+            // Mismos filtros que drizzle: tenant + transmisión dueña.
+            if (!rec || rec.transmissionId !== transmissionId) return null;
+            rec.status = 'recording';
+            rec.endedAt = null;
+            return {
+                id: rec.id,
+                transmissionId: rec.transmissionId,
+                storagePrefix: rec.storagePrefix,
+                startedAt: rec.startedAt,
+            };
+        },
+
+        async listSegments(tenantId, recordingId) {
+            return state.segments
+                .filter(
+                    (s) =>
+                        s.tenantId === tenantId &&
+                        s.recordingId === recordingId,
+                )
+                .sort((a, b) => a.sequence - b.sequence)
+                .map((s) => ({
+                    sequence: s.sequence,
+                    fileRef: s.fileRef,
+                    startMs: s.startMs,
+                    endMs: s.endMs,
+                    bytes: s.bytes,
+                }));
+        },
+
         async updateTransmission(tenantId, transmissionId, patch) {
             const key = `${tenantId}/${transmissionId}`;
             const tx = state.transmissions.get(key);

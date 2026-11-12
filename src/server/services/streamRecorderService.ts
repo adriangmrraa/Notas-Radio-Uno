@@ -19,12 +19,33 @@
  *   - `probeDuration`   — ffprobe para la duración del último segmento
  *     (best-effort; si no hay ffprobe se aproxima con wall-clock).
  *
- * Stream caído (PI-04 parcial): si ffmpeg sale con error antes de llegar al
- * límite de duración, se reintenta re-resolviendo la URL (hasta `maxRetries`,
+ * Stream caído (PI-04): si ffmpeg sale con error antes de llegar al límite
+ * de duración, se reintenta re-resolviendo la URL (hasta `maxRetries`,
  * backoff exponencial) DENTRO de la misma `stream_recording`: el
  * `recordingId` y el `storagePrefix` se mantienen, `sequence` sigue
  * incrementando y los huecos quedan reflejados en los offsets. Los segmentos
  * ya escritos NO se pierden.
+ *
+ * Stall watchdog (PI-04): un corte de red upstream deja a ffmpeg COLGADO —
+ * nunca emite `close`, así que el retry por salida no disparaba. El watcher
+ * que pollea segmentos también mira progreso: si el proceso no produce NI
+ * crecimiento de archivo NI output en stderr por `stallTimeoutMs`, se lo
+ * mata (SIGTERM → SIGKILL → salida forzada si tampoco reporta muerte) y el
+ * intento cuenta como fallido → entra al mismo camino de reintento.
+ * "Progreso" = cualquiera de las dos señales: con `-loglevel warning` un
+ * ffmpeg sano puede estar callado minutos, así que exigir output solo
+ * generaría kills falsos.
+ *
+ * Reanudación post-restart (PI-04): `opts.resume` NO crea fila nueva — la
+ * UNIQUE de `stream_recordings.transmission_id` fuerza la reanudación sobre
+ * la MISMA grabación (y además es lo correcto: la ancla `started_at` original
+ * sigue gobernando los offsets, el corte queda como hueco entre el `end_ms`
+ * del último segmento viejo y el `start_ms` del primero nuevo). El sweeper
+ * del scheduler marca la grabación `interrupted`, cierra los segmentos
+ * abiertos y llama a `startRecording({ resume })`: la fila vuelve a
+ * `'recording'` (`resumeRecording`), los segmentos previos se seed-ean en
+ * `segmentBytes`/`pendingSegments` para que el watcher no los re-inserte, y
+ * `sequence` continúa desde `nextSequence`.
  *
  * Anclaje temporal de segmentos: el nombre `seg-%Y%m%d-%H%M%S.mp4` (strftime)
  * codifica el wall-clock real de apertura — es el ancla preferida; si no se
@@ -44,7 +65,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 
 import { db, type Database } from '../db/index.js';
 import { recordingSegments, streamRecordings } from '../db/schema/recordings.js';
@@ -58,6 +79,7 @@ import {
 } from './streamSourceResolver.js';
 import { canTransition } from '../lib/transmissionStateMachine.js';
 import { log } from '../lib/logger.js';
+import { notify } from './notificationService.js';
 import {
   transitionTransmission,
   type TransitionOptions,
@@ -76,6 +98,25 @@ export interface StartRecordingOptions {
   segmentSeconds?: number;
   /** Prefijo de storage. Default `${tenantId}/${transmissionId}`. */
   storagePrefix?: string;
+  /**
+   * PI-04 — reanudar una grabación `interrupted`: misma fila, misma ancla,
+   * mismo prefijo (el scheduler pasa `storagePrefix` explícito). Sin esto la
+   * llamada crea una `stream_recordings` nueva.
+   */
+  resume?: ResumeRecordingOptions;
+}
+
+/** Parámetros de reanudación sobre la MISMA `stream_recordings` (PI-04). */
+export interface ResumeRecordingOptions {
+  /** Id de la grabación interrumpida a reanudar. */
+  recordingId: string;
+  /**
+   * `started_at` ORIGINAL de la grabación — los offsets `start_ms`/`end_ms`
+   * de segmentos (viejos y nuevos) se miden contra esta ancla.
+   */
+  startedAt: Date;
+  /** `max(sequence) + 1` de `recording_segments` — la secuencia continúa. */
+  nextSequence: number;
 }
 
 export interface RecordingHandle {
@@ -181,6 +222,23 @@ export interface RecorderTransmissionPatch {
   errorMessage?: string | null;
 }
 
+/** Fila mínima de `stream_recordings` que devuelve `resumeRecording`. */
+export interface RecorderRecordingRow {
+  id: string;
+  transmissionId: string;
+  storagePrefix: string;
+  startedAt: Date;
+}
+
+/** Fila mínima de `recording_segments` que el recorder consume. */
+export interface RecorderSegmentRow {
+  sequence: number;
+  fileRef: string;
+  startMs: number;
+  endMs: number | null;
+  bytes: number;
+}
+
 export interface RecorderStore {
   getTransmission(
     tenantId: string,
@@ -192,6 +250,25 @@ export interface RecorderStore {
     storagePrefix: string;
     startedAt: Date;
   }): Promise<{ id: string }>;
+  /**
+   * Reanuda una grabación `interrupted` (PI-04): vuelve a `'recording'` y
+   * limpia `ended_at`. El UPDATE filtra por tenant Y transmisión: devuelve
+   * la fila reanudada o `null` si no existe / no es de esa corrida — un
+   * resume con referencia errada no puede tocar la grabación de otra.
+   */
+  resumeRecording(
+    tenantId: string,
+    transmissionId: string,
+    recordingId: string,
+  ): Promise<RecorderRecordingRow | null>;
+  /**
+   * Todos los segmentos de la grabación ordenados por `sequence` — el seed
+   * de la reanudación (los archivos ya conocidos no se re-insertan).
+   */
+  listSegments(
+    tenantId: string,
+    recordingId: string,
+  ): Promise<RecorderSegmentRow[]>;
   updateTransmission(
     tenantId: string,
     transmissionId: string,
@@ -253,6 +330,45 @@ export function createDrizzleRecorderStore(executor: Database = db): RecorderSto
         })
         .returning({ id: streamRecordings.id });
       return row;
+    },
+
+    async resumeRecording(tenantId, transmissionId, recordingId) {
+      const [row] = await executor
+        .update(streamRecordings)
+        .set({ status: 'recording', endedAt: null })
+        .where(
+          and(
+            eq(streamRecordings.id, recordingId),
+            eq(streamRecordings.tenantId, tenantId),
+            eq(streamRecordings.transmissionId, transmissionId),
+          ),
+        )
+        .returning({
+          id: streamRecordings.id,
+          transmissionId: streamRecordings.transmissionId,
+          storagePrefix: streamRecordings.storagePrefix,
+          startedAt: streamRecordings.startedAt,
+        });
+      return row ?? null;
+    },
+
+    async listSegments(tenantId, recordingId) {
+      return executor
+        .select({
+          sequence: recordingSegments.sequence,
+          fileRef: recordingSegments.fileRef,
+          startMs: recordingSegments.startMs,
+          endMs: recordingSegments.endMs,
+          bytes: recordingSegments.bytes,
+        })
+        .from(recordingSegments)
+        .where(
+          and(
+            eq(recordingSegments.recordingId, recordingId),
+            eq(recordingSegments.tenantId, tenantId),
+          ),
+        )
+        .orderBy(asc(recordingSegments.sequence));
     },
 
     async updateTransmission(tenantId, transmissionId, patch) {
@@ -327,6 +443,18 @@ export interface RecorderDeps {
   /** Reintentos ante stream caído (re-resolviendo la URL). Default 3. */
   maxRetries?: number;
   backoffMs?: (attempt: number) => number;
+  /**
+   * Watchdog de estancamiento (PI-04): si el proceso no muestra progreso
+   * (ni crecen los segmentos ni hay output en stderr) por este tiempo, se
+   * lo mata y el intento cuenta como fallido. Default 30 s; <= 0 lo apaga.
+   */
+  stallTimeoutMs?: number;
+  /**
+   * Notificación al tenant al terminar en error (PI-04 — fanout de
+   * `notificationService.notify`, mismo canal que usan las alertas PE-07).
+   * Fire-and-forget: nunca rompe el finalize.
+   */
+  notifyFn?: typeof notify;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   /**
@@ -471,6 +599,8 @@ export async function startRecording(
   const stopGraceMs = deps.stopGraceMs ?? 10_000;
   const maxRetries = deps.maxRetries ?? 3;
   const backoffMs = deps.backoffMs ?? defaultBackoffMs;
+  const stallTimeoutMs = deps.stallTimeoutMs ?? 30_000;
+  const notifyFn = deps.notifyFn ?? notify;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? (() => Date.now());
   // Los cambios de estado de la corrida van por la FSM (PD-04): el reloj
@@ -481,7 +611,6 @@ export async function startRecording(
       transitionTransmission(o, { now: () => new Date(now()) }));
 
   const { tenantId, transmissionId } = opts;
-  const storagePrefix = opts.storagePrefix ?? `${tenantId}/${transmissionId}`;
   const segmentSeconds = opts.segmentSeconds ?? 60;
 
   const tx = await store.getTransmission(tenantId, transmissionId);
@@ -518,20 +647,50 @@ export async function startRecording(
   }
 
   // 2. Fila stream_recordings + corrida `live` (startedAt = ancla wall-clock).
-  const startedAtMs = now();
-  const { id: recordingId } = await store.createRecording({
-    tenantId,
-    transmissionId,
-    storagePrefix,
-    startedAt: new Date(startedAtMs),
-  });
+  //    PI-04: con `opts.resume` NO hay fila nueva — se reanuda la misma
+  //    grabación conservando la ancla original (los offsets de los segmentos
+  //    previos siguen valiendo y el corte queda como hueco entre end_ms y el
+  //    start_ms del próximo segmento).
+  const resuming = opts.resume ?? null;
+  let recordingId: string;
+  let storagePrefix = opts.storagePrefix ?? `${tenantId}/${transmissionId}`;
+  let startedAtMs: number;
+  if (resuming) {
+    // interrupted → recording de nuevo (ended_at a NULL): la captura sigue.
+    // El UPDATE filtra por tenant+transmisión y devuelve la fila — una
+    // referencia errada falla acá, ANTES de spawnear o insertar segmentos.
+    const row = await store.resumeRecording(tenantId, transmissionId, resuming.recordingId);
+    if (!row) {
+      throw new Error(
+        `La grabación ${resuming.recordingId} no existe para reanudar ` +
+          `(transmisión ${transmissionId}, tenant ${tenantId})`,
+      );
+    }
+    recordingId = row.id;
+    // La fila es autoritativa: prefijo y ancla de la captura ORIGINAL.
+    storagePrefix = row.storagePrefix;
+    startedAtMs = row.startedAt.getTime();
+  } else {
+    startedAtMs = now();
+    recordingId = (
+      await store.createRecording({
+        tenantId,
+        transmissionId,
+        storagePrefix,
+        startedAt: new Date(startedAtMs),
+      })
+    ).id;
+  }
   if (tx.status === 'live') {
     // El scheduler ya la pasó a live al detectar: sólo se re-anclan los
-    // campos al instante real de captura (parche sin cambio de estado).
-    await store.updateTransmission(tenantId, transmissionId, {
-      startedAt: new Date(startedAtMs),
+    // campos al instante real de captura (parche sin cambio de estado). En
+    // reanudación la ancla NO se toca: `started_at` sigue siendo el de la
+    // captura original (los offsets de segmentos dependen de él).
+    const patch: RecorderTransmissionPatch = {
       resolvedStreamUrl: resolved.url,
-    });
+    };
+    if (!resuming) patch.startedAt = new Date(startedAtMs);
+    await store.updateTransmission(tenantId, transmissionId, patch);
   } else {
     // Camino directo (p.ej. disparo manual sin scheduler): la transición a
     // live va por la FSM y lleva los mismos campos en el mismo paso.
@@ -577,6 +736,30 @@ export async function startRecording(
     closed: boolean;
   }> = [];
 
+  // Seed de reanudación (PI-04): los segmentos ya persistidos se cargan como
+  // "conocidos" para que el watcher no los re-inserte (los archivos están en
+  // el mismo segDir) y `sequence` continúa donde quedó. Un archivo en disco
+  // sin fila (escrito y no comiteado antes del crash) SÍ se inserta de nuevo
+  // con su ancla strftime — recuperación honesta del último tramo.
+  if (resuming) {
+    const prior = await store
+      .listSegments(tenantId, recordingId)
+      .catch(() => [] as RecorderSegmentRow[]);
+    for (const s of prior) {
+      segmentBytes.set(s.fileRef, s.bytes);
+      pendingSegments.push({
+        sequence: s.sequence,
+        fileName: s.fileRef,
+        startMs: s.startMs,
+        closed: s.endMs !== null,
+      });
+    }
+    sequence = Math.max(
+      resuming.nextSequence,
+      prior.reduce((m, s) => Math.max(m, s.sequence + 1), 0),
+    );
+  }
+
   let finishResolve!: (o: RecordingOutcome) => void;
   const done = new Promise<RecordingOutcome>((r) => {
     finishResolve = r;
@@ -590,12 +773,17 @@ export async function startRecording(
       .catch(() => {});
   }, heartbeatMs);
 
-  const durationCapMs = (() => {
+  // El cap de duración se ancla en el started_at ORIGINAL también en
+  // reanudación: una corrida de 60 min retomada al minuto 55 tiene 5 min de
+  // margen, no 60. Si ya venció, el stop cae inmediatamente.
+  const capEndsAtMs = (() => {
     const minutes = opts.maxDurationMinutes ?? tx.durationMinutes;
-    return minutes && minutes > 0 ? minutes * 60_000 : null;
+    return minutes && minutes > 0 ? startedAtMs + minutes * 60_000 : null;
   })();
   const capTimer =
-    durationCapMs !== null ? setTimeout(() => void requestStop(), durationCapMs) : null;
+    capEndsAtMs !== null
+      ? setTimeout(() => void requestStop(), Math.max(0, capEndsAtMs - now()))
+      : null;
 
   /** Inserta filas para los .mp4 nuevos; refresca bytes de los ya vistos. */
   async function pollSegments(): Promise<void> {
@@ -612,18 +800,24 @@ export async function startRecording(
       if (!stat) continue;
       const prev = segmentBytes.get(name);
       if (prev !== undefined) {
-        if (stat.size !== prev) segmentBytes.set(name, stat.size);
+        if (stat.size !== prev) {
+          segmentBytes.set(name, stat.size);
+          lastProgressAt = now(); // el segmento abierto sigue creciendo
+        }
         continue;
       }
       segmentBytes.set(name, stat.size);
+      lastProgressAt = now(); // segmento nuevo = progreso
       const startMs = computeSegmentStartMs({
         fileName: name,
         mtimeMs: stat.mtimeMs,
         startedAtMs,
       });
-      // El segmento anterior deja de escribir: endMs = inicio del nuevo.
+      // El segmento anterior deja de escribir: endMs = inicio del nuevo. El
+      // guard `!closed` importa en reanudación (PI-04): los segmentos
+      // seed-eados ya vienen cerrados y no hay que re-cerrarlos.
       const prevPending = pendingSegments[pendingSegments.length - 1];
-      if (prevPending) {
+      if (prevPending && !prevPending.closed) {
         await store
           .setSegmentEndMs(
             tenantId,
@@ -668,7 +862,64 @@ export async function startRecording(
     }
   }
 
-  const watcher = setInterval(() => void pollSegments(), pollMs);
+  /**
+   * Último instante con progreso observable del proceso (epoch ms, reloj
+   * inyectado): crece un segmento, aparece uno nuevo o hay output en stderr.
+   * Se resetea en cada spawnAttempt — cada intento arranca "vivo".
+   */
+  let lastProgressAt = now();
+  /**
+   * Latch del watchdog por intento (PI-04): una vez detectado el stall se
+   * dispara la escalera SIGTERM→SIGKILL→salida forzada UNA vez. Sin latch,
+   * cada tick del watcher re-dispara kills y acumula timers hasta que el
+   * proceso reporte muerte.
+   */
+  let stallLatched = false;
+
+  const watcher = setInterval(() => {
+    void pollSegments();
+    checkStall();
+  }, pollMs);
+
+  /**
+   * Watchdog de estancamiento (PI-04): un corte de red upstream deja a
+   * ffmpeg colgado SIN salir — el retry por `close` nunca disparaba. Si no
+   * hay progreso por `stallTimeoutMs` se mata el proceso y el intento cuenta
+   * como fallido: SIGTERM (deja cerrar el segmento abierto) → SIGKILL →
+   * salida forzada si ni así reportó muerte (garantiza el reintento).
+   */
+  function checkStall(): void {
+    if (finished || stopRequested || !proc || procSettled || stallLatched) return;
+    if (stallTimeoutMs <= 0) return;
+    if (now() - lastProgressAt < stallTimeoutMs) return;
+    stallLatched = true;
+    const p = proc;
+    lastError = `ffmpeg estancado: sin progreso en ${stallTimeoutMs} ms (el segmento abierto no crece y no hay output en stderr)`;
+    rlog.warn(
+      '[recorder] ffmpeg estancado — matando el proceso para reintentar',
+      { attempt, maxRetries, stallTimeoutMs },
+    );
+    try {
+      p.kill('SIGTERM');
+    } catch {
+      /* ya murió */
+    }
+    setTimeout(() => {
+      if (finished || proc !== p || procSettled) return;
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        /* ya murió */
+      }
+    }, Math.min(stopGraceMs, 5_000));
+    setTimeout(() => {
+      if (finished || proc !== p || procSettled) return;
+      // Ni SIGTERM ni SIGKILL produjeron 'close'/'error': forzar la salida
+      // lógica para que el intento cuente como fallido y entre al retry.
+      procSettled = true;
+      void onFfmpegExit(null, 'SIGKILL');
+    }, Math.min(stopGraceMs, 5_000) + stopGraceMs);
+  }
 
   function spawnAttempt(inputUrl: string, kind: ResolvedStream['kind']): void {
     const localHlsInput =
@@ -681,19 +932,27 @@ export async function startRecording(
     });
     stderrTail = '';
     procSettled = false;
+    stallLatched = false;
+    lastProgressAt = now(); // el intento arranca "vivo"
     const p = spawnProcess(ffmpegPath, args);
     proc = p;
+    // Los handlers filtran por identidad del proceso (`proc !== p`): un
+    // zombie del intento anterior que tarde en morir NO puede contarse
+    // como salida del intento nuevo (PI-04 — race real con el forced-exit
+    // del watchdog, que respawnea sin esperar el 'close' del viejo).
     p.stderr?.on('data', (d) => {
+      if (proc !== p) return;
       stderrTail = (stderrTail + d.toString()).slice(-2_000);
+      lastProgressAt = now(); // output = signo de vida del proceso
     });
     p.on('error', (err) => {
-      if (procSettled) return;
+      if (proc !== p || procSettled) return;
       procSettled = true;
       lastError = `Error al ejecutar ffmpeg: ${err.message}`;
       void onFfmpegExit(-1, null);
     });
     p.on('close', (code, signal) => {
-      if (procSettled) return;
+      if (proc !== p || procSettled) return;
       procSettled = true;
       void onFfmpegExit(code, signal);
     });
@@ -736,6 +995,14 @@ export async function startRecording(
       return;
     }
 
+    // Reintentos agotados (PI-04): transición honesta — la grabación queda
+    // en su estado terminal 'error', el último segmento abierto se cierra en
+    // finalize, la transmisión va a 'error' por FSM y se notifica al tenant.
+    rlog.error('[recorder] reintentos agotados — grabación terminada con error', {
+      attempt,
+      maxRetries,
+      lastError,
+    });
     await finalize('error', lastError);
   }
 
@@ -848,6 +1115,34 @@ export async function startRecording(
         }
       })
       .catch((err) => rlog.error('[recorder] transitionRun falló', { err }));
+
+    // PI-04: la falla de ingesta llega al tenant como notificación (mismo
+    // fanout que las alertas PE-07 usan para entregar). Best-effort: jamás
+    // rompe el finalize ni cambia el outcome.
+    if (status === 'error') {
+      try {
+        void Promise.resolve(
+          notifyFn({
+            tenantId,
+            type: 'ingest_recording_failed',
+            title: 'Grabación interrumpida',
+            message:
+              errorMsg ?? 'La captura del crudo terminó con error',
+            icon: '📡',
+            metadata: {
+              transmissionId,
+              recordingId,
+              totalBytes,
+              segmentCount: sequence,
+            },
+          }),
+        ).catch((err) =>
+          rlog.error('[recorder] notifyFn falló', { err }),
+        );
+      } catch (err) {
+        rlog.error('[recorder] notifyFn falló', { err });
+      }
+    }
 
     finishResolve({
       status,

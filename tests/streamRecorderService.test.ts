@@ -12,11 +12,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { FilesystemRawStorage } from '../src/server/services/rawStorageService';
+import type { notify } from '../src/server/services/notificationService';
 import {
     buildFfmpegArgs,
     computeSegmentStartMs,
@@ -215,6 +216,7 @@ describe('startRecording — loop de captura', () => {
             ],
         });
         const { resolver, calls: resolverCalls } = makeResolver(resolverImpl);
+        const notifyCalls: Array<Record<string, unknown>> = [];
         const deps = {
             store,
             storage,
@@ -224,6 +226,16 @@ describe('startRecording — loop de captura', () => {
             heartbeatMs: 5,
             pollMs: 5,
             stopGraceMs: 50,
+            // Watchdog apagado por defecto: los tests de este bloque saltan el
+            // reloj inyectado a mano y un stall de 30 s se dispararía solo.
+            // Los tests del watchdog lo habilitan explícitamente.
+            stallTimeoutMs: 0,
+            // notifyFn fake: registra las notificaciones de ingesta (PI-04)
+            // sin tocar la tabla notifications.
+            notifyFn: (async (p: Record<string, unknown>) => {
+                notifyCalls.push(p);
+                return {} as never;
+            }) as typeof notify,
             sleep: () => Promise.resolve(),
             now: () => nowMs,
             // Los cambios de estado de la corrida van por la FSM real (PD-04),
@@ -234,7 +246,7 @@ describe('startRecording — loop de captura', () => {
                 now: () => new Date(nowMs),
             }),
         };
-        return { deps, store, state, resolverCalls };
+        return { deps, store, state, resolverCalls, notifyCalls };
     }
 
     it('graba segmentos anclados a wall-clock, cierra la grabación y deja crudo_ref = storagePrefix', async () => {
@@ -446,5 +458,314 @@ describe('startRecording — loop de captura', () => {
         expect(state.recordings.size).toBe(0);
         // La transmisión del tenant A quedó intacta.
         expect(state.transmissions.get(`${TENANT_A}/${TX_A}`)!.status).toBe('waiting');
+    });
+
+    describe('watchdog de estancamiento (PI-04)', () => {
+        it('ffmpeg colgado sin output ni segmentos nuevos → lo mata y reintenta en el MISMO recordingId', async () => {
+            const spawner = makeSpawner();
+            const { deps, state, resolverCalls } = makeDeps(spawner, (call) => ({
+                url: `https://cdn.example.com/live-v${call}.m3u8`,
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+
+            const handle = await startRecording(
+                {
+                    tenantId: TENANT_A,
+                    transmissionId: TX_A,
+                    streamUrl: 'https://x.example.com/live',
+                    storagePrefix: `${TENANT_A}/${TX_A}`,
+                },
+                { ...deps, stallTimeoutMs: 100 },
+            );
+
+            // Progreso real (un segmento) para fijar el baseline del watchdog.
+            const dir = storage.publicPath(`${TENANT_A}/${TX_A}`);
+            await writeFile(path.join(dir, segNameAt(T0 + 2_000)), Buffer.alloc(50));
+            await tick(30);
+            expect(spawner.spawned[0].kills).toHaveLength(0);
+
+            // El reloj salta sin más progreso → stall: SIGTERM y luego SIGKILL.
+            nowMs = T0 + 5_000;
+            await vi.waitFor(() => {
+                expect(spawner.spawned[0].kills).toContain('SIGTERM');
+            });
+            await vi.waitFor(() => {
+                expect(spawner.spawned[0].kills).toContain('SIGKILL');
+            });
+
+            // El proceso muere y el servicio reintenta — MISMO recordingId.
+            spawner.spawned[0].close(null, 'SIGKILL');
+            await vi.waitFor(() => expect(spawner.spawned).toHaveLength(2));
+            expect(resolverCalls).toHaveLength(2);
+            expect(state.recordings.size).toBe(1);
+
+            // El segundo intento cierra bien → completed.
+            spawner.spawned[1].close(0);
+            const outcome = await handle.done;
+            expect(outcome.status).toBe('completed');
+        });
+
+        it('output en stderr cuenta como progreso — no mata mientras el proceso habla', async () => {
+            const spawner = makeSpawner();
+            const { deps } = makeDeps(spawner, () => ({
+                url: 'https://cdn.example.com/live.m3u8',
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+
+            const handle = await startRecording(
+                {
+                    tenantId: TENANT_A,
+                    transmissionId: TX_A,
+                    streamUrl: 'https://x.example.com/live',
+                    storagePrefix: `${TENANT_A}/${TX_A}`,
+                },
+                { ...deps, stallTimeoutMs: 120 },
+            );
+
+            // 60 ms sin nada — todavía dentro del umbral.
+            nowMs = T0 + 60;
+            await tick(30);
+            spawner.spawned[0].emitStderr('frame= 120');
+            // 90 ms desde el último progreso — sigue vivo.
+            nowMs = T0 + 150;
+            await tick(40);
+            expect(spawner.spawned[0].kills).toHaveLength(0);
+
+            // 240 ms desde el último stderr → stall.
+            nowMs = T0 + 300;
+            await vi.waitFor(() => {
+                expect(spawner.spawned[0].kills).toContain('SIGTERM');
+            });
+            spawner.spawned[0].close(null, 'SIGKILL');
+            await vi.waitFor(() => expect(spawner.spawned).toHaveLength(2));
+
+            const stop = handle.stop();
+            await tick(5);
+            expect(spawner.spawned[1].stdinWrites).toContain('q');
+            spawner.spawned[1].close(0);
+            await stop;
+            const outcome = await handle.done;
+            expect(outcome.status).toBe('completed');
+        });
+
+        it('stall con reintentos agotados → grabación error, segmento abierto cerrado, notify al tenant', async () => {
+            const spawner = makeSpawner();
+            const { deps, state, notifyCalls } = makeDeps(spawner, () => ({
+                url: 'https://cdn.example.com/live.m3u8',
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+
+            const handle = await startRecording(
+                {
+                    tenantId: TENANT_A,
+                    transmissionId: TX_A,
+                    streamUrl: 'https://x.example.com/live',
+                    storagePrefix: `${TENANT_A}/${TX_A}`,
+                },
+                { ...deps, stallTimeoutMs: 60, maxRetries: 0 },
+            );
+
+            const dir = storage.publicPath(`${TENANT_A}/${TX_A}`);
+            await writeFile(path.join(dir, segNameAt(T0 + 1_000)), Buffer.alloc(80));
+            await tick(30);
+            expect(state.segments).toHaveLength(1);
+
+            nowMs = T0 + 5_000;
+            await vi.waitFor(() => {
+                expect(spawner.spawned[0].kills).toContain('SIGTERM');
+            });
+            spawner.spawned[0].close(1, 'SIGTERM');
+
+            const outcome = await handle.done;
+            expect(outcome.status).toBe('error');
+            expect(outcome.errorMessage).toContain('estancado');
+
+            // Recording terminal + segmento abierto cerrado + corrida en error vía FSM.
+            expect(state.recordings.get(`${TENANT_A}/${handle.recordingId}`)!.status).toBe('error');
+            expect(state.segments[0].endMs).toBe(T0 + 5_000 - T0);
+            expect(state.transmissions.get(`${TENANT_A}/${TX_A}`)!.status).toBe('error');
+            expect(notifyCalls.some((n) => n.type === 'ingest_recording_failed' && n.tenantId === TENANT_A)).toBe(true);
+        });
+
+        it('si el proceso no reporta muerte tras SIGKILL, la salida forzada cuenta el intento como fallido', async () => {
+            const spawner = makeSpawner();
+            const { deps } = makeDeps(spawner, (call) => ({
+                url: `https://cdn.example.com/live-v${call}.m3u8`,
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+
+            const handle = await startRecording(
+                {
+                    tenantId: TENANT_A,
+                    transmissionId: TX_A,
+                    streamUrl: 'https://x.example.com/live',
+                    storagePrefix: `${TENANT_A}/${TX_A}`,
+                },
+                { ...deps, stallTimeoutMs: 60, stopGraceMs: 20 },
+            );
+
+            nowMs = T0 + 5_000;
+            // Sin close() del lado del proceso: los timers SIGTERM(20) →
+            // SIGKILL(40) → salida forzada empujan el retry igual.
+            await vi.waitFor(() => {
+                expect(spawner.spawned[0].kills).toContain('SIGKILL');
+            });
+            await vi.waitFor(() => expect(spawner.spawned).toHaveLength(2));
+
+            spawner.spawned[1].close(0);
+            const outcome = await handle.done;
+            expect(outcome.status).toBe('completed');
+        });
+    });
+
+    describe('reanudación de captura sobre la misma grabación (PI-04)', () => {
+        it('mismo recordingId y ancla original: segmentos previos intactos, gap entre end_ms y el nuevo start_ms', async () => {
+            const spawner = makeSpawner();
+            const { deps, store, state } = makeDeps(spawner, () => ({
+                url: 'https://cdn.example.com/live.m3u8',
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+
+            // Grabación huérfana: arrancó hace 10 min, quedó 'interrupted' con
+            // 2 segmentos comiteados y un archivo en disco sin fila (crash
+            // entre el write y el INSERT).
+            const startedAt0 = new Date(T0 - 10 * 60_000);
+            const { id: recId } = await store.createRecording({
+                tenantId: TENANT_A,
+                transmissionId: TX_A,
+                storagePrefix: `${TENANT_A}/${TX_A}`,
+                startedAt: startedAt0,
+            });
+            state.recordings.get(`${TENANT_A}/${recId}`)!.status = 'interrupted';
+            state.recordings.get(`${TENANT_A}/${recId}`)!.endedAt = new Date(T0 - 60_000);
+            state.segments.push(
+                {
+                    tenantId: TENANT_A,
+                    recordingId: recId,
+                    sequence: 0,
+                    startMs: 5_000,
+                    endMs: 65_000,
+                    fileRef: segNameAt(T0 - 10 * 60_000 + 5_000),
+                    bytes: 100,
+                },
+                {
+                    tenantId: TENANT_A,
+                    recordingId: recId,
+                    sequence: 1,
+                    startMs: 65_000,
+                    endMs: 540_000,
+                    fileRef: segNameAt(T0 - 60_000),
+                    bytes: 200,
+                },
+            );
+            const dir = storage.publicPath(`${TENANT_A}/${TX_A}`);
+            await mkdir(dir, { recursive: true });
+            await writeFile(path.join(dir, segNameAt(T0 - 10 * 60_000 + 5_000)), Buffer.alloc(100));
+            await writeFile(path.join(dir, segNameAt(T0 - 60_000)), Buffer.alloc(200));
+            // El archivo no comiteado: existe en disco, sin fila.
+            await writeFile(path.join(dir, segNameAt(T0 - 30_000)), Buffer.alloc(300));
+
+            // La corrida sigue live (cayó el proceso, no la transmisión).
+            state.transmissions.get(`${TENANT_A}/${TX_A}`)!.status = 'live';
+
+            const handle = await startRecording(
+                {
+                    tenantId: TENANT_A,
+                    transmissionId: TX_A,
+                    streamUrl: 'https://x.example.com/live',
+                    storagePrefix: `${TENANT_A}/${TX_A}`,
+                    resume: {
+                        recordingId: recId,
+                        startedAt: startedAt0,
+                        nextSequence: 2,
+                    },
+                },
+                deps,
+            );
+
+            // MISMA fila, de vuelta a recording, ancla original.
+            expect(handle.recordingId).toBe(recId);
+            expect(state.recordings.size).toBe(1);
+            const rec = state.recordings.get(`${TENANT_A}/${recId}`)!;
+            expect(rec.status).toBe('recording');
+            expect(rec.endedAt).toBeNull();
+            expect(rec.startedAt.getTime()).toBe(startedAt0.getTime());
+
+            // El archivo no comiteado se recupera como sequence 2.
+            await vi.waitFor(() => expect(state.segments).toHaveLength(3));
+            const recovered = state.segments.find((s) => s.sequence === 2)!;
+            expect(recovered.startMs).toBe(T0 - 30_000 - startedAt0.getTime());
+
+            // Un segmento nuevo del intento reanudado: sequence 3, offset
+            // anclado al started_at ORIGINAL (el hueco quedó explícito).
+            await writeFile(path.join(dir, segNameAt(T0 + 5_000)), Buffer.alloc(60));
+            await vi.waitFor(() => expect(state.segments).toHaveLength(4));
+            const seg3 = state.segments.find((s) => s.sequence === 3)!;
+            expect(seg3.startMs).toBe(T0 + 5_000 - startedAt0.getTime());
+
+            // Segmentos previos intactos — no se re-insertaron ni se tocó endMs.
+            expect(state.segments.find((s) => s.sequence === 0)!.endMs).toBe(65_000);
+            expect(state.segments.find((s) => s.sequence === 1)!.endMs).toBe(540_000);
+
+            // La transmisión NO se re-ancló: ningún patch tocó started_at.
+            expect(
+                state.transmissionPatches.every((p) => p.patch.startedAt === undefined),
+            ).toBe(true);
+
+            spawner.spawned[0].close(0);
+            const outcome = await handle.done;
+            expect(outcome.status).toBe('completed');
+            expect(outcome.segmentCount).toBe(4);
+        });
+
+        it('resume sobre recordingId inexistente → falla antes de spawnear nada', async () => {
+            const spawner = makeSpawner();
+            const { deps, state } = makeDeps(spawner, () => ({
+                url: 'https://cdn.example.com/live.m3u8',
+                kind: 'hls',
+                title: null,
+                platform: 'generic',
+                proxy: null,
+            }));
+            state.transmissions.set(`${TENANT_A}/tx-huérfana`, {
+                id: 'tx-huérfana',
+                tenantId: TENANT_A,
+                status: 'live',
+                durationMinutes: null,
+            });
+
+            await expect(
+                startRecording(
+                    {
+                        tenantId: TENANT_A,
+                        transmissionId: 'tx-huérfana',
+                        streamUrl: 'https://x.example.com/live',
+                        storagePrefix: `${TENANT_A}/tx-huérfana`,
+                        resume: {
+                            recordingId: 'rec-que-no-existe',
+                            startedAt: new Date(T0 - 60_000),
+                            nextSequence: 3,
+                        },
+                    },
+                    deps,
+                ),
+            ).rejects.toThrow('no existe');
+            expect(spawner.spawned).toHaveLength(0);
+        });
     });
 });
