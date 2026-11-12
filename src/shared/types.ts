@@ -256,12 +256,25 @@ export interface MetaPublishResults {
 }
 
 // AI
+/**
+ * Contexto de facturación de una llamada IA (PI-03). Opcional en TODA la
+ * cadena: cuando llega, el gateway lo registra en `ai_usage_events`; sin
+ * tenantId no se escribe nada. `feature` etiqueta el call-site.
+ */
+export interface AiUsageContext {
+  tenantId: string;
+  transmissionId?: string | null;
+  feature: string;
+}
+
 export interface ChatCompletionOptions {
   systemPrompt?: string;
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  /** PI-03: si viene, la llamada deja evento en `ai_usage_events`. */
+  usageContext?: AiUsageContext;
 }
 
 export interface ChatCompletionResult {
@@ -293,6 +306,8 @@ export interface NewsGenerationOptions {
   context?: string;
   /** Bloque serializado de la línea editorial (PC-06); "" = sin perfil. */
   editorialBlock?: string;
+  /** PI-03: contexto de facturación para `ai_usage_events`. */
+  usageContext?: AiUsageContext;
 }
 
 // Webhook settings

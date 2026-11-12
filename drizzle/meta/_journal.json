@@ -148,6 +148,13 @@
       "when": 1794374123618,
       "tag": "0020_narrow_invaders",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794445254189,
+      "tag": "0021_pi03_ai_usage_events",
+      "breakpoints": true
     }
   ]
 }

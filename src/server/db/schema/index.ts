@@ -30,6 +30,7 @@ export * from './autoPublish.js';
 export * from './socialConnections.js';
 export * from './publishJobs.js';
 export * from './jobQueue.js';
+export * from './aiUsage.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -68,6 +69,7 @@ import { assets } from './assets.js';
 import { autoPublishConfigs } from './autoPublish.js';
 import { zernioProfiles, socialConnections } from './socialConnections.js';
 import { publishJobs } from './publishJobs.js';
+import { aiUsageEvents } from './aiUsage.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -118,6 +120,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   autoPublishConfigs: many(autoPublishConfigs),
   zernioProfile: one(zernioProfiles, { fields: [tenants.id], references: [zernioProfiles.tenantId] }),
   socialConnections: many(socialConnections),
+  aiUsageEvents: many(aiUsageEvents),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
@@ -395,6 +398,7 @@ export const transmissionsRelations = relations(transmissions, ({ one, many }) =
   moments: many(transmissionMoments),
   clips: many(clips),
   assets: many(assets),
+  aiUsageEvents: many(aiUsageEvents),
 }));
 
 export const scheduledTransmissionsRelations = relations(scheduledTransmissions, ({ one, many }) => ({
@@ -481,6 +485,15 @@ export const zernioProfilesRelations = relations(zernioProfiles, ({ one }) => ({
 
 export const socialConnectionsRelations = relations(socialConnections, ({ one }) => ({
   tenant: one(tenants, { fields: [socialConnections.tenantId], references: [tenants.id] }),
+}));
+
+// ── ai_usage_events relations (PI-03) ───────────────────────────────────────
+export const aiUsageEventsRelations = relations(aiUsageEvents, ({ one }) => ({
+  tenant: one(tenants, { fields: [aiUsageEvents.tenantId], references: [tenants.id] }),
+  transmission: one(transmissions, {
+    fields: [aiUsageEvents.transmissionId],
+    references: [transmissions.id],
+  }),
 }));
 
 // ── publish_jobs relations (PG-05) ────────────────────────────────────────────
