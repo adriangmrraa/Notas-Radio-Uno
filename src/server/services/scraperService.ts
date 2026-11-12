@@ -2,6 +2,8 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import type { AiUsageContext } from "../../shared/types.js";
+import { withAiUsageRecording } from "./aiUsageService.js";
 
 interface ScrapedArticle {
   title: string;
@@ -14,8 +16,15 @@ interface ScrapedArticle {
  * Scrapes a news article from ANY portal.
  * Step 1: Fetch HTML + extract with cheerio (og:image, basic text)
  * Step 2: Use AI to extract clean title + content from raw text (no ads, no nav, no junk)
+ *
+ * `usageCtx` (PI-03): si viene, la llamada a Gemini deja evento en
+ * `ai_usage_events` — éxito con tokens o `success=false` si el provider
+ * falla (el registro nunca rompe el scrape).
  */
-async function scrapeElComercialArticle(url: string): Promise<ScrapedArticle> {
+async function scrapeElComercialArticle(
+  url: string,
+  usageCtx?: AiUsageContext,
+): Promise<ScrapedArticle> {
   try {
     // Step 1: Fetch and parse HTML
     const response = await axios.get<string>(url, {
@@ -61,9 +70,12 @@ async function scrapeElComercialArticle(url: string): Promise<ScrapedArticle> {
     if (apiKey && rawText.length > 100) {
       try {
         const google = createGoogleGenerativeAI({ apiKey });
-        const { text: aiResult } = await generateText({
-          model: google("gemini-2.0-flash"),
-          prompt: `Sos un extractor de noticias. De este texto crudo de una página web, extraé SOLAMENTE el contenido periodístico.
+        const aiResult = await withAiUsageRecording(
+          { provider: 'google', model: 'gemini-2.0-flash', usageCtx },
+          async () => {
+            const r = await generateText({
+              model: google("gemini-2.0-flash"),
+              prompt: `Sos un extractor de noticias. De este texto crudo de una página web, extraé SOLAMENTE el contenido periodístico.
 
 CONTEXTO:
 - URL: ${url}
@@ -75,8 +87,11 @@ ${rawText.slice(0, 8000)}
 
 RESPONDÉ en formato JSON estricto (sin markdown, sin backticks):
 {"title": "título limpio de la nota", "content": "contenido completo de la nota periodística, solo el cuerpo, sin anuncios ni navegación ni textos laterales. Máximo 3 párrafos."}`,
-          maxOutputTokens: 1000,
-        });
+              maxOutputTokens: 1000,
+            });
+            return { value: r.text, usage: r.usage };
+          },
+        );
 
         // Parse AI response
         const cleaned = aiResult.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();

@@ -238,6 +238,11 @@ describe('processRecordingSegment — análisis → segments/moments/quotes', ()
                 '[61500-63800ms] A: Hola, arrancamos el bloque.\n' +
                 '[64000-65200ms] B: Hablemos de la inflación.',
             prevContext: undefined,
+            usageCtx: {
+                tenantId: T_A,
+                transmissionId: TX_1,
+                feature: 'live-analysis',
+            },
         });
     });
 });

@@ -1,7 +1,8 @@
 import axios, { type AxiosError } from "axios";
 import * as dotenv from "dotenv";
 import { limiters } from "./rateLimiter.js";
-import type { ChatCompletionOptions, ChatCompletionResult } from "../../shared/types.js";
+import type { AiUsageContext, ChatCompletionOptions, ChatCompletionResult } from "../../shared/types.js";
+import { withAiUsageRecording } from "./aiUsageService.js";
 
 dotenv.config();
 
@@ -34,6 +35,7 @@ async function callDeepSeek({
   temperature = 0.5,
   maxTokens = 1000,
   jsonMode = false,
+  usageContext,
 }: ChatCompletionOptions): Promise<string | null> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return null;
@@ -55,15 +57,23 @@ async function callDeepSeek({
 
   await limiters.deepseek.acquire();
 
-  const response = await axios.post(DEEPSEEK_API, body, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 90000,
-  });
+  return withAiUsageRecording(
+    { provider: 'deepseek', model: 'deepseek-chat', usageCtx: usageContext },
+    async () => {
+      const response = await axios.post(DEEPSEEK_API, body, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 90000,
+      });
 
-  return response.data.choices[0].message.content as string;
+      return {
+        value: response.data.choices[0].message.content as string,
+        usage: response.data.usage,
+      };
+    },
+  );
 }
 
 // ─── Gemini ───
@@ -84,6 +94,7 @@ async function callGemini({
   temperature = 0.5,
   maxTokens = 1000,
   jsonMode = false,
+  usageContext,
 }: ChatCompletionOptions): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
@@ -108,12 +119,20 @@ async function callGemini({
 
   await limiters.gemini.acquire();
 
-  const response = await axios.post(url, body, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 90000,
-  });
+  return withAiUsageRecording(
+    { provider: 'gemini', model, usageCtx: usageContext },
+    async () => {
+      const response = await axios.post(url, body, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 90000,
+      });
 
-  return response.data.candidates[0].content.parts[0].text as string;
+      return {
+        value: response.data.candidates[0].content.parts[0].text as string,
+        usage: response.data.usageMetadata,
+      };
+    },
+  );
 }
 
 // ─── Interfaz unificada ───

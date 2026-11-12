@@ -5,13 +5,20 @@
  * with support for multiple providers (DeepSeek, Google Gemini, OpenAI).
  * 
  * Maintains backward compatibility with the existing chatCompletion interface.
+ *
+ * PI-03: cada llamada deja un evento en `ai_usage_events` cuando el caller
+ * pasa `usageContext` ({ tenantId, transmissionId?, feature }) — éxito con
+ * tokens + costo estimado, o `success=false` si el provider falla. El
+ * registro NUNCA rompe la llamada (recordAiUsageEvent es best-effort).
  */
 
 import { generateText as aiGenerateText, streamText as aiStreamText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import type { ChatCompletionOptions, ChatCompletionResult } from '../../shared/types.js';
+import type { AiUsageContext, ChatCompletionOptions, ChatCompletionResult } from '../../shared/types.js';
 import { getProviderApiKey, type AIProvider } from './aiProviders.js';
+import { recordAiUsageEvent, withAiUsageRecording } from './aiUsageService.js';
+import { log } from '../lib/logger.js';
 
 /**
  * Creates an AI SDK client for the specified provider
@@ -72,7 +79,8 @@ async function executeGenerate(
     temperature?: number;
     maxTokens?: number;
     json?: boolean;
-  }
+  },
+  usageCtx?: AiUsageContext,
 ): Promise<{ text: string; provider: 'deepseek' | 'google' | 'openai' }> {
   const model = getModelForProvider(provider);
   const client = createProviderClient(provider);
@@ -98,12 +106,13 @@ async function executeGenerate(
     }
   }
 
-  const result = await aiGenerateText(generateOptions);
-
-  return {
-    text: result.text,
-    provider,
-  };
+  return withAiUsageRecording({ provider, model, usageCtx }, async () => {
+    const result = await aiGenerateText(generateOptions);
+    return {
+      value: { text: result.text, provider },
+      usage: result.usage,
+    };
+  });
 }
 
 /**
@@ -117,18 +126,53 @@ function executeStream(
     prompt: string;
     temperature?: number;
     maxTokens?: number;
-  }
+  },
+  usageCtx?: AiUsageContext,
 ) {
   const model = getModelForProvider(provider);
   const client = createProviderClient(provider);
+  const startedAt = Date.now();
 
-  return aiStreamText({
+  const stream = aiStreamText({
     model: client(model),
     system: options.system,
     prompt: options.prompt,
     temperature: options.temperature ?? 0.5,
     maxOutputTokens: options.maxTokens ?? 1000,
   });
+
+  // El usage de un stream se conoce cuando termina: `stream.usage` resuelve
+  // con LanguageModelUsage al final (o rechaza si el stream murió). El
+  // registro es fire-and-forget — nunca bloquea ni rompe el stream.
+  if (usageCtx) {
+    const ctx = usageCtx;
+    void stream.usage.then(
+      (usage) =>
+        recordAiUsageEvent({
+          tenantId: ctx.tenantId,
+          transmissionId: ctx.transmissionId ?? null,
+          feature: ctx.feature,
+          provider,
+          model,
+          usage,
+          success: true,
+          durationMs: Date.now() - startedAt,
+        }),
+      (err: unknown) =>
+        recordAiUsageEvent({
+          tenantId: ctx.tenantId,
+          transmissionId: ctx.transmissionId ?? null,
+          feature: ctx.feature,
+          provider,
+          model,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        }),
+    );
+  }
+
+  return stream;
 }
 
 // ─── Legacy Interface (Backward Compatibility) ───
@@ -153,7 +197,7 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<Ch
         temperature: options.temperature,
         maxTokens: options.maxTokens,
         json: options.jsonMode,
-      });
+      }, options.usageContext);
 
       // Map 'google' to 'gemini' for backward compatibility
       const mappedProvider = result.provider === 'google' ? 'gemini' : result.provider;
@@ -163,7 +207,7 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<Ch
         provider: mappedProvider,
       };
     } catch (error) {
-      console.error(`[AI] ${provider} error:`, error);
+      log.warn('[AI] provider falló, probando el siguiente', { provider, err: error });
       // Try next provider
       continue;
     }
@@ -187,9 +231,10 @@ export async function generateText(
     temperature?: number;
     maxTokens?: number;
     json?: boolean;
+    usageContext?: AiUsageContext;
   }
 ): Promise<{ text: string; provider: AIProvider }> {
-  return executeGenerate(provider, options);
+  return executeGenerate(provider, options, options.usageContext);
 }
 
 /**
@@ -203,9 +248,10 @@ export function streamText(
     prompt: string;
     temperature?: number;
     maxTokens?: number;
+    usageContext?: AiUsageContext;
   }
 ): unknown {
-  return executeStream(provider, options);
+  return executeStream(provider, options, options.usageContext);
 }
 
 /**
@@ -218,6 +264,7 @@ export async function generateTextWithFallback(
     temperature?: number;
     maxTokens?: number;
     json?: boolean;
+    usageContext?: AiUsageContext;
   },
   preferredProvider?: AIProvider
 ): Promise<{ text: string; provider: AIProvider }> {
@@ -227,9 +274,9 @@ export async function generateTextWithFallback(
 
   for (const provider of providers) {
     try {
-      return await executeGenerate(provider, options);
+      return await executeGenerate(provider, options, options.usageContext);
     } catch (error) {
-      console.error(`[AI] ${provider} error:`, error);
+      log.warn('[AI] provider falló, probando el siguiente', { provider, err: error });
       continue;
     }
   }

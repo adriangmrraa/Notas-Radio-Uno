@@ -44,7 +44,7 @@ import path from 'node:path';
 import axios from 'axios';
 import { and, asc, eq } from 'drizzle-orm';
 
-import type { DiarizedTranscription } from '../../shared/types.js';
+import type { AiUsageContext, DiarizedTranscription } from '../../shared/types.js';
 import { db, type Database } from '../db/index.js';
 import {
   transcriptSegments,
@@ -58,6 +58,7 @@ import {
   resolveAnalysisProvider,
   type ResolvedAnalysisProvider,
 } from '../lib/analysisProviders.js';
+import { withAiUsageRecording } from './aiUsageService.js';
 import { getRawStorage, type RawStorage } from './rawStorageService.js';
 import { transcribeAudio } from './transcriptionService.js';
 import { liveAlertsService } from './liveAlertsService.js';
@@ -314,6 +315,8 @@ export interface AnalyzeInput {
   transcript: string;
   /** Ventana(s) ya analizadas — contexto para no repetir temas/momentos. */
   prevContext?: string;
+  /** PI-03: contexto de facturación (tenant/transmission/feature). */
+  usageCtx?: AiUsageContext;
 }
 
 export type AnalyzeFn = (input: AnalyzeInput) => Promise<AnalysisResult>;
@@ -526,6 +529,7 @@ export function parseAnalysisResult(raw: string): AnalysisResult {
 export async function callAnalysisProvider(
   provider: ResolvedAnalysisProvider,
   prompt: string,
+  usageCtx?: AiUsageContext,
 ): Promise<string> {
   const apiKey = provider.envKeys.map((k) => process.env[k]).find(Boolean);
   if (!apiKey) {
@@ -536,38 +540,48 @@ export async function callAnalysisProvider(
 
   if (provider.id === 'gemini') {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${provider.model}:generateContent?key=${apiKey}`;
-    const res = await axios.post(
-      url,
-      {
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-          maxOutputTokens: 4096,
-        },
+    return withAiUsageRecording(
+      { provider: 'gemini', model: provider.model, usageCtx },
+      async () => {
+        const res = await axios.post(
+          url,
+          {
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.2,
+              maxOutputTokens: 4096,
+            },
+          },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 60_000 },
+        );
+        const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error(`Gemini (${provider.model}) devolvió una respuesta vacía`);
+        return { value: String(text), usage: res.data?.usageMetadata };
       },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 60_000 },
     );
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error(`Gemini (${provider.model}) devolvió una respuesta vacía`);
-    return String(text);
   }
 
   if (provider.id === 'openai-vision') {
-    const res = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: provider.model,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        max_tokens: 4096,
+    return withAiUsageRecording(
+      { provider: 'openai-vision', model: provider.model, usageCtx },
+      async () => {
+        const res = await axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          {
+            model: provider.model,
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.2,
+            max_tokens: 4096,
+          },
+          { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 60_000 },
+        );
+        const text = res.data?.choices?.[0]?.message?.content;
+        if (!text) throw new Error(`OpenAI (${provider.model}) devolvió una respuesta vacía`);
+        return { value: String(text), usage: res.data?.usage };
       },
-      { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 60_000 },
     );
-    const text = res.data?.choices?.[0]?.message?.content;
-    if (!text) throw new Error(`OpenAI (${provider.model}) devolvió una respuesta vacía`);
-    return String(text);
   }
 
   throw new Error(
@@ -584,9 +598,9 @@ export async function callAnalysisProvider(
 export async function analyzeTranscriptWindow(
   input: AnalyzeInput | string,
 ): Promise<AnalysisResult> {
-  const { transcript, prevContext } =
+  const { transcript, prevContext, usageCtx } =
     typeof input === 'string'
-      ? { transcript: input, prevContext: undefined }
+      ? { transcript: input, prevContext: undefined, usageCtx: undefined }
       : input;
   if (!transcript.trim()) return { segments: [], moments: [], quotes: [] };
 
@@ -594,6 +608,7 @@ export async function analyzeTranscriptWindow(
   const raw = await callAnalysisProvider(
     provider,
     ANALYSIS_WINDOW_PROMPT(transcript, prevContext),
+    usageCtx,
   );
   return parseAnalysisResult(raw);
 }
@@ -769,6 +784,11 @@ export function createAnalysisEngineService(
         analysis = await analyze({
           transcript,
           prevContext: input.prevContext,
+          usageCtx: {
+            tenantId,
+            transmissionId,
+            feature: 'live-analysis',
+          },
         });
       } catch (err) {
         console.warn(
