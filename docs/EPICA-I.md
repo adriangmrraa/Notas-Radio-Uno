@@ -56,7 +56,48 @@ PGlite). Fuente del texto/puntaje: la tarjeta del kanban.
   - `npx vitest run` → **EXIT 0** — `Test Files 52 passed (52)`, `Tests 976 passed (976)`
   - `npm run build` → **EXIT 0** — `No schema changes, nothing to migrate`
   - `git diff --check` → **EXIT 0**
-- [ ] PI-03 Métricas de costo de IA por tenant/transmisión (alimenta super admin) [3]
+- [x] PI-03 Métricas de costo de IA por tenant/transmisión (alimenta super admin) [3]
+
+  **Commits (branch `pi-03-cost-metrics`):**
+  - `ae3fdfc` `feat(usage): ai_usage_events ledger schema, migration and usage service`
+    — tabla `ai_usage_events` (FK tenant cascade, FK transmission set-null,
+    índices tenant+created_at y transmission), migración `0021_pi03_ai_usage_events`,
+    y `aiUsageService`: pricing `AI_MODEL_PRICING_USD_PER_1M` versionado en
+    código, `normalizeTokenUsage` (SDK v6 / OpenAI REST / Gemini REST),
+    `withAiUsageRecording` best-effort (nunca rompe la llamada IA) y
+    `summarize` con agregación pura de referencia.
+  - `1a037ce` `feat(usage): instrument AI gateways with usage recording`
+    — `aiSdkService` (generate/stream/fallback, usage del SDK v6),
+    `aiService` legacy axios (DeepSeek + Gemini), `scraperService`
+    (SDK directo) y `analysisEngineService.callAnalysisProvider`
+    (gemini / openai-vision) — éxito con tokens+costo o `success=false`.
+  - `8a4ff99` `feat(usage): propagate usageContext through AI call sites`
+    — `usageContext { tenantId, transmissionId?, feature }` opcional en
+    todos los callers: noteFactory, pipeline, review, assets, generate,
+    dossier, network-variants, newsService, insights, content-multiplier,
+    topics, agent-execution.
+  - `de1945f` `feat(usage): expose ai-usage summary endpoints for tenant and admin`
+    — `GET /api/ai-usage/summary` (tenant-scoped por `req.auth.tenantId`)
+    y `GET /api/admin/ai-usage` (cross-tenant read-only bajo
+    `requirePlatformAdmin`, filtros tenantId/from/to/feature/top).
+  - `629f801` `feat(admin): add AI costs panel to the super-admin dashboard`
+    — `/admin/costs`: filtros rango/tenant/feature, cards de totales,
+    tablas por tenant, top transmisiones por costo, por feature y provider.
+  - `290e76c` `test(usage): deterministic coverage for the ai_usage ledger`
+    — `memoryAiUsageStore` + 26 tests deterministas (pricing,
+    normalización, resiliencia del registro, agregación/aislamiento,
+    contratos de endpoints y gateway con SDK mockeado).
+
+  **Evidencia de gates (todos con EXIT real, ejecutados sobre el HEAD `290e76c`):**
+  - `npx tsc --noEmit` → **EXIT 0**
+  - `npx vitest run` → **EXIT 0** — `Test Files 53 passed (53)`, `Tests 1002 passed (1002)`
+  - `npm run build` → **EXIT 0** — `No schema changes, nothing to migrate`
+  - `git diff --check` → **EXIT 0**
+
+  **Paths de IA declarados fuera del ledger** (sin tenant en contexto o
+  billing no-token): `transcriptionService` (Whisper/AssemblyAI — por
+  minuto de audio) y `imageEdit` (sin auth ⇒ sin tenantId — ver el
+  contrato de `AiUsageContext.tenantId` NOT NULL).
 - [ ] PI-04 Manejo de fallos de ingesta (stream caído, cortes) con reanudación de crudo [5]
 - [ ] PI-05 Backup/retención de assets + política de borrado de crudos [2]
 - [ ] PI-06 Checklist go-live: seeds de planes, datos demo, health checks, runbook de incidentes [3]
