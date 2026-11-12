@@ -1,5 +1,5 @@
 import { chatCompletion } from "./aiSdkService.js";
-import type { AttributedQuote, Insights } from "../../shared/types.js";
+import type { AiUsageContext, AttributedQuote, Insights } from "../../shared/types.js";
 
 /**
  * Extract JSON from text response (for backward compatibility)
@@ -85,7 +85,8 @@ function filterQuotes(
 async function extractInsights(
   transcriptionText: string,
   speakerContext?: string | null,
-  editorialBlock?: string
+  editorialBlock?: string,
+  usageCtx?: AiUsageContext,
 ): Promise<Insights> {
   const basePrompt = `TRANSCRIPCION:
 """
@@ -125,6 +126,7 @@ Reglas:
       temperature: 0.2,
       maxTokens: 1000,
       jsonMode: true,
+      usageContext: usageCtx,
     });
 
     const raw = extractJSON(text) as Partial<Insights & { quotes: AttributedQuote[] }> | null;

@@ -74,7 +74,7 @@ export async function generateGuestDossier(
     .returning({ id: guestDossiers.id });
 
   // 3. Run async generation (don't await — let it run in background)
-  runDossierGeneration(dossier.id, guest, programName).catch((err) => {
+  runDossierGeneration(dossier.id, guest, programName, tenantId).catch((err) => {
     console.error(`[Dossier] Error generando dossier para ${guest.name}:`, err);
   });
 
@@ -88,6 +88,7 @@ async function runDossierGeneration(
   dossierId: string,
   guest: { name: string; role: string; bio: string | null },
   programName: string,
+  tenantId: string,
 ): Promise<void> {
   try {
     // Step 1: Web search
@@ -140,6 +141,7 @@ REGLAS:
       temperature: 0.4,
       maxTokens: 3000,
       jsonMode: true,
+      usageContext: { tenantId, feature: 'dossier-generate' },
     });
 
     const parsed = extractJSON(result.text) as DossierContent | null;

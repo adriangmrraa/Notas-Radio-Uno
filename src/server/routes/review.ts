@@ -425,6 +425,7 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
         temperature: 0.5,
         maxTokens: 1500,
         jsonMode: true,
+        usageContext: { tenantId, feature: 'review-edit' },
       });
 
       const parsed = JSON.parse(text) as { title?: string; content?: string };
@@ -572,7 +573,10 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
         return;
       }
       const editorial = await resolveEditorialPromptContext(tenantId, programId?.trim() || null);
-      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt, editorial.block);
+      const regenerated = await regenerateVariant(pub.title, pub.content, variant, customPrompt, editorial.block, {
+        tenantId,
+        feature: 'variant-regenerate',
+      });
 
       // Actualizar la variante en DB manteniendo las demás intactas
       const currentVariants: ContentVariants = pub.contentVariants ?? {
@@ -633,7 +637,10 @@ Devolvé el título y contenido modificados en formato JSON: { "title": "...", "
         return;
       }
       const editorial = await resolveEditorialPromptContext(tenantId, programId?.trim() || null);
-      const variants = await generateContentVariants(pub.title, pub.content, editorial.tone ?? "formal", editorial);
+      const variants = await generateContentVariants(pub.title, pub.content, editorial.tone ?? "formal", editorial, {
+        tenantId,
+        feature: 'variant-generate',
+      });
       await updatePublicationContent(id, tenantId, { contentVariants: variants });
       res.json({ success: true, variants });
     } catch (err) {

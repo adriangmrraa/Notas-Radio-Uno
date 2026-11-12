@@ -61,6 +61,7 @@ import {
     programBelongsToTenant,
     resolveEditorialPromptBlock,
 } from './editorialPromptService.js';
+import type { AiUsageContext } from '../../shared/types.js';
 
 // ---------------------------------------------------------------------------
 // Rubros editoriales — una plantilla por rubro (puro, sin DB)
@@ -398,8 +399,15 @@ export interface GenerateNoteInput {
     programId?: string | null;
 }
 
-/** El modelo por prompt — inyectable; los tests usan fake determinista. */
-export type NoteGenerateFn = (prompt: string) => Promise<string>;
+/**
+ * El modelo por prompt — inyectable; los tests usan fake determinista.
+ * `usageCtx` (PI-03): contexto de facturación opcional — el default real lo
+ * reenvía a `callAnalysisProvider` y queda evento en `ai_usage_events`.
+ */
+export type NoteGenerateFn = (
+    prompt: string,
+    usageCtx?: AiUsageContext,
+) => Promise<string>;
 
 export interface GenerateNoteDeps {
     store?: NoteFactoryStore;
@@ -432,10 +440,10 @@ export interface GenerateNoteResult {
  * engine completo para quien sólo usa las funciones puras, y los tests
  * nunca llegan acá (siempre inyectan `generate`).
  */
-const defaultGenerate: NoteGenerateFn = async (prompt) => {
+const defaultGenerate: NoteGenerateFn = async (prompt, usageCtx) => {
     const { callAnalysisProvider } = await import('./analysisEngineService.js');
     const provider = resolveAnalysisProvider('analysis');
-    return callAnalysisProvider(provider, prompt);
+    return callAnalysisProvider(provider, prompt, usageCtx);
 };
 
 /**
@@ -503,7 +511,11 @@ export async function generateNote(
         transmissionMeta: { status: transmission.status },
     });
 
-    const raw = await generate(prompt);
+    const raw = await generate(prompt, {
+        tenantId: input.tenantId,
+        transmissionId: input.transmissionId,
+        feature: 'note-factory',
+    });
     const { title, body } = parseNoteResponse(raw);
 
     // "Citas usadas" = las que el modelo efectivamente vio en el prompt:

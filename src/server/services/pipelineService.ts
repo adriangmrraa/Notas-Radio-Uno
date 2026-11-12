@@ -32,6 +32,7 @@ import { v4 as uuidv4 } from "uuid";
 
 import type { Server } from "socket.io";
 import type {
+  AiUsageContext,
   PipelineConfig,
   PipelineStatus,
   PublishedNote,
@@ -160,6 +161,11 @@ class AutoPipeline {
       ...data,
     });
     console.log(`[Pipeline][${this.tenantId}] ${event}:`, JSON.stringify(data).slice(0, 200));
+  }
+
+  /** PI-03: contexto de facturación — el pipeline es un flujo legacy por URL, no ancla a `transmissions`. */
+  private usageCtx(feature: string): AiUsageContext {
+    return { tenantId: this.tenantId, feature };
   }
 
   async start(config: Partial<PipelineConfig>): Promise<void> {
@@ -457,6 +463,7 @@ class AutoPipeline {
         latestChunk,
         this.publishedTopics,
         this.pendingConfirmation,
+        this.usageCtx('pipeline-topics'),
       );
 
       this.lastAnalyzedChunkIndex = analysisStartChunkIndex;
@@ -639,7 +646,7 @@ class AutoPipeline {
           nodeId: `agent_${agent.id}`,
           previousNodeId: stepName,
           data: currentContext,
-        });
+        }, this.usageCtx('pipeline-agent'));
 
         currentContext = { ...currentContext, ...result.data };
 
@@ -816,7 +823,7 @@ class AutoPipeline {
     const textForInsights = (diarizedSegmentText && speakerContext)
       ? diarizedSegmentText
       : transcriptionForNote;
-    const insights: Insights = await extractInsights(textForInsights, speakerContext, editorial.block);
+    const insights: Insights = await extractInsights(textForInsights, speakerContext, editorial.block, this.usageCtx('pipeline-insights'));
     this.io.emit("pipeline-node-status", { nodeId: "insights", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after insights
@@ -888,6 +895,7 @@ class AutoPipeline {
       webContext,
       insights: `Resumen: ${enrichedInsights.summary}\nDatos clave: ${enrichedInsights.keyFacts.join(", ")}`,
       editorialBlock: editorial.block,
+      usageContext: this.usageCtx('news-generate'),
     });
     this.io.emit("pipeline-node-status", { nodeId: "generate_news", status: "completed", timestamp: new Date().toISOString() });
 
@@ -904,7 +912,7 @@ class AutoPipeline {
       icon: "brain",
     });
 
-    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary, editorial.block);
+    const title = await generateTitle(transcriptionForNote, enrichedInsights.summary, editorial.block, this.usageCtx('news-title'));
     this.io.emit("pipeline-node-status", { nodeId: "generate_title", status: "completed", timestamp: new Date().toISOString() });
 
     // Run custom agents after title generation
@@ -1104,7 +1112,7 @@ class AutoPipeline {
       });
       let contentVariants = null;
       try {
-        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone, editorial);
+        contentVariants = await generateContentVariants(finalTitle, agentNewsText, this.config.tone, editorial, this.usageCtx('variant-generate'));
         this.emit("detail", {
           step: "pending_review", sub: "multiplier_done",
           message: `Variantes generadas: ${contentVariants.twitterThread.length} tweets, ${contentVariants.instagramCarousel.length} slides`,

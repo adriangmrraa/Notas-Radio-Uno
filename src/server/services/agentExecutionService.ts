@@ -1,13 +1,13 @@
 import { chatCompletion, extractJSON } from "./aiService.js";
 import { searchAndEnrich } from "./searchService.js";
 import { limiters } from "./rateLimiter.js";
-import type { CustomAgent, AgentInput, AgentOutput } from "../../shared/types.js";
+import type { AiUsageContext, CustomAgent, AgentInput, AgentOutput } from "../../shared/types.js";
 
 /**
  * Ejecuta un agente custom dentro del pipeline.
  * El agente recibe el output del nodo anterior y produce output para el siguiente.
  */
-export async function executeAgent(agent: CustomAgent, input: AgentInput): Promise<AgentOutput> {
+export async function executeAgent(agent: CustomAgent, input: AgentInput, usageCtx?: AiUsageContext): Promise<AgentOutput> {
   const startTime = Date.now();
 
   // Build user prompt from input data
@@ -46,6 +46,7 @@ Procesá estos datos según tus instrucciones y respondé en el formato indicado
       temperature: agent.temperature,
       maxTokens: agent.max_tokens,
       jsonMode: true,
+      usageContext: usageCtx,
     });
 
     // Try to parse JSON response and merge with input data

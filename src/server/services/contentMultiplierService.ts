@@ -16,7 +16,7 @@ import { chatCompletion } from "./aiSdkService.js";
 import { extractJSON } from "./aiService.js";
 import { activeVariantKeys } from "./editorialPromptService.js";
 import type { EditorialGenerationContext } from "./editorialPromptService.js";
-import type { ContentVariants } from "../../shared/types.js";
+import type { AiUsageContext, ContentVariants } from "../../shared/types.js";
 
 const SYSTEM_PROMPT = `Sos un experto en contenido multiplataforma para medios de comunicación.
 Tu trabajo es transformar notas periodísticas en piezas optimizadas para cada red social.
@@ -59,6 +59,7 @@ export async function generateContentVariants(
   content: string,
   tone: string,
   editorial?: EditorialGenerationContext,
+  usageCtx?: AiUsageContext,
 ): Promise<ContentVariants> {
   const requestedKeys = activeVariantKeys(editorial?.activeFormats);
   const exampleJson = `{\n  ${requestedKeys.map((k) => VARIANT_SPEC[k].example).join(",\n  ")}\n}`;
@@ -85,6 +86,7 @@ ${variantRules}
     temperature: 0.6,
     maxTokens: 2000,
     jsonMode: true,
+    usageContext: usageCtx,
   });
 
   const parsed = extractJSON(text) as Partial<ContentVariants> | null;
@@ -131,6 +133,7 @@ export async function regenerateVariant(
   variant: keyof ContentVariants,
   customPrompt?: string,
   editorialBlock?: string,
+  usageCtx?: AiUsageContext,
 ): Promise<ContentVariants[typeof variant]> {
   const variantInstructions: Record<keyof ContentVariants, string> = {
     twitterThread: "un hilo de Twitter (máximo 5 tweets, cada uno ≤280 caracteres, con emojis moderados). Devolvé JSON: { \"twitterThread\": [\"tweet1\", \"tweet2\"] }",
@@ -158,6 +161,7 @@ Solo el JSON, sin texto adicional.`;
     temperature: 0.7,
     maxTokens: 800,
     jsonMode: true,
+    usageContext: usageCtx,
   });
 
   const parsed = extractJSON(text) as Record<string, unknown> | null;

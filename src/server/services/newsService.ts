@@ -1,5 +1,9 @@
 import { chatCompletion } from "./aiSdkService.js";
-import type { NewsGenerationOptions } from "../../shared/types.js";
+import type { AiUsageContext, NewsGenerationOptions } from "../../shared/types.js";
+
+/** Defaults para todo menos usageContext (opcional — no tiene default). */
+type ResolvedNewsOptions = Required<Omit<NewsGenerationOptions, "usageContext">> &
+  Pick<NewsGenerationOptions, "usageContext">;
 
 const PLATFORM_NAME = process.env.PLATFORM_NAME || "Noticias";
 
@@ -62,7 +66,7 @@ async function generateNewsCopy(
   contextOrOptions: string | NewsGenerationOptions,
   transcription?: string,
 ): Promise<string> {
-  let options: Required<NewsGenerationOptions>;
+  let options: ResolvedNewsOptions;
   if (typeof contextOrOptions === "string") {
     options = {
       context: contextOrOptions,
@@ -74,7 +78,7 @@ async function generateNewsCopy(
       editorialBlock: "",
     };
   } else {
-    const defaults: Required<NewsGenerationOptions> = {
+    const defaults: Required<Omit<NewsGenerationOptions, "usageContext">> = {
       tone: "formal",
       structure: "completa",
       webContext: "",
@@ -144,6 +148,7 @@ Redacta la nota periodistica ahora.`;
       userPrompt,
       temperature: options.tone === "urgente" ? 0.3 : 0.5,
       maxTokens: 1200,
+      usageContext: options.usageContext,
     });
 
     const generatedText = text.trim();
@@ -165,6 +170,7 @@ async function generateTitle(
   transcription: string,
   insights?: string,
   editorialBlock?: string,
+  usageCtx?: AiUsageContext,
 ): Promise<string> {
   const editorialSection = editorialBlock?.trim() ? `\n${editorialBlock.trim()}\n` : "";
   try {
@@ -176,6 +182,7 @@ ${editorialSection}
 Genera UN SOLO titulo:`,
       temperature: 0.6,
       maxTokens: 60,
+      usageContext: usageCtx,
     });
 
     return text.trim().replace(/^["'<<>>]|["'<<>>]$/g, "").split("\n")[0].trim();

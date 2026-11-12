@@ -752,6 +752,10 @@ export async function generateVariants(
         temperature: 0.6,
         maxTokens: 3000,
         jsonMode: true,
+        usageContext: {
+            tenantId: input.tenantId,
+            feature: 'network-variants',
+        },
     });
 
     const parsed = parseVariantsResponse(text, networks);

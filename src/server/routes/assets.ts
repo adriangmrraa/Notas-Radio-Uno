@@ -279,6 +279,7 @@ assetsRouter.post('/:id/edit-text', requireAuth, async (req: Request, res: Respo
             return generateTextWithFallback({
                 system: 'Eres un editor editorial. Devuelve solo el texto editado, sin inventar hechos.',
                 prompt: `Texto original:\n${input.sourceText}\n\nInstruccion editorial:\n${input.instruction}`,
+                usageContext: { tenantId: input.tenantId, feature: 'asset-edit' },
             });
         });
         const result = await propose({ tenantId, sourceText, instruction: body.instruction.trim() });

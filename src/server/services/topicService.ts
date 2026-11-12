@@ -1,5 +1,5 @@
 import { chatCompletion, extractJSON } from "./aiService.js";
-import type { TopicSegment, TopicAnalysisResult } from "../../shared/types.js";
+import type { AiUsageContext, TopicSegment, TopicAnalysisResult } from "../../shared/types.js";
 
 /**
  * Servicio de segmentacion inteligente de temas.
@@ -53,6 +53,7 @@ export async function analyzeTopicSegments(
   latestChunk: string,
   alreadyPublishedTopics: string[] = [],
   pendingConfirmation: string[] = [],
+  usageCtx?: AiUsageContext,
 ): Promise<TopicAnalysisResult> {
   const publishedContext =
     alreadyPublishedTopics.length > 0
@@ -110,6 +111,7 @@ Solo recomenda "publish" si hay al menos un tema "completed" con newsworthy=true
       temperature: 0.15,
       maxTokens: 1500,
       jsonMode: true,
+      usageContext: usageCtx,
     });
 
     const analysis = extractJSON(text) as {

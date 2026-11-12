@@ -217,7 +217,10 @@ export function registerGenerateRoutes(
     }
 
     try {
-      const articleData = await scrapeArticle(url);
+      const articleData = await scrapeArticle(url, {
+        tenantId: req.auth!.tenantId,
+        feature: 'news-scrape',
+      });
 
       const imageResponse = await axios.get(articleData.imageUrl || "", {
         responseType: "arraybuffer",
@@ -436,6 +439,7 @@ export function registerGenerateRoutes(
         context: context || "",
         transcription: transcription || "",
         editorialBlock: editorial.block,
+        usageContext: { tenantId, feature: 'news-generate' },
       });
       res.setHeader("Content-Type", "application/json");
       res.json({ generatedCopy });
