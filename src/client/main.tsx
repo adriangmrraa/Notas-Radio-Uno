@@ -33,6 +33,7 @@ import { AdminTenants } from './pages/admin/AdminTenants';
 import { AdminTenantDetail } from './pages/admin/AdminTenantDetail';
 import { AdminPlans } from './pages/admin/AdminPlans';
 import { AdminJobs } from './pages/admin/AdminJobs';
+import { AdminCosts } from './pages/admin/AdminCosts';
 import './index.css';
 import './App.css';
 
@@ -92,6 +93,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="tenants/:id" element={<AdminTenantDetail />} />
               <Route path="plans" element={<AdminPlans />} />
               <Route path="jobs" element={<AdminJobs />} />
+              <Route path="costs" element={<AdminCosts />} />
             </Route>
 
             <Route path="/" element={<Landing />} />
