@@ -64,12 +64,17 @@
  * tras el commit. El `updateRun` del store queda sólo para parches SIN
  * cambio de estado (p.ej. fijar `waiting_since` en una corrida ya waiting).
  */
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { Server } from 'socket.io';
-import { and, asc, count, eq, inArray, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 
 import { db, type Database } from '../db/index.js';
 import { plans, subscriptions } from '../db/schema/billing.js';
-import { streamRecordings } from '../db/schema/recordings.js';
+import {
+  recordingSegments,
+  streamRecordings,
+} from '../db/schema/recordings.js';
 import {
   scheduledTransmissions,
   transmissions,
@@ -89,6 +94,8 @@ import {
   type RecordingHandle,
   type StartRecordingOptions,
 } from './streamRecorderService.js';
+import { getRawStorage } from './rawStorageService.js';
+import { notify } from './notificationService.js';
 import {
   consumeTransmission,
   releaseTransmission,
@@ -112,6 +119,13 @@ export interface TransmissionSchedulerOptions {
   retryIntervalMs?: number;
   /** Máximo de transmisiones concurrentes. Default 5. */
   maxConcurrent?: number;
+  /**
+   * PI-04 — ventana de reanudación de crudo tras un restart, en minutos.
+   * Si el corte de ingesta (último byte escrito → ahora) la excede, la
+   * grabación huérfana queda `interrupted` terminal y la corrida va a
+   * `error` con la razón — sin reintentos infinitos. Default 30.
+   */
+  resumeWindowMinutes?: number;
   /** Inyectable para tests. */
   now?: () => Date;
   /** Dependencias inyectables para tests (prod usa los defaults). */
@@ -206,6 +220,21 @@ export interface ScheduledAdvancePatch {
 export interface StaleRun extends SchedulerRunRow {
   /** `stream_recordings.status` si la corrida tiene grabación, si no null. */
   recordingStatus: string | null;
+  /** `stream_recordings.id` (UNIQUE por transmisión), si existe. */
+  recordingId: string | null;
+  /** `stream_recordings.started_at` — ancla de offsets de segmentos. */
+  recordingStartedAt: Date | null;
+  /** `stream_recordings.storage_prefix` — raíz de los archivos del crudo. */
+  storagePrefix: string | null;
+}
+
+/** Fila de `recording_segments` que el sweep de ingesta necesita (PI-04). */
+export interface SchedulerSegmentRow {
+  sequence: number;
+  fileRef: string;
+  startMs: number;
+  endMs: number | null;
+  bytes: number;
 }
 
 export interface SchedulerStore {
@@ -234,6 +263,30 @@ export interface SchedulerStore {
   countActiveRuns(): Promise<number>;
   /** Corridas en `live|processing` + estado de su recording (reconcile). */
   listStaleRuns(): Promise<StaleRun[]>;
+  /**
+   * Segmentos de una grabación ordenados por `sequence` (sweep PI-04: cierre
+   * de los abiertos + `nextSequence` de la reanudación).
+   */
+  listSegments(
+    tenantId: string,
+    recordingId: string,
+  ): Promise<SchedulerSegmentRow[]>;
+  /** Fija `end_ms` de un segmento abierto (cierre por sweep post-restart). */
+  setSegmentEndMs(
+    tenantId: string,
+    recordingId: string,
+    sequence: number,
+    endMs: number,
+  ): Promise<void>;
+  /**
+   * Parche sobre `stream_recordings` — el sweep marca `interrupted` +
+   * `ended_at`. Filtra por tenant_id.
+   */
+  updateRecording(
+    tenantId: string,
+    recordingId: string,
+    patch: { status?: string; endedAt?: Date | null },
+  ): Promise<void>;
 }
 
 // ─── Dependencias inyectables ───────────────────────────────────────────────
@@ -278,6 +331,23 @@ export interface TransmissionSchedulerDeps {
    * segmentos `purged`. Inyectable para tests (spy, sin storage real).
    */
   purgeRetention?: (now: Date) => Promise<PurgeOutcome>;
+  /**
+   * PI-04 — mtime (epoch ms) de un archivo físico del crudo, null si no se
+   * puede stat-ear. El sweep lo usa para cerrar segmentos abiertos con su
+   * última escritura real. Default: `fs.stat`.
+   */
+  fileMtimeMs?: (filePath: string) => Promise<number | null>;
+  /**
+   * PI-04 — prefijo de storage → path físico. Default:
+   * `getRawStorage().publicPath` (misma convención que el recorder).
+   */
+  storagePath?: (prefix: string) => string;
+  /**
+   * PI-04 — notificación al tenant ante corte/reanudación del crudo
+   * (`notificationService.notify` en prod — mismo fanout que PE-07 usa para
+   * entregar alertas). Best-effort: los callers la catchean.
+   */
+  notifyFn?: typeof notify;
 }
 
 interface ResolvedDeps {
@@ -292,6 +362,9 @@ interface ResolvedDeps {
   releaseQuota: NonNullable<TransmissionSchedulerDeps['releaseQuota']>;
   transitionRun: TransitionRunner;
   purgeRetention: (now: Date) => Promise<PurgeOutcome>;
+  fileMtimeMs: (filePath: string) => Promise<number | null>;
+  storagePath: (prefix: string) => string;
+  notifyFn: typeof notify;
 }
 
 // ─── Implementación drizzle del store ───────────────────────────────────────
@@ -410,7 +483,13 @@ export function createDrizzleSchedulerStore(
 
     async listStaleRuns() {
       const rows = await executor
-        .select({ run: RUN_COLS, recordingStatus: streamRecordings.status })
+        .select({
+          run: RUN_COLS,
+          recordingStatus: streamRecordings.status,
+          recordingId: streamRecordings.id,
+          recordingStartedAt: streamRecordings.startedAt,
+          storagePrefix: streamRecordings.storagePrefix,
+        })
         .from(transmissions)
         .leftJoin(
           streamRecordings,
@@ -420,7 +499,56 @@ export function createDrizzleSchedulerStore(
       return rows.map((r) => ({
         ...r.run,
         recordingStatus: r.recordingStatus ?? null,
+        recordingId: r.recordingId ?? null,
+        recordingStartedAt: r.recordingStartedAt ?? null,
+        storagePrefix: r.storagePrefix ?? null,
       }));
+    },
+
+    async listSegments(tenantId, recordingId) {
+      return executor
+        .select({
+          sequence: recordingSegments.sequence,
+          fileRef: recordingSegments.fileRef,
+          startMs: recordingSegments.startMs,
+          endMs: recordingSegments.endMs,
+          bytes: recordingSegments.bytes,
+        })
+        .from(recordingSegments)
+        .where(
+          and(
+            eq(recordingSegments.recordingId, recordingId),
+            eq(recordingSegments.tenantId, tenantId),
+          ),
+        )
+        .orderBy(asc(recordingSegments.sequence));
+    },
+
+    async setSegmentEndMs(tenantId, recordingId, sequence, endMs) {
+      await executor
+        .update(recordingSegments)
+        .set({ endMs })
+        .where(
+          and(
+            eq(recordingSegments.recordingId, recordingId),
+            eq(recordingSegments.tenantId, tenantId),
+            eq(recordingSegments.sequence, sequence),
+            // Sólo abiertos: un end_ms ya fijado no se pisa (idempotente).
+            isNull(recordingSegments.endMs),
+          ),
+        );
+    },
+
+    async updateRecording(tenantId, recordingId, patch) {
+      await executor
+        .update(streamRecordings)
+        .set(patch)
+        .where(
+          and(
+            eq(streamRecordings.id, recordingId),
+            eq(streamRecordings.tenantId, tenantId),
+          ),
+        );
     },
   };
 }
@@ -497,6 +625,16 @@ function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
       d.transitionRun ??
       ((o) => transitionTransmission(o, { now: opts.now })),
     purgeRetention: d.purgeRetention ?? ((now) => purgeExpiredRecordings(now)),
+    fileMtimeMs:
+      d.fileMtimeMs ??
+      ((p) =>
+        fs
+          .stat(p)
+          .then((s) => s.mtimeMs)
+          .catch(() => null)),
+    storagePath:
+      d.storagePath ?? ((prefix) => getRawStorage().publicPath(prefix)),
+    notifyFn: d.notifyFn ?? notify,
   };
 }
 
@@ -758,6 +896,7 @@ function runRecordingInBackground(
   run: SchedulerRunRow,
   liveUrl: string | null,
   deps: ResolvedDeps,
+  recorderOpts: Pick<StartRecordingOptions, 'storagePrefix' | 'resume'> = {},
 ): void {
   void (async () => {
     try {
@@ -766,6 +905,7 @@ function runRecordingInBackground(
         transmissionId: run.id,
         streamUrl: liveUrl ?? run.streamUrl ?? '',
         maxDurationMinutes: run.durationMinutes ?? undefined,
+        ...recorderOpts,
       });
       const outcome = await handle.done;
       const res = await deps
@@ -814,6 +954,178 @@ function runRecordingInBackground(
 
 // ─── Reconciliación post-restart ────────────────────────────────────────────
 
+/** Ventana de reanudación de crudo por defecto (PI-04), en minutos. */
+export const DEFAULT_RESUME_WINDOW_MINUTES = 30;
+
+export interface OrphanRecoveryDecision {
+  resume: boolean;
+  /** Razón de NO reanudar (español — compone el `error_message` del run). */
+  reason?: string;
+}
+
+/**
+ * Decide si una grabación huérfana se reanuda o se cierra para siempre
+ * (PI-04). Dos cortes independientes — cualquiera basta para el terminal:
+ *   1. ventana live del run: `startedAt + durationMinutes` ya pasó — el
+ *      programa terminó aunque la captura hubiera seguido.
+ *   2. corte largo: el tiempo sin escribir (`outageMs`, anclado en el
+ *      último `end_ms`/mtime real) excede `resumeWindowMs`.
+ * Sin loops infinitos: cada reanudación exige ambas ventanas vivas y el
+ * ancla del corte es el último byte real, no un contador reseteable.
+ */
+export function decideOrphanRecovery(input: {
+  outageMs: number;
+  resumeWindowMs: number;
+  /** Fin de la ventana live del run (epoch ms) — null = corrida sin cap. */
+  liveWindowEndMs: number | null;
+  nowMs: number;
+}): OrphanRecoveryDecision {
+  if (input.liveWindowEndMs !== null && input.nowMs >= input.liveWindowEndMs) {
+    return {
+      resume: false,
+      reason: 'la ventana live de la transmisión ya había terminado',
+    };
+  }
+  if (input.outageMs > input.resumeWindowMs) {
+    const mins = Math.round(input.outageMs / 60_000);
+    const win = Math.round(input.resumeWindowMs / 60_000);
+    return {
+      resume: false,
+      reason: `el corte de ingesta duró ${mins} min y excede la ventana de reanudación de ${win} min`,
+    };
+  }
+  return { resume: true };
+}
+
+/**
+ * PI-04 — recuperación de una grabación huérfana al boot.
+ *
+ * La fila `stream_recordings` quedó en `recording` (o `interrupted` de un
+ * sweep anterior que no alcanzó a reanudar) pero el ffmpeg dueño murió con
+ * el proceso anterior. Pasos:
+ *   1. Cerrar segmentos abiertos: `end_ms` = última escritura real (mtime
+ *      del archivo) menos el `started_at` de la grabación. Si el archivo no
+ *      stat-ea, el segmento colapsa a su `start_ms` — no podemos probar
+ *      contenido posterior: honesto antes que inflado.
+ *   2. Marcar la grabación `interrupted` + `ended_at` — el corte SÍ pasó.
+ *   3. `decideOrphanRecovery`:
+ *      - reanudable → MISMA grabación con intento nuevo (la UNIQUE de
+ *        `transmission_id` lo fuerza, y conserva la ancla de offsets): la
+ *        fila vuelve a `recording` dentro de `startRecording({resume})`, la
+ *        corrida sigue `live` — nunca salió de ese estado.
+ *      - terminal → la corrida va a `error` por FSM con la razón, y el
+ *        tenant recibe notificación `ingest_interrupted`.
+ */
+async function recoverOrphanedRecording(
+  run: StaleRun,
+  deps: ResolvedDeps,
+  now: Date,
+  resumeWindowMs: number,
+): Promise<void> {
+  const { store } = deps;
+  const recordingId = run.recordingId as string;
+  const storagePrefix = run.storagePrefix ?? `${run.tenantId}/${run.id}`;
+  const recStartedAtMs =
+    run.recordingStartedAt?.getTime() ?? run.startedAt?.getTime() ?? now.getTime();
+
+  // 1) Cierre de segmentos abiertos — end_ms anclado al mtime real.
+  const segments = await store.listSegments(run.tenantId, recordingId);
+  let lastAliveMs = recStartedAtMs;
+  let nextSequence = 0;
+  let openClosed = 0;
+  for (const seg of segments) {
+    nextSequence = Math.max(nextSequence, seg.sequence + 1);
+    if (seg.endMs === null) {
+      const mtimeMs = await deps.fileMtimeMs(
+        path.join(deps.storagePath(storagePrefix), seg.fileRef),
+      );
+      const endMs =
+        mtimeMs !== null
+          ? Math.max(seg.startMs, Math.round(mtimeMs - recStartedAtMs))
+          : seg.startMs;
+      await store.setSegmentEndMs(run.tenantId, recordingId, seg.sequence, endMs);
+      openClosed += 1;
+      lastAliveMs = Math.max(lastAliveMs, recStartedAtMs + endMs);
+    } else {
+      lastAliveMs = Math.max(lastAliveMs, recStartedAtMs + seg.endMs);
+    }
+  }
+  const outageMs = Math.max(0, now.getTime() - lastAliveMs);
+
+  // 2) La grabación queda 'interrupted' — si se reanuda vuelve a 'recording'.
+  await store.updateRecording(run.tenantId, recordingId, {
+    status: 'interrupted',
+    endedAt: now,
+  });
+  log.warn('[TransmissionScheduler] grabación huérfana → interrupted', {
+    tenantId: run.tenantId,
+    transmissionId: run.id,
+    recordingId,
+    openSegmentsClosed: openClosed,
+    outageMs,
+  });
+
+  // 3) Reanudar o cerrar para siempre (ventana live + corte largo).
+  const liveWindowEndMs =
+    run.durationMinutes && run.durationMinutes > 0
+      ? (run.startedAt?.getTime() ?? recStartedAtMs) +
+        run.durationMinutes * 60_000
+      : null;
+  const decision = decideOrphanRecovery({
+    outageMs,
+    resumeWindowMs,
+    liveWindowEndMs,
+    nowMs: now.getTime(),
+  });
+
+  if (!decision.resume) {
+    const reason = `El servidor se reinició durante la transmisión y ${decision.reason}`;
+    await deps.transitionRun({
+      tenantId: run.tenantId,
+      transmissionId: run.id,
+      to: 'error',
+      errorMessage: reason,
+    });
+    await deps
+      .notifyFn({
+        tenantId: run.tenantId,
+        type: 'ingest_interrupted',
+        title: 'Grabación interrumpida',
+        message: reason,
+        icon: '📡',
+        metadata: { transmissionId: run.id, recordingId, outageMs },
+      })
+      .catch(() => {});
+    return;
+  }
+
+  log.info('[TransmissionScheduler] reanudando grabación huérfana', {
+    tenantId: run.tenantId,
+    transmissionId: run.id,
+    recordingId,
+    outageMs,
+    nextSequence,
+  });
+  runRecordingInBackground(run, run.streamUrl, deps, {
+    storagePrefix,
+    resume: {
+      recordingId,
+      startedAt: run.recordingStartedAt ?? new Date(recStartedAtMs),
+      nextSequence,
+    },
+  });
+  await deps
+    .notifyFn({
+      tenantId: run.tenantId,
+      type: 'ingest_resumed',
+      title: 'Grabación reanudada',
+      message: `La captura del crudo se reanudó tras un corte de ${Math.round(outageMs / 1000)} s`,
+      icon: '📡',
+      metadata: { transmissionId: run.id, recordingId, outageMs },
+    })
+    .catch(() => {});
+}
+
 /**
  * Al boot, toda corrida en `live|processing` es huérfana por definición: el
  * recorder (ffmpeg hijo del proceso) murió con el server. Se cierran sin
@@ -822,8 +1134,12 @@ function runRecordingInBackground(
  *   - `live` con recording `completed` → `done`; como `live → done` no es
  *     arista de la FSM se hace el camino honesto `live → processing → done`
  *     (la captura había completado: el estado intermedio es real).
- *   - `live` sin recording o con recording abierta → `error` "servidor
- *     reiniciado durante la transmisión".
+ *   - `live` con recording abierta (`recording`/`interrupted`) → sweep de
+ *     ingesta PI-04: cierra segmentos, marca `interrupted` y REANUDA el
+ *     crudo si el corte está dentro de la ventana — si no, `error` con la
+ *     razón (`recoverOrphanedRecording`).
+ *   - `live` sin recording → `error` "servidor reiniciado durante la
+ *     transmisión".
  * Las `waiting|scheduled` no se tocan: el scan las retoma respetando su
  * `waiting_since`/`started_at` original (la ventana no se reinicia).
  */
@@ -831,6 +1147,9 @@ export async function reconcileOrphanedRuns(
   opts: TransmissionSchedulerOptions = {},
 ): Promise<void> {
   const deps = resolveDeps(opts);
+  const now = opts.now?.() ?? new Date();
+  const resumeWindowMs =
+    (opts.resumeWindowMinutes ?? DEFAULT_RESUME_WINDOW_MINUTES) * 60_000;
   const stale = await deps.store.listStaleRuns();
   for (const run of stale) {
     try {
@@ -849,6 +1168,13 @@ export async function reconcileOrphanedRuns(
           transmissionId: run.id,
           to: 'done',
         });
+      } else if (
+        run.status === 'live' &&
+        run.recordingId !== null &&
+        (run.recordingStatus === 'recording' ||
+          run.recordingStatus === 'interrupted')
+      ) {
+        await recoverOrphanedRecording(run, deps, now, resumeWindowMs);
       } else {
         await deps.transitionRun({
           tenantId: run.tenantId,

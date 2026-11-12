@@ -34,12 +34,14 @@ vi.mock('../src/server/db/index.js', async (io) => ({
 import { nextOccurrence } from '../src/server/lib/rrule';
 import {
   checkAndRunScheduledTransmissions,
+  decideOrphanRecovery,
   initTransmissionScheduler,
   reconcileOrphanedRuns,
   stopTransmissionScheduler,
   type DispatchGateResult,
   type TransmissionSchedulerDeps,
 } from '../src/server/services/transmissionSchedulerService';
+import type { notify } from '../src/server/services/notificationService';
 import type { LiveDetectionResult } from '../src/server/services/liveDetectorService';
 import type {
   RecordingHandle,
@@ -128,6 +130,10 @@ interface World {
   releaseCalls: Array<{ tenantId: string; operationId: string; reason: string }>;
   setConsume: (fn: () => Promise<ConsumeResult>) => void;
   gate: { result: DispatchGateResult };
+  /** PI-04: notificaciones de ingesta (interrupted/resumed) al tenant. */
+  notifyCalls: Array<Record<string, unknown>>;
+  /** PI-04: mtimes falsos del storage crudo — clave = fileRef (match por sufijo). */
+  fileMtimes: Map<string, number>;
 }
 
 function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): World {
@@ -151,6 +157,8 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
   const gate: World['gate'] = {
     result: { ok: true, maxTransmissionMinutes: null },
   };
+  const notifyCalls: World['notifyCalls'] = [];
+  const fileMtimes: World['fileMtimes'] = new Map();
 
   // El ejecutor de transiciones replica la semántica real: FSM + UPDATE +
   // eventos post-commit (los captura `events` vía onEmit).
@@ -190,6 +198,19 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
       return { released: true };
     },
     transitionRun,
+    // PI-04 — deps del sweep de ingesta: storage en memoria (mtime por
+    // fileRef) y notify fake que registra en vez de tocar `notifications`.
+    storagePath: (prefix) => `/mem/${prefix}`,
+    fileMtimeMs: async (filePath) => {
+      for (const [fileRef, mtime] of fileMtimes) {
+        if (filePath.endsWith(fileRef)) return mtime;
+      }
+      return null;
+    },
+    notifyFn: (async (p: Record<string, unknown>) => {
+      notifyCalls.push(p);
+      return {} as never;
+    }) as typeof notify,
   };
 
   return {
@@ -223,6 +244,8 @@ function makeWorld(seed: Parameters<typeof createMemorySchedulerStore>[0]): Worl
       consumeImpl = fn;
     },
     gate,
+    notifyCalls,
+    fileMtimes,
   };
 }
 
@@ -655,6 +678,290 @@ describe('reconcileOrphanedRuns', () => {
     // La waiting la retoma el scan: no se toca en el reconcile.
     expect(runOf(w, 'tx-espera').status).toBe('waiting');
   });
+
+  it('live con grabación abierta dentro de la ventana → cierra segmentos, interrupted→reanuda MISMO recording y la corrida sigue live', async () => {
+    const rec0 = T0 - 10 * MIN;
+    const w = makeWorld({
+      runs: [
+        makeRun({
+          id: 'tx-viva',
+          status: 'live',
+          startedAt: new Date(rec0),
+          durationMinutes: 60,
+        }),
+      ],
+      recordings: [
+        {
+          id: 'rec-1',
+          transmissionId: 'tx-viva',
+          tenantId: TENANT_A,
+          status: 'recording',
+          storagePrefix: `${TENANT_A}/tx-viva`,
+          startedAt: new Date(rec0),
+        },
+      ],
+      segments: [
+        {
+          recordingId: 'rec-1',
+          sequence: 0,
+          fileRef: 'seg-a.mp4',
+          startMs: 0,
+          endMs: 300_000,
+          bytes: 100,
+        },
+        {
+          recordingId: 'rec-1',
+          sequence: 1,
+          fileRef: 'seg-b.mp4',
+          startMs: 300_000,
+          endMs: null,
+          bytes: 50,
+        },
+      ],
+    });
+    // El archivo abierto se escribió por última vez hace 2 min (el crash).
+    w.fileMtimes.set('seg-b.mp4', T0 - 2 * MIN);
+
+    await reconcileOrphanedRuns({ now, deps: w.deps, resumeWindowMinutes: 30 });
+
+    // El segmento abierto cierra al mtime real, no a "ahora".
+    const seg1 = w.state.segments.find((s) => s.sequence === 1)!;
+    expect(seg1.endMs).toBe(T0 - 2 * MIN - rec0);
+    // La grabación quedó interrupted + ended_at; al reanudar vuelve a recording
+    // (la llamada a startRecording{resume} lo hace el recorder real — acá el
+    // fake no la toca, el patch queda evidenciado).
+    const rec = w.state.recordings[0];
+    expect(rec.status).toBe('interrupted');
+    expect(rec.endedAt).not.toBeNull();
+    // Reanudación sobre la MISMA fila: mismo recordingId/prefijo, seq continúa.
+    await vi.waitFor(() => expect(w.recCalls).toHaveLength(1));
+    expect(w.recCalls[0].transmissionId).toBe('tx-viva');
+    expect(w.recCalls[0].storagePrefix).toBe(`${TENANT_A}/tx-viva`);
+    expect(w.recCalls[0].resume).toEqual({
+      recordingId: 'rec-1',
+      startedAt: new Date(rec0),
+      nextSequence: 2,
+    });
+    // La corrida NUNCA salió de live (la captura sigue al aire).
+    expect(runOf(w, 'tx-viva').status).toBe('live');
+    expect(w.notifyCalls.some((n) => n.type === 'ingest_resumed')).toBe(true);
+    expect(w.notifyCalls.some((n) => n.type === 'ingest_interrupted')).toBe(false);
+  });
+
+  it('corte largo (> ventana) → interrupted terminal, corrida a error con razón, NO reanuda', async () => {
+    const rec0 = T0 - 120 * MIN;
+    const w = makeWorld({
+      runs: [
+        makeRun({
+          id: 'tx-corte',
+          status: 'live',
+          startedAt: new Date(rec0),
+          durationMinutes: 180, // la ventana live sigue abierta
+        }),
+      ],
+      recordings: [
+        {
+          id: 'rec-2',
+          transmissionId: 'tx-corte',
+          tenantId: TENANT_A,
+          status: 'recording',
+          storagePrefix: `${TENANT_A}/tx-corte`,
+          startedAt: new Date(rec0),
+        },
+      ],
+      segments: [
+        {
+          recordingId: 'rec-2',
+          sequence: 0,
+          fileRef: 'seg-x.mp4',
+          startMs: 0,
+          endMs: null,
+          bytes: 10,
+        },
+      ],
+    });
+    // Última escritura hace 60 min → corte de 60 > ventana de 30.
+    w.fileMtimes.set('seg-x.mp4', T0 - 60 * MIN);
+
+    await reconcileOrphanedRuns({ now, deps: w.deps, resumeWindowMinutes: 30 });
+
+    expect(w.recCalls).toHaveLength(0);
+    const run = runOf(w, 'tx-corte');
+    expect(run.status).toBe('error');
+    expect(run.errorMessage).toMatch(/corte de ingesta duró 60 min/);
+    expect(run.errorMessage).toMatch(/30 min/);
+    expect(w.state.recordings[0].status).toBe('interrupted');
+    expect(w.state.segments[0].endMs).toBe(60 * MIN);
+    expect(
+      w.notifyCalls.some(
+        (n) => n.type === 'ingest_interrupted' && n.tenantId === TENANT_A,
+      ),
+    ).toBe(true);
+  });
+
+  it('ventana live ya vencida → terminal aunque el corte sea corto', async () => {
+    const rec0 = T0 - 70 * MIN;
+    const w = makeWorld({
+      runs: [
+        makeRun({
+          id: 'tx-vencida',
+          status: 'live',
+          startedAt: new Date(rec0),
+          durationMinutes: 60, // la ventana terminó hace 10 min
+        }),
+      ],
+      recordings: [
+        {
+          id: 'rec-3',
+          transmissionId: 'tx-vencida',
+          tenantId: TENANT_A,
+          status: 'recording',
+          storagePrefix: `${TENANT_A}/tx-vencida`,
+          startedAt: new Date(rec0),
+        },
+      ],
+      segments: [
+        {
+          recordingId: 'rec-3',
+          sequence: 0,
+          fileRef: 'seg-y.mp4',
+          startMs: 0,
+          endMs: null,
+          bytes: 10,
+        },
+      ],
+    });
+    // Corte de 1 min: dentro de la ventana de reanudación — no alcanza.
+    w.fileMtimes.set('seg-y.mp4', T0 - 1 * MIN);
+
+    await reconcileOrphanedRuns({ now, deps: w.deps, resumeWindowMinutes: 30 });
+
+    expect(w.recCalls).toHaveLength(0);
+    const run = runOf(w, 'tx-vencida');
+    expect(run.status).toBe('error');
+    expect(run.errorMessage).toMatch(/ventana live/);
+    expect(w.notifyCalls.some((n) => n.type === 'ingest_interrupted')).toBe(true);
+  });
+
+  it('segmento abierto sin archivo (stat falla) colapsa a start_ms y el corte se ancla ahí', async () => {
+    const rec0 = T0 - 10 * MIN;
+    const w = makeWorld({
+      runs: [
+        makeRun({
+          id: 'tx-stat',
+          status: 'live',
+          startedAt: new Date(rec0),
+          durationMinutes: 60,
+        }),
+      ],
+      recordings: [
+        {
+          id: 'rec-4',
+          transmissionId: 'tx-stat',
+          tenantId: TENANT_A,
+          status: 'recording',
+          storagePrefix: `${TENANT_A}/tx-stat`,
+          startedAt: new Date(rec0),
+        },
+      ],
+      segments: [
+        {
+          recordingId: 'rec-4',
+          sequence: 0,
+          fileRef: 'seg-perdido.mp4',
+          startMs: 300_000,
+          endMs: null,
+          bytes: 10,
+        },
+      ],
+    });
+    // Sin mtime (archivo ilegible): end_ms = start_ms, outage = 5 min → reanuda.
+    await reconcileOrphanedRuns({ now, deps: w.deps, resumeWindowMinutes: 30 });
+
+    expect(w.state.segments[0].endMs).toBe(300_000);
+    await vi.waitFor(() => expect(w.recCalls).toHaveLength(1));
+    expect(w.recCalls[0].resume?.nextSequence).toBe(1);
+  });
+
+  it('una grabación interrupted de un sweep previo se reanuda igual (idempotente)', async () => {
+    const rec0 = T0 - 10 * MIN;
+    const w = makeWorld({
+      runs: [
+        makeRun({
+          id: 'tx-reint',
+          status: 'live',
+          startedAt: new Date(rec0),
+          durationMinutes: 60,
+        }),
+      ],
+      recordings: [
+        {
+          id: 'rec-5',
+          transmissionId: 'tx-reint',
+          tenantId: TENANT_A,
+          status: 'interrupted', // quedó del boot anterior sin reanudar
+          storagePrefix: `${TENANT_A}/tx-reint`,
+          startedAt: new Date(rec0),
+        },
+      ],
+      segments: [
+        {
+          recordingId: 'rec-5',
+          sequence: 0,
+          fileRef: 'seg-z.mp4',
+          startMs: 0,
+          endMs: 120_000,
+          bytes: 10,
+        },
+      ],
+    });
+
+    await reconcileOrphanedRuns({ now, deps: w.deps, resumeWindowMinutes: 30 });
+
+    // Nada abierto que cerrar; outage anclada al end_ms (T0-8min) < 30 → reanuda.
+    expect(w.state.segments[0].endMs).toBe(120_000);
+    await vi.waitFor(() => expect(w.recCalls).toHaveLength(1));
+    expect(w.recCalls[0].resume?.recordingId).toBe('rec-5');
+    expect(runOf(w, 'tx-reint').status).toBe('live');
+  });
+});
+
+describe('decideOrphanRecovery', () => {
+    const base = {
+      outageMs: 5 * MIN,
+      resumeWindowMs: 30 * MIN,
+      liveWindowEndMs: T0 + 50 * MIN,
+      nowMs: T0,
+    };
+
+    it('reanuda sólo si las dos ventanas están vivas', () => {
+      expect(decideOrphanRecovery(base)).toEqual({ resume: true });
+    });
+
+    it('ventana live vencida → terminal (independiente del corte)', () => {
+      const d = decideOrphanRecovery({ ...base, liveWindowEndMs: T0 - 1 });
+      expect(d.resume).toBe(false);
+      expect(d.reason).toMatch(/ventana live/);
+    });
+
+    it('corrida sin cap de duración → la ventana live no corta', () => {
+      expect(
+        decideOrphanRecovery({ ...base, liveWindowEndMs: null }),
+      ).toEqual({ resume: true });
+    });
+
+    it('outage > ventana → terminal con la duración del corte en la razón', () => {
+      const d = decideOrphanRecovery({ ...base, outageMs: 45 * MIN });
+      expect(d.resume).toBe(false);
+      expect(d.reason).toMatch(/45 min/);
+      expect(d.reason).toMatch(/30 min/);
+    });
+
+    it('outage exactamente igual a la ventana → reanuda (el corte es >, no >=)', () => {
+      expect(
+        decideOrphanRecovery({ ...base, outageMs: 30 * MIN }),
+      ).toEqual({ resume: true });
+    });
 });
 
 // ─── init / stop ────────────────────────────────────────────────────────────
