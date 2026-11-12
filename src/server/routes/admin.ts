@@ -32,6 +32,8 @@ import {
   jobQueueService,
   type JobQueueStore,
 } from '../services/jobQueueService.js';
+import { createAiUsageService } from '../services/aiUsageService.js';
+import { parseAiUsageSummaryQuery } from './aiUsage.js';
 import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
 import { log } from '../lib/logger.js';
 
@@ -375,5 +377,35 @@ adminRouter.post('/jobs/:id/retry', mutationLimiter, async (req: Request, res: R
     res.json({ job });
   } catch (err) {
     fail(res, err, 'POST /jobs/:id/retry');
+  }
+});
+
+// ── Uso de IA por tenant (PI-03) ──────────────────────────────────────────────
+//
+// CROSS-TENANT por definición: mismo guard requirePlatformAdmin que /jobs —
+// lectura solamente, ninguna escritura. Sin `tenantId` agrega TODOS los
+// tenants (byTenant trae una fila por tenant); con `tenantId` (uuid)
+// equivale a la vista del endpoint tenant.
+//   GET /ai-usage → { summary } — query: tenantId?, from?, to?, feature?,
+//   top? (1..50, default 10). summary = { totals, byTenant, byFeature,
+//   byProvider, topTransmissions }.
+
+adminRouter.get('/ai-usage', async (req: Request, res: Response) => {
+  try {
+    const tenantParam =
+      typeof req.query.tenantId === 'string' && req.query.tenantId.trim() !== ''
+        ? req.query.tenantId.trim()
+        : undefined;
+    if (tenantParam !== undefined && !UUID_RE.test(tenantParam)) {
+      res.status(400).json({ error: 'tenantId inválido (uuid)', code: 'invalid_tenant' });
+      return;
+    }
+    const summary = await createAiUsageService().summarize({
+      ...parseAiUsageSummaryQuery(req.query),
+      tenantId: tenantParam,
+    });
+    res.json({ summary });
+  } catch (err) {
+    fail(res, err, 'GET /ai-usage');
   }
 });

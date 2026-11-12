@@ -57,6 +57,7 @@ import { socialConnectionsRouter } from "./routes/socialConnections.js";
 import { publishJobsRouter } from "./routes/publishJobs.js";
 import { publishChannelsRouter } from "./routes/publishChannels.js";
 import { jobQueueRouter } from "./routes/jobQueue.js";
+import { aiUsageRouter } from "./routes/aiUsage.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initPublishWorker } from "./services/publishWorker.js";
@@ -304,6 +305,8 @@ app.use("/api/publish-jobs", publishJobsRouter);
 app.use("/api/publish-channels", publishChannelsRouter);
 // PI-01: cola genérica job_queue — list/detail/enqueue/retry/cancel.
 app.use("/api/job-queue", jobQueueRouter);
+// PI-03: ledger de consumo de IA — resumen tenant-scoped de ai_usage_events.
+app.use("/api/ai-usage", aiUsageRouter);
 
 // Initialize background services
 initNotificationService(io);
