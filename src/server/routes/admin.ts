@@ -33,6 +33,10 @@ import {
   type JobQueueStore,
 } from '../services/jobQueueService.js';
 import { createAiUsageService } from '../services/aiUsageService.js';
+import {
+  getBackupStatus,
+  syncAssetBackups,
+} from '../services/assetBackupService.js';
 import { parseAiUsageSummaryQuery } from './aiUsage.js';
 import { auditFromRequest, AUDIT_ACTIONS } from '../services/auditService.js';
 import { log } from '../lib/logger.js';
@@ -50,6 +54,19 @@ const jobsService = () =>
   adminJobsRouteDeps.jobQueueStore
     ? createJobQueueService(adminJobsRouteDeps.jobQueueStore)
     : jobQueueService;
+
+/**
+ * Deps inyectables para los endpoints de backup (PI-05): los tests pisan
+ * `sync`/`status` con fakes — sin DB ni storage real. Mismo contrato que
+ * `adminJobsRouteDeps`.
+ */
+export const adminBackupRouteDeps: {
+  sync?: typeof syncAssetBackups;
+  status?: typeof getBackupStatus;
+} = {};
+
+const backupSync = () => adminBackupRouteDeps.sync ?? syncAssetBackups;
+const backupStatus = () => adminBackupRouteDeps.status ?? getBackupStatus;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -377,6 +394,64 @@ adminRouter.post('/jobs/:id/retry', mutationLimiter, async (req: Request, res: R
     res.json({ job });
   } catch (err) {
     fail(res, err, 'POST /jobs/:id/retry');
+  }
+});
+
+// ── Backup de assets derivados (PI-05) ──────────────────────────────────────
+//
+// Mismo criterio cross-tenant que /jobs y /ai-usage: el guard es
+// requirePlatformAdmin — el panel de plataforma opera y observa el backup de
+// TODOS los tenants. El sync manual acepta `tenantId` opcional para acotar la
+// corrida a un solo tenant (dentro del servicio TODA escritura sigue
+// tenant-scoped) y `dryRun` para previsualizar sin tocar storage ni manifest.
+// La mutación queda auditada (`admin.backup_synced`).
+
+const backupSyncSchema = z.object({
+  tenantId: z.string().uuid().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+adminRouter.post('/backup/sync', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const data = backupSyncSchema.parse(req.body ?? {});
+    const outcome = await backupSync()(new Date(), {
+      tenantId: data.tenantId,
+      dryRun: data.dryRun ?? false,
+    });
+    await auditFromRequest(req, AUDIT_ACTIONS.ADMIN_BACKUP_SYNCED, {
+      entityType: 'asset_backup',
+      metadata: {
+        tenantId: data.tenantId ?? null,
+        dryRun: data.dryRun ?? false,
+        scanned: outcome.scanned,
+        copied: outcome.copied,
+        skipped: outcome.skipped,
+        missing: outcome.missing,
+        bytesCopied: outcome.bytesCopied,
+        errors: outcome.errors.length,
+      },
+    });
+    res.json({ outcome });
+  } catch (err) {
+    fail(res, err, 'POST /backup/sync');
+  }
+});
+
+// Cobertura por tenant del manifest: entries/bytes/missing/errors + última
+// corrida registrada. `tenantId` (uuid) opcional acota a un solo tenant.
+adminRouter.get('/backup/status', async (req: Request, res: Response) => {
+  try {
+    const tenantParam =
+      typeof req.query.tenantId === 'string' && req.query.tenantId.trim() !== ''
+        ? req.query.tenantId.trim()
+        : undefined;
+    if (tenantParam !== undefined && !UUID_RE.test(tenantParam)) {
+      res.status(400).json({ error: 'tenantId inválido (uuid)', code: 'invalid_tenant' });
+      return;
+    }
+    res.json(await backupStatus()({ tenantId: tenantParam }));
+  } catch (err) {
+    fail(res, err, 'GET /backup/status');
   }
 });
 

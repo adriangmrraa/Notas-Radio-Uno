@@ -11,7 +11,7 @@
  *
  * Modelo de ejecución — ticks, no timers por corrida:
  *   `setInterval(60s)` llama `checkAndRunScheduledTransmissions` (exportado
- *   para tests). Cada tick hace TRES fases:
+ *   para tests). Cada tick hace CUATRO fases:
  *     A) Descubrimiento: agendas vencidas (`is_active` + `auto_start` +
  *        `next_run_at <= now`) → crea la `transmission` (status `scheduled`,
  *        `source='live_capture'`), aplica los gates (suscripción activa +
@@ -25,6 +25,11 @@
  *        `RETENTION_PURGE_INTERVAL_MINUTES` (default 1440) corre
  *        `purgeExpiredRecordings` global — contador de ticks + marca de
  *        última ejecución, todo try/catch (nunca tumba el loop).
+ *     D) Backup de assets derivados (PI-05): una vez cada
+ *        `BACKUP_SYNC_INTERVAL_MINUTES` (default 1440) corre
+ *        `syncAssetBackups` global — misma doble guardia que la fase C,
+ *        mismo try/catch. Los jobs `backup.sync` encolados por tenant en
+ *        `job_queue` son la vía manual por-tenant del mismo servicio.
  *
  * Decisiones documentadas:
  *   - `started_at`: se fija al disparar la ocurrencia (auditoría del dispatch)
@@ -109,6 +114,10 @@ import {
   purgeExpiredRecordings,
   type PurgeOutcome,
 } from './rawRetentionService.js';
+import {
+  syncAssetBackups,
+  type BackupOutcome,
+} from './assetBackupService.js';
 
 // ─── API pública ────────────────────────────────────────────────────────────
 
@@ -158,6 +167,24 @@ function retentionPurgeEnabled(): boolean {
 function retentionPurgeIntervalMinutes(): number {
   const raw = Number(process.env.RETENTION_PURGE_INTERVAL_MINUTES);
   return Number.isFinite(raw) && raw > 0 ? Math.max(1, raw) : DEFAULT_PURGE_INTERVAL_MINUTES;
+}
+
+// ─── Job de backup de assets (PI-05) ────────────────────────────────────────
+// Mismo patrón env que la purga: apagable/ajustable sin deploy.
+const DEFAULT_BACKUP_SYNC_INTERVAL_MINUTES = 1440; // 24 h
+
+/** `BACKUP_SYNC_ENABLED` — default true ('false'/'0' lo apagan). */
+function backupSyncEnabled(): boolean {
+  const raw = process.env.BACKUP_SYNC_ENABLED?.trim().toLowerCase();
+  return raw !== 'false' && raw !== '0';
+}
+
+/** `BACKUP_SYNC_INTERVAL_MINUTES` — default 1440; mínimo 1. */
+function backupSyncIntervalMinutes(): number {
+  const raw = Number(process.env.BACKUP_SYNC_INTERVAL_MINUTES);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.max(1, raw)
+    : DEFAULT_BACKUP_SYNC_INTERVAL_MINUTES;
 }
 
 // ─── Filas mínimas que el scheduler lee (contrato del store) ───────────────
@@ -332,6 +359,12 @@ export interface TransmissionSchedulerDeps {
    */
   purgeRetention?: (now: Date) => Promise<PurgeOutcome>;
   /**
+   * Job de backup incremental de assets derivados (PI-05). Default:
+   * `syncAssetBackups` global — copia al BackupStorage lo nuevo/modificado
+   * y actualiza el manifest `asset_backup_entries`. Inyectable para tests.
+   */
+  syncBackup?: (now: Date) => Promise<BackupOutcome>;
+  /**
    * PI-04 — mtime (epoch ms) de un archivo físico del crudo, null si no se
    * puede stat-ear. El sweep lo usa para cerrar segmentos abiertos con su
    * última escritura real. Default: `fs.stat`.
@@ -362,6 +395,7 @@ interface ResolvedDeps {
   releaseQuota: NonNullable<TransmissionSchedulerDeps['releaseQuota']>;
   transitionRun: TransitionRunner;
   purgeRetention: (now: Date) => Promise<PurgeOutcome>;
+  syncBackup: (now: Date) => Promise<BackupOutcome>;
   fileMtimeMs: (filePath: string) => Promise<number | null>;
   storagePath: (prefix: string) => string;
   notifyFn: typeof notify;
@@ -608,6 +642,13 @@ const lastAttemptAt = new Map<string, number>();
 let retentionPurgeTicks = 0;
 let lastRetentionPurgeAt: number | null = null;
 
+// ─── Estado del job de backup de assets (PI-05) ─────────────────────────────
+// Mismo patrón que la purga: contador de ticks + marca de última ejecución.
+// El sync es idempotente (segunda corrida = no-op de stats), así que el
+// catch-up del primer tick tampoco copia de más.
+let backupSyncTicks = 0;
+let lastBackupSyncAt: number | null = null;
+
 function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
   const d = opts.deps ?? {};
   return {
@@ -625,6 +666,7 @@ function resolveDeps(opts: TransmissionSchedulerOptions): ResolvedDeps {
       d.transitionRun ??
       ((o) => transitionTransmission(o, { now: opts.now })),
     purgeRetention: d.purgeRetention ?? ((now) => purgeExpiredRecordings(now)),
+    syncBackup: d.syncBackup ?? ((now) => syncAssetBackups(now)),
     fileMtimeMs:
       d.fileMtimeMs ??
       ((p) =>
@@ -1288,6 +1330,40 @@ export async function checkAndRunScheduledTransmissions(
         log.error('[TransmissionScheduler] purga de retención falló', { err });
       }
     }
+
+    // Fase D — backup incremental de assets derivados (PI-05). Misma doble
+    // guardia que la purga (contador de ticks Y marca de tiempo): corre al
+    // primer tick del proceso y después cada
+    // `BACKUP_SYNC_INTERVAL_MINUTES` (default 1440). Idempotente por el
+    // manifest — el catch-up no copia dos veces. En try/catch: jamás tumba
+    // el scheduler.
+    backupSyncTicks += 1;
+    const backupIntervalMinutes = backupSyncIntervalMinutes();
+    const backupDueByTicks =
+      lastBackupSyncAt === null ||
+      backupSyncTicks >= Math.max(1, Math.round(backupIntervalMinutes));
+    const backupDueByClock =
+      lastBackupSyncAt === null ||
+      now.getTime() - lastBackupSyncAt >= backupIntervalMinutes * 60_000;
+    if (backupSyncEnabled() && backupDueByTicks && backupDueByClock) {
+      backupSyncTicks = 0;
+      lastBackupSyncAt = now.getTime();
+      try {
+        const outcome = await deps.syncBackup(now);
+        if (outcome.copied > 0 || outcome.errors.length > 0) {
+          log.info('[TransmissionScheduler] backup de assets', {
+            copied: outcome.copied,
+            scanned: outcome.scanned,
+            skipped: outcome.skipped,
+            missing: outcome.missing,
+            bytesCopied: outcome.bytesCopied,
+            errors: outcome.errors.length,
+          });
+        }
+      } catch (err) {
+        log.error('[TransmissionScheduler] backup de assets falló', { err });
+      }
+    }
   } finally {
     loopRunning = false;
   }
@@ -1331,8 +1407,10 @@ export function stopTransmissionScheduler(): void {
     schedulerInterval = null;
   }
   lastAttemptAt.clear();
-  // La fase C vuelve al estado "recién booteado": próximo init, primer
-  // tick = catch-up de purga otra vez.
+  // Las fases C/D vuelven al estado "recién booteado": próximo init, primer
+  // tick = catch-up de purga y de backup otra vez.
   retentionPurgeTicks = 0;
   lastRetentionPurgeAt = null;
+  backupSyncTicks = 0;
+  lastBackupSyncAt = null;
 }

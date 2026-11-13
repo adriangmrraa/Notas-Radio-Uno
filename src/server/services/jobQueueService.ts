@@ -54,10 +54,12 @@ export type JobQueueStatus = (typeof JOB_QUEUE_STATUSES)[number];
 
 /**
  * Kinds conocidos de la cola. 'retention.purge' es el seed de PI-01 (purga
- * de crudos vencidos vía rawRetentionService). Extensible: agregar un kind
- * nuevo es sumarlo acá + registrar su handler en el worker — sin migración.
+ * de crudos vencidos vía rawRetentionService); 'backup.sync' es el de PI-05
+ * (espejo incremental de assets derivados vía assetBackupService).
+ * Extensible: agregar un kind nuevo es sumarlo acá + registrar su handler
+ * en el worker — sin migración.
  */
-export const JOB_QUEUE_KINDS = ['retention.purge'] as const;
+export const JOB_QUEUE_KINDS = ['retention.purge', 'backup.sync'] as const;
 
 export type JobQueueKind = (typeof JOB_QUEUE_KINDS)[number];
 

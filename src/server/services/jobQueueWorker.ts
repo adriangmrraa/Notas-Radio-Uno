@@ -12,10 +12,12 @@
  *
  * Handlers por `kind` — registro extensible:
  *   - `registerJobHandler(kind, handler)` suma un handler al mapa global
- *     `jobHandlers`. El único seed real de este slice:
+ *     `jobHandlers`. Seeds reales registrados al importar el módulo:
  *       'retention.purge' → `purgeExpiredRecordings(now, { tenantId:
- *       job.tenantId, dryRun: false })` (reutiliza el servicio de retención
- *       de crudos existente — la cola ya nace con un consumidor real).
+ *       job.tenantId, dryRun: false })` (PI-01 — la cola nace con un
+ *       consumidor real);
+ *       'backup.sync' → `syncAssetBackups(now, { tenantId: job.tenantId,
+ *       dryRun: false })` (PI-05 — espejo de assets derivados).
  *   - kind sin handler → `markFailed(jobId, tenantId, msg, { retry: false,
  *     category: 'unknown_kind' })` directo a `failed` terminal: reintentar
  *     lo que nadie sabe despachar es gastar attempts al pedo.
@@ -62,6 +64,10 @@ import {
   purgeExpiredRecordings,
   type PurgeOutcome,
 } from './rawRetentionService.js';
+import {
+  syncAssetBackups,
+  type BackupOutcome,
+} from './assetBackupService.js';
 import { log } from '../lib/logger.js';
 
 /** Intervalo de claim por default: 10 s (env `JOB_QUEUE_WORKER_POLL_MS`). */
@@ -111,9 +117,22 @@ export function createRetentionPurgeHandler(
     purge(new Date(), { tenantId: job.tenantId, dryRun: false });
 }
 
-// Seed global: procesos que inicializan el worker sin deps ya tienen el
-// handler de retención registrado.
+/**
+ * Seed de PI-05: espejo incremental de assets derivados del tenant del
+ * job. Misma factory que el purge — `syncAssetBackups` es el default real;
+ * los tests pasan un fake por `deps.handlers` sin tocar el registro global.
+ */
+export function createBackupSyncHandler(
+  sync: typeof syncAssetBackups = syncAssetBackups,
+): JobQueueHandler {
+  return async (job): Promise<BackupOutcome> =>
+    sync(new Date(), { tenantId: job.tenantId, dryRun: false });
+}
+
+// Seed global: procesos que inicializan el worker sin deps ya tienen los
+// handlers de retención y backup registrados.
 registerJobHandler('retention.purge', createRetentionPurgeHandler());
+registerJobHandler('backup.sync', createBackupSyncHandler());
 
 // ---------------------------------------------------------------------------
 // Dependencias inyectables

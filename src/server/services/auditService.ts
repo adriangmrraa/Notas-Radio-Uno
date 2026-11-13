@@ -67,6 +67,7 @@ export const AUDIT_ACTIONS = {
   ADMIN_TENANT_REACTIVATED: 'admin.tenant_reactivated',
   ADMIN_FEATURE_OVERRIDE: 'admin.feature_override',
   ADMIN_JOB_REQUEUED: 'admin.job_requeued',
+  ADMIN_BACKUP_SYNCED: 'admin.backup_synced',
   CREDENTIAL_UPDATED: 'credentials.updated',
   CREDENTIAL_DELETED: 'credentials.deleted',
 

@@ -155,6 +155,13 @@
       "when": 1794445254189,
       "tag": "0021_pi03_ai_usage_events",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794529857957,
+      "tag": "0022_fantastic_sentinel",
+      "breakpoints": true
     }
   ]
 }

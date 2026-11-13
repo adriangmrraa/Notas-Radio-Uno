@@ -159,8 +159,9 @@ if (pc02Migration) {
 //    0009 (membresías N:M), la 0010 (PC-09 dossier↔emisión), la 0011
 //    (PD-01 crudo de video), la 0012 (PD-05 sala en vivo), la 0016
 //    (PG-03 auto-publicación), la 0017 (PG-04 Zernio), la 0018 (PG-05 cola
-//    de publicación) y la 0020 (PI-01 cola genérica) se aplican dos veces.
-for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017', '0018', '0020']) {
+//    de publicación), la 0020 (PI-01 cola genérica) y la 0022 (PI-05
+//    manifest de backup) se aplican dos veces.
+for (const tag of ['0005', '0006', '0008', '0009', '0010', '0011', '0012', '0016', '0017', '0018', '0020', '0022']) {
   const migration = files.find((f) => f.includes(tag));
   if (!migration) {
     console.error(`No se encontró la migración ${tag}`);
@@ -1617,6 +1618,139 @@ if (pi01AfterCascade[0].n !== 0) {
   process.exit(1);
 }
 
+// ============================================================================
+// PI-05: asset_backup_entries — manifest del backup incremental de assets
+//        derivados (0022)
+// ============================================================================
+const { rows: pi05Tables } = await db.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname = 'public' AND tablename = 'asset_backup_entries'
+`);
+if (pi05Tables.length !== 1) {
+  console.error('PI-05: falta la tabla asset_backup_entries');
+  process.exit(1);
+}
+
+// Columnas: una por archivo respaldado. bytes/source_mtime_ms son bigint
+// (test barato de cambio estilo rsync); checksum sha256 opcional.
+const { rows: pi05Cols } = await db.query(`
+  SELECT column_name, data_type, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'asset_backup_entries'
+`);
+const pi05ColInfo = new Map(pi05Cols.map((r) => [r.column_name, r]));
+const checkPi05Col = (col, dataType, nullable, needsDefault) => {
+  const c = pi05ColInfo.get(col);
+  if (!c) return `falta asset_backup_entries.${col}`;
+  if (c.data_type !== dataType) return `asset_backup_entries.${col} tipo=${c.data_type} (esperado ${dataType})`;
+  if (c.is_nullable !== nullable) return `asset_backup_entries.${col} is_nullable=${c.is_nullable} (esperado ${nullable})`;
+  if (needsDefault && c.column_default === null) return `asset_backup_entries.${col} sin DEFAULT`;
+  return null;
+};
+const pi05ColErrors = [
+  ['id', 'uuid', 'NO', true],
+  ['tenant_id', 'uuid', 'NO', false],
+  ['source_path', 'text', 'NO', false],
+  ['source_ref', 'character varying', 'NO', false],
+  ['backup_path', 'text', 'NO', false],
+  ['bytes', 'bigint', 'NO', true],
+  ['source_mtime_ms', 'bigint', 'NO', true],
+  ['checksum', 'character varying', 'YES', false],
+  ['status', 'character varying', 'NO', true],
+  ['last_error', 'text', 'YES', false],
+  ['backed_up_at', 'timestamp with time zone', 'NO', true],
+].map(([c, t, n, d]) => checkPi05Col(c, t, n, d)).filter(Boolean);
+if (pi05ColErrors.length > 0) {
+  console.error(`PI-05 columnas incorrectas:\n  ${pi05ColErrors.join('\n  ')}`);
+  process.exit(1);
+}
+
+// UNIQUE (tenant_id, source_path) = contrato de idempotencia del sync.
+const { rows: pi05Uniques } = await db.query(`
+  SELECT conname FROM pg_constraint
+  WHERE conrelid::regclass::text = 'asset_backup_entries' AND contype = 'u'
+`);
+if (!pi05Uniques.some((r) => r.conname === 'asset_backup_entries_tenant_source_unique')) {
+  console.error(`PI-05: falta la UNIQUE (tenant_id, source_path): ${JSON.stringify(pi05Uniques)}`);
+  process.exit(1);
+}
+
+// FK tenant_id → tenants ON DELETE CASCADE (borrar el tenant borra su manifest).
+const { rows: pi05Fks } = await db.query(`
+  SELECT att.attname AS column_name,
+         con.confrelid::regclass::text AS foreign_table,
+         con.confdeltype
+  FROM pg_constraint con
+  JOIN pg_attribute att
+    ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+  WHERE con.contype = 'f' AND con.conrelid::regclass::text = 'asset_backup_entries'
+`);
+const pi05FkMap = new Map(pi05Fks.map((r) => [r.column_name, r]));
+const pi05TenantFk = pi05FkMap.get('tenant_id');
+if (!pi05TenantFk || pi05TenantFk.foreign_table !== 'tenants' || pi05TenantFk.confdeltype !== 'c') {
+  console.error(`PI-05: FK tenant_id incorrecta: ${JSON.stringify(pi05TenantFk ?? null)}`);
+  process.exit(1);
+}
+
+const { rows: pi05Idx } = await db.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE schemaname = 'public' AND tablename = 'asset_backup_entries'
+`);
+const pi05IdxNames = new Set(pi05Idx.map((r) => r.indexname));
+for (const name of ['asset_backup_entries_tenant_id_idx', 'asset_backup_entries_tenant_id_status_idx']) {
+  if (!pi05IdxNames.has(name)) {
+    console.error(`PI-05: falta el índice ${name}`);
+    process.exit(1);
+  }
+}
+
+// Funcional: defaults al insertar (status 'backed_up', bytes/mtime 0,
+// backed_up_at no nulo) + la UNIQUE idempotente pisa la misma fuente +
+// cascade por tenant. La migración 0022 ya se re-aplicó en la pasada 2).
+const pi05Tenant = '00000000-0000-4000-8000-00000000ab05';
+await db.exec(`
+  INSERT INTO tenants (id, name, slug) VALUES
+    ('${pi05Tenant}', 'Tenant pi05', 'tenant-pi05')
+  ON CONFLICT (id) DO NOTHING;
+  INSERT INTO asset_backup_entries (tenant_id, source_path, source_ref, backup_path)
+  VALUES ('${pi05Tenant}', 'output/clip_1.mp4', 'clip:c1:video_path', '${pi05Tenant}/clip_1.mp4');
+`);
+const { rows: pi05Rows } = await db.query(`
+  SELECT status, bytes, source_mtime_ms, checksum, backed_up_at FROM asset_backup_entries
+  WHERE tenant_id = '${pi05Tenant}'
+`);
+const pi05Row = pi05Rows[0];
+if (
+  pi05Rows.length !== 1 || pi05Row.status !== 'backed_up' ||
+  Number(pi05Row.bytes) !== 0 || Number(pi05Row.source_mtime_ms) !== 0 ||
+  pi05Row.checksum !== null || !pi05Row.backed_up_at
+) {
+  console.error(`PI-05: defaults de asset_backup_entries incorrectos: ${JSON.stringify(pi05Rows)}`);
+  process.exit(1);
+}
+// La UNIQUE (tenant_id, source_path) sostiene el upsert del sync.
+await db.exec(`
+  INSERT INTO asset_backup_entries (tenant_id, source_path, source_ref, backup_path, bytes, status)
+  VALUES ('${pi05Tenant}', 'output/clip_1.mp4', 'clip:c1:video_path', '${pi05Tenant}/clip_1.mp4', 42, 'backed_up')
+  ON CONFLICT (tenant_id, source_path) DO UPDATE SET bytes = EXCLUDED.bytes;
+`);
+const { rows: pi05Upsert } = await db.query(`
+  SELECT COUNT(*)::int AS n, MAX(bytes)::int AS bytes FROM asset_backup_entries
+  WHERE tenant_id = '${pi05Tenant}'
+`);
+if (pi05Upsert[0].n !== 1 || pi05Upsert[0].bytes !== 42) {
+  console.error('PI-05: el upsert por (tenant_id, source_path) no pisó la fila');
+  process.exit(1);
+}
+await db.exec(`DELETE FROM tenants WHERE id = '${pi05Tenant}'`);
+const { rows: pi05AfterCascade } = await db.query(`
+  SELECT COUNT(*)::int AS n FROM asset_backup_entries WHERE tenant_id = '${pi05Tenant}'
+`);
+if (pi05AfterCascade[0].n !== 0) {
+  console.error('PI-05: el cascade por tenant no borró las entradas');
+  process.exit(1);
+}
+
 console.log('OK');
 console.log('tablas nuevas:', tableNames.join(', '));
 console.log('columnas nuevas:', expectedCols.join(', '));
@@ -1638,5 +1772,6 @@ console.log('tablas PG-04: zernio_profiles (1/tenant UNIQUE) + social_connection
 console.log('tabla PG-05: publish_jobs (23 columnas, UNIQUE idempotency_key, FK tenant cascade + asset/publication/connection SET NULL, índices tenant+status y claim)');
 console.log('columna PG-06: publish_jobs.payload jsonb NOT NULL DEFAULT \'{}\' (composición por red: mentions/hashtags/excludedPersonIds/truncated)');
 console.log('tabla PI-01: job_queue (15 columnas, FK tenant cascade, índices tenant+status, claim (status,run_at) y tenant+created_at, migración 0020 idempotente)');
+console.log('tabla PI-05: asset_backup_entries (11 columnas, UNIQUE (tenant_id,source_path) idempotente, FK tenant cascade, índices tenant y tenant+status, migración 0022 idempotente)');
 await db.close();
 process.exit(0);

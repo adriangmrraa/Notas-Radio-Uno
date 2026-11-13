@@ -31,6 +31,7 @@ export * from './socialConnections.js';
 export * from './publishJobs.js';
 export * from './jobQueue.js';
 export * from './aiUsage.js';
+export * from './assetBackup.js';
 
 // ── Import tables for relations ───────────────────────────────────────────────
 import { tenants } from './tenants.js';
@@ -70,6 +71,7 @@ import { autoPublishConfigs } from './autoPublish.js';
 import { zernioProfiles, socialConnections } from './socialConnections.js';
 import { publishJobs } from './publishJobs.js';
 import { aiUsageEvents } from './aiUsage.js';
+import { assetBackupEntries } from './assetBackup.js';
 
 // ── tenants relations ─────────────────────────────────────────────────────────
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -121,6 +123,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
   zernioProfile: one(zernioProfiles, { fields: [tenants.id], references: [zernioProfiles.tenantId] }),
   socialConnections: many(socialConnections),
   aiUsageEvents: many(aiUsageEvents),
+  assetBackupEntries: many(assetBackupEntries),
 }));
 
 // ── users relations ───────────────────────────────────────────────────────────
