@@ -58,6 +58,7 @@ import { publishJobsRouter } from "./routes/publishJobs.js";
 import { publishChannelsRouter } from "./routes/publishChannels.js";
 import { jobQueueRouter } from "./routes/jobQueue.js";
 import { aiUsageRouter } from "./routes/aiUsage.js";
+import { healthRouter } from "./routes/health.js";
 import { initJobScheduler } from "./services/jobSchedulerService.js";
 import { initClipRenderWorker } from "./services/clipRenderWorker.js";
 import { initPublishWorker } from "./services/publishWorker.js";
@@ -253,11 +254,9 @@ registerPublicRoutes(app);
 registerPublicPageRoutes(app);
 
 // ---------------------------------------------------------------------------
-// Health check endpoint
+// Health check endpoint — PI-06: reporte real (DB / migraciones / provider IA)
 // ---------------------------------------------------------------------------
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+app.use("/api/health", healthRouter);
 
 // ---------------------------------------------------------------------------
 // API route to get transcription file content
