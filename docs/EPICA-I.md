@@ -147,6 +147,86 @@ PGlite). Fuente del texto/puntaje: la tarjeta del kanban.
   (sweep reanuda dentro de ventana, outage largo → terminal con razón,
   ventana live vencida → terminal, stat fallido → colapso a `start_ms`,
   `interrupted` previo idempotente, `decideOrphanRecovery` puro).
-- [ ] PI-05 Backup/retención de assets + política de borrado de crudos [2]
+- [x] PI-05 Backup/retención de assets + política de borrado de crudos [2]
+
+  **Commits (branch `pi-05-asset-backup`):**
+  - `094ee34` `feat(backup): incremental mirror of derived assets with tenant manifest (PI-05)`
+    — `assetBackupService.ts` espeja los archivos derivados (`clips.video_path`,
+    `clips.subtitles_path`, `clips.metadata.source_video_path`,
+    `publications.image_path`, `publications.quote_flyer_paths[]` — todos bajo
+    `<repo>/output`) hacia un `BackupStorage` adapter (filesystem
+    `BACKUP_ROOT`, default `<repo>/data/backup`, reemplazable por S3/R2 sin
+    tocar consumidores — mismo patrón que `RawStorage`). Manifest en tabla
+    `asset_backup_entries` (migración 0022 idempotente): UNIQUE
+    `(tenant_id, source_path)` = contrato de idempotencia — la misma fuente
+    resuelve a la MISMA fila vía upsert. Test de cambio estilo rsync:
+    `bytes` + `source_mtime_ms` (se copia sólo si la fuente cambió de
+    tamaño o mtime; `checksum` sha256 queda como campo opcional de
+    integridad — decisión documentada: checksum por archivo duplicaría la
+    lectura de disco en cada sync sobre GBs de renders, mtime+size cubre el
+    caso del re-render que vuelve a escribir el path). Tenant-scoped en
+    CADA lectura/escritura (regla dura), `dryRun` análogo a
+    `purgeExpiredRecordings` (no toca storage ni DB), errores por archivo
+    acumulados en `errors[]` sin abortar el job. Kind `'backup.sync'` en
+    `JOB_QUEUE_KINDS` + `createBackupSyncHandler` en el worker (misma
+    factory DI que `createRetentionPurgeHandler`); fase D del scheduler de
+    transmisiones con catch-up en primer tick + guarda doble
+    (ticks/intervalo por `BACKUP_SYNC_ENABLED` +
+    `BACKUP_SYNC_INTERVAL_MINUTES`, default 1440 min). Endpoints admin:
+    `POST /api/admin/backup/sync` (`{tenantId?, dryRun?}` validado con Zod,
+    `mutationLimiter`, audit `admin.backup_synced`) y
+    `GET /api/admin/backup/status?tenantId=` (último run, cobertura por
+    tenant, conteos de entradas y bytes) — ambos bajo el guard global
+    `requirePlatformAdmin`. Env documentado en `.env.example` §21.
+    Verificador PGlite extendido: tabla, 11 columnas, UNIQUE, FK cascade,
+    índices, defaults, upsert y cascade funcional — 0022 se re-aplica como
+    gate de idempotencia.
+  - `6b5eab8` `test(backup): deterministic coverage for asset sync, manifest and scheduler`
+    — `tests/helpers/memoryBackupStore.ts` (fake del manifest store +
+    `MemoryBackupStorage` con `failOn` inyectable) +
+    `tests/assetBackupService.test.ts` (24 tests).
+
+  **Auditoría del rawRetentionService existente (NO reimplementado):**
+  - Job queue: `retention.purge` registrado como seed global en
+    `jobQueueWorker.ts` vía `createRetentionPurgeHandler` (DI) →
+    `purgeExpiredRecordings(now, {tenantId: job.tenantId, dryRun: false})`.
+    La fase C del scheduler además corre la purga global una vez por día
+    con catch-up en el primer tick.
+  - Endpoint con dry-run: existe pero NO está en `routes/admin.ts` — el
+    brief lo describía como admin y en realidad vive tenant-scoped en
+    `routes/transmissions.ts`: `GET /api/transmissions/retention` +
+    `POST /api/transmissions/retention/purge` (`{dryRun}`). **Gap real:**
+    sin visibilidad platform-admin de la retención ni panel de cobertura;
+    los nuevos `/api/admin/backup/*` cubren ese rol sólo para assets
+    derivados — un `GET /admin/retention/status` queda como trabajo
+    futuro.
+  - Comportamiento auditado: `plans.raw_retention_days` NULL/0/negativo =
+    retención ilimitada (no purga); candidatos = grabación completada +
+    transmisión terminada + `ended_at + retention_days < now` estricto +
+    ≥1 segmento no purgado; renders de clips pendientes protegen el
+    crudo; `RawStorage.deletePrefix` borra archivos y deja metadata;
+    purga idempotente y por tenant; `dryRun` sin mutaciones; `errors[]`
+    por fallo individual.
+
+  **Evidencia de gates (todos con EXIT real, ejecutados sobre el HEAD `6b5eab8`):**
+  - `npx tsc --noEmit` → **EXIT 0**
+  - `npx vitest run` → **EXIT 0** — `Test Files 54 passed (54)`, `Tests 1042 passed (1042)`
+  - `npm run build` → **EXIT 0** — `No schema changes, nothing to migrate` (58 tablas, `asset_backup_entries` incluida)
+  - `git diff --check` → **EXIT 0**
+  - `node scripts/verify-migration-pglite.mjs` → **EXIT 0** — `re-applied 0022_fantastic_sentinel.sql (idempotente)` + checks PI-05 (columnas, UNIQUE, FK cascade, índices, defaults, upsert, cascade funcional)
+
+  **Cobertura determinista nueva (24 tests):** primer sync copia todo y
+  puebla el manifest; segundo sync es no-op (sin writes al storage ni al
+  store); archivo nuevo/modificado (mtime o size distinto) se re-copia;
+  dry-run no escribe nada; tenant A no ve ni toca fuentes/manifest del
+  tenant B; fallo de `put` en un archivo va a `errors[]` + `status='error'`
+  sin abortar los demás; fuente faltante → `status='missing'` con la
+  entrada preservada; upsert sobre la UNIQUE; `getBackupStatus` agrega
+  cobertura/bytes/último run por tenant; `FileSystemBackupStorage` real
+  round-trip + confinamiento al root (rechaza paths `..`); handler
+  `backup.sync` del worker invoca el sync tenant-scoped con `dryRun:false`;
+  scheduler: catch-up en primer tick, respeta intervalo, error aislado no
+  corta las fases siguientes, `stopTransmissionScheduler` resetea el
+  estado.
 - [ ] PI-06 Checklist go-live: seeds de planes, datos demo, health checks, runbook de incidentes [3]
 - [ ] PI-07 Piloto controlado: 1 canal real transmitiendo 1 semana, métricas de éxito [5]
