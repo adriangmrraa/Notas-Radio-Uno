@@ -141,7 +141,11 @@ export async function seedPlans(): Promise<{ inserted: string[]; updated: string
 
     const patch: Record<string, unknown> = {};
     const fill = (key: keyof PlanSeedDef) => {
-      if (existing[key] === null || existing[key] === undefined) patch[key] = def[key];
+      const defVal = def[key];
+      // Completa sólo si la columna está NULL Y el seed tiene un valor
+      // real para ella — los NULL legítimos del seed (p.ej. enterprise
+      // ilimitado) no deben re-escribirse ni contar como "updated".
+      if ((existing[key] === null || existing[key] === undefined) && defVal !== null && defVal !== undefined) patch[key] = defVal;
     };
     fill('displayName');
     fill('description');
