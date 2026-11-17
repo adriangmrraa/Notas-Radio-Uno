@@ -90,6 +90,7 @@ import type {
 } from '../db/schema/enums.js';
 import { nextOccurrence } from '../lib/rrule.js';
 import { log } from '../lib/logger.js';
+import { envInt } from '../lib/envInt.js';
 import {
   detectLiveStream,
   type LiveDetectionResult,
@@ -1255,7 +1256,9 @@ export async function checkAndRunScheduledTransmissions(
     const resolved = {
       waitingWindowMinutes: opts.waitingWindowMinutes ?? 30,
       retryIntervalMs: opts.retryIntervalMs ?? 120_000,
-      maxConcurrent: opts.maxConcurrent ?? 5,
+      // MAX_CONCURRENT_TRANSMISSIONS (default 5) — env-configurable vía envInt
+      // (PJ-04): valor ausente/inválido cae al default, nunca a NaN/0.
+      maxConcurrent: opts.maxConcurrent ?? envInt('MAX_CONCURRENT_TRANSMISSIONS', 5),
     };
 
     // Fase A — descubrimiento.

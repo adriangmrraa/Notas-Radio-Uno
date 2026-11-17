@@ -35,6 +35,7 @@ import { authRouter } from "./routes/auth.js";
 import { optionalAuth, viewerWriteGuard } from "./middleware/authz.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { log } from "./lib/logger.js";
+import { parseProcessRole, isWorkerRole } from "./lib/processRole.js";
 import { billingRouter } from "./routes/billing.js";
 import { teamRouter } from "./routes/team.js";
 import { adminRouter } from "./routes/admin.js";
@@ -284,27 +285,48 @@ initNotificationService(io);
 initLiveAlertsService(io);
 initTransmissionService(io);
 initLiveAnalysisRunner(io);
-initJobScheduler(io);
-// TODO: si se introduce un flag PROCESS_ROLE (proceso worker vs API-only),
-// este scheduler no debe arrancar en el proceso que sólo sirve API.
-initTransmissionScheduler(io);
-// PF-04: cola de render de clips. Los demás schedulers no tienen env-guard;
-// este es el primero — RENDER_WORKER_ENABLED=0 lo apaga (p.ej. proceso
-// API-only hasta que exista PROCESS_ROLE).
-if (process.env.RENDER_WORKER_ENABLED !== "0") {
-  initClipRenderWorker(io);
+
+// ---------------------------------------------------------------------------
+// PROCESS_ROLE (Épica J / PJ-04) — separación de roles de proceso.
+//   'all'    (default): API + workers/schedulers (despliegue monolítico).
+//   'api':    sólo HTTP + Socket.IO — ningún scheduler ni worker arranca.
+//   'worker': workers/schedulers (la API también queda montada — limitación
+//             honesta: index.ts es un sólo módulo; para un worker puro sin
+//             HTTP haría falta un entrypoint separado).
+// Los env-guards individuales (*_WORKER_ENABLED=0) siguen vigentes: un
+// proceso 'worker' puede apagar piezas puntuales sin tocar el rol.
+// LIMITACIÓN documentada: los eventos Socket.IO que emiten los workers
+// (clip:render:*, publish:job:*, job:queue:*, transmission:status…) salen
+// por el `io` del PROCESO que corre el worker. Con roles separados
+// (api ≠ worker en procesos distintos) esos eventos NO llegan a los
+// clientes conectados al proceso API — haría falta un adapter compartido
+// (Redis) entre procesos. Documentado en docs/DEPLOYMENT_EASYPANEL.md.
+// ---------------------------------------------------------------------------
+const PROCESS_ROLE = parseProcessRole(process.env.PROCESS_ROLE);
+if (process.env.PROCESS_ROLE && PROCESS_ROLE !== process.env.PROCESS_ROLE.trim().toLowerCase()) {
+  log.warn(`[Server] PROCESS_ROLE="${process.env.PROCESS_ROLE}" inválido — usando "all"`);
 }
-// PG-05: worker de la cola publish_jobs — PUBLISH_WORKER_ENABLED=0 lo apaga
-// (mismo patrón que RENDER_WORKER_ENABLED para procesos API-only).
-if (process.env.PUBLISH_WORKER_ENABLED !== "0") {
-  initPublishWorker(io);
+log.info(`[Server] PROCESS_ROLE=${PROCESS_ROLE}`);
+
+if (isWorkerRole(PROCESS_ROLE)) {
+  initJobScheduler(io);
+  initTransmissionScheduler(io);
+  // PF-04: cola de render de clips — RENDER_WORKER_ENABLED=0 lo apaga.
+  if (process.env.RENDER_WORKER_ENABLED !== "0") {
+    initClipRenderWorker(io);
+  }
+  // PG-05: worker de la cola publish_jobs — PUBLISH_WORKER_ENABLED=0 lo apaga.
+  if (process.env.PUBLISH_WORKER_ENABLED !== "0") {
+    initPublishWorker(io);
+  }
+  // PI-01: worker de la cola genérica job_queue — JOB_QUEUE_WORKER_ENABLED=0.
+  if (process.env.JOB_QUEUE_WORKER_ENABLED !== "0") {
+    initJobQueueWorker(io);
+  }
+  initDossierScheduler();
+} else {
+  log.info("[Server] PROCESS_ROLE=api — workers y schedulers NO arrancan en este proceso");
 }
-// PI-01: worker de la cola genérica job_queue — JOB_QUEUE_WORKER_ENABLED=0
-// lo apaga (mismo patrón que RENDER_WORKER_ENABLED / PUBLISH_WORKER_ENABLED).
-if (process.env.JOB_QUEUE_WORKER_ENABLED !== "0") {
-  initJobQueueWorker(io);
-}
-initDossierScheduler();
 
 // ---------------------------------------------------------------------------
 // Register route modules

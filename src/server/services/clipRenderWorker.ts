@@ -45,6 +45,7 @@
  */
 import type { Server } from 'socket.io';
 
+import { envInt } from '../lib/envInt.js';
 import {
   createDrizzleClipRenderQueueStore,
   type ClipRenderJob,
@@ -85,6 +86,12 @@ export interface RenderWorkerIo {
 
 export interface ClipRenderWorkerDeps {
   store?: ClipRenderQueueStore;
+  /**
+   * Cap de renders simultáneos del proceso. Default: env
+   * `RENDER_MAX_IN_FLIGHT` (2 si falta/es inválida). Con `inFlight >= cap`
+   * el tick NO claimea — la capacidad se libera al terminar cada dispatch.
+   */
+  maxInFlight?: number;
   /** Default: `clipCutterService.cutRawWindow` (PF-01, ffmpeg real). */
   cutRawWindow?: (input: CutRawWindowInput) => Promise<CutRawWindowResult>;
   /** Default: `clipReframeService.reframeClip` (PF-02, detector real lazy). */
@@ -146,12 +153,14 @@ function emitToTenant(
 
 export interface ClipRenderWorker {
   /**
-   * Un tick: claim de UN job + dispatch. Resuelve cuando el job claimeado
-   * terminó (done/error/pending-retry) — el `init` lo llama fire-and-forget
-   * así un render no bloquea el claim del siguiente tick; los tests lo
-   * esperan con await.
+   * Un tick: si hay capacidad (`inFlight < maxInFlight`), claim de UN job +
+   * dispatch. Resuelve cuando el job claimeado terminó
+   * (done/error/pending-retry) — el `init` lo llama fire-and-forget así un
+   * render no bloquea el claim del siguiente tick; los tests lo esperan.
    */
   tick(): Promise<void>;
+  /** Renders actualmente en curso en este proceso (observabilidad/tests). */
+  inFlight(): number;
 }
 
 export function createClipRenderWorker(
@@ -160,6 +169,8 @@ export function createClipRenderWorker(
 ): ClipRenderWorker {
   const resolved = resolveDeps(deps);
   const { store, now } = resolved;
+  const maxInFlight = deps.maxInFlight ?? envInt('RENDER_MAX_IN_FLIGHT', 2);
+  let inFlight = 0;
 
   async function dispatch(job: ClipRenderJob): Promise<void> {
     if (
@@ -260,9 +271,18 @@ export function createClipRenderWorker(
 
   return {
     async tick() {
+      if (inFlight >= maxInFlight) return;
       const job = await store.claimNext(now());
       if (!job) return;
-      await dispatch(job);
+      inFlight++;
+      try {
+        await dispatch(job);
+      } finally {
+        inFlight--;
+      }
+    },
+    inFlight() {
+      return inFlight;
     },
   };
 }

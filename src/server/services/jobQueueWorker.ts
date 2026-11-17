@@ -69,6 +69,7 @@ import {
   type BackupOutcome,
 } from './assetBackupService.js';
 import { log } from '../lib/logger.js';
+import { envInt } from '../lib/envInt.js';
 
 /** Intervalo de claim por default: 10 s (env `JOB_QUEUE_WORKER_POLL_MS`). */
 export const POLL_MS = 10_000;
@@ -149,6 +150,13 @@ export interface JobQueueWorkerIo {
 export interface JobQueueWorkerDeps {
   store?: JobQueueStore;
   /**
+   * Cap de handlers simultáneos del proceso (total, no por tenant).
+   * Default: env `JOB_QUEUE_MAX_IN_FLIGHT` (3 si falta/es inválida). Con
+   * `inFlight >= cap` el tick corta el loop de tenants sin claimear —
+   * la capacidad se libera al terminar cada dispatch.
+   */
+  maxInFlight?: number;
+  /**
    * Tenants a los que el tick les claimea (uno por tenant). Default: todos
    * los ids de la tabla `tenants` — identidad de plataforma, no dato de
    * negocio, es la ÚNICA lectura sin tenant_id del loop y no filtra jobs.
@@ -216,9 +224,12 @@ function emitToTenant(
 export interface JobQueueWorker {
   /**
    * Un tick: por cada tenant claimea UN job (claim atómico tenant-scoped)
-   * y lo despacha. En tests se llama a mano — determinista.
+   * y lo despacha, hasta agotar `maxInFlight` del proceso. En tests se
+   * llama a mano — determinista.
    */
   tick(): Promise<void>;
+  /** Handlers actualmente en curso en este proceso. */
+  inFlight(): number;
 }
 
 export function createJobQueueWorker(
@@ -227,6 +238,8 @@ export function createJobQueueWorker(
 ): JobQueueWorker {
   const { store, listTenantIds, handlers, now, backoffMs: backoff } =
     resolveDeps(deps);
+  const maxInFlight = deps.maxInFlight ?? envInt('JOB_QUEUE_MAX_IN_FLIGHT', 3);
+  let inFlight = 0;
 
   async function dispatch(job: JobQueueJob): Promise<void> {
     const handler = handlers.get(job.kind);
@@ -283,10 +296,19 @@ export function createJobQueueWorker(
   return {
     async tick() {
       for (const tenantId of await listTenantIds()) {
+        if (inFlight >= maxInFlight) return;
         const job = await store.claimNext(tenantId, now());
         if (!job) continue;
-        await dispatch(job);
+        inFlight++;
+        try {
+          await dispatch(job);
+        } finally {
+          inFlight--;
+        }
       }
+    },
+    inFlight() {
+      return inFlight;
     },
   };
 }

@@ -46,6 +46,7 @@
 import type { Server } from 'socket.io';
 
 import { AppError } from '../lib/errors.js';
+import { envInt } from '../lib/envInt.js';
 import { transitionAsset } from './assetsService.js';
 import { updatePublicationStatus } from './databaseService.js';
 import { createDrizzleSocialConnectionsStore } from './socialConnectionsService.js';
@@ -75,6 +76,12 @@ export interface PublishWorkerIo {
 
 export interface PublishWorkerDeps {
     store?: PublishJobStore;
+    /**
+     * Cap de publicaciones simultáneas del proceso. Default: env
+     * `PUBLISH_MAX_IN_FLIGHT` (3 si falta/es inválida). Con `inFlight >= cap`
+     * el tick NO claimea — la capacidad se libera al terminar cada dispatch.
+     */
+    maxInFlight?: number;
     /** Default: createZernioApi() — los tests inyectan un fake. */
     zernio?: Pick<ZernioApi, 'publishPost' | 'retryPost'>;
     /** Perfil Zernio del tenant (aislamiento por profileId). Default: drizzle. */
@@ -208,10 +215,13 @@ export async function syncSourceStatus(
 
 export interface PublishWorker {
     /**
-     * Un tick: claim de UN job + dispatch. Resuelve cuando el job claimeado
-     * terminó — el `init` lo llama fire-and-forget; los tests lo esperan.
+     * Un tick: si hay capacidad (`inFlight < maxInFlight`), claim de UN job +
+     * dispatch. Resuelve cuando el job claimeado terminó — el `init` lo
+     * llama fire-and-forget; los tests lo esperan.
      */
     tick(): Promise<void>;
+    /** Publicaciones actualmente en curso en este proceso. */
+    inFlight(): number;
 }
 
 export function createPublishWorker(
@@ -220,6 +230,8 @@ export function createPublishWorker(
 ): PublishWorker {
     const resolved = resolveDeps(deps);
     const { store, now } = resolved;
+    const maxInFlight = deps.maxInFlight ?? envInt('PUBLISH_MAX_IN_FLIGHT', 3);
+    let inFlight = 0;
 
     const emitTerminal = (job: PublishJob, outcome: string): void => {
         const payload = {
@@ -316,9 +328,18 @@ export function createPublishWorker(
 
     return {
         async tick() {
+            if (inFlight >= maxInFlight) return;
             const job = await store.claimNext(now());
             if (!job) return;
-            await dispatch(job);
+            inFlight++;
+            try {
+                await dispatch(job);
+            } finally {
+                inFlight--;
+            }
+        },
+        inFlight() {
+            return inFlight;
         },
     };
 }
