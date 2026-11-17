@@ -155,6 +155,16 @@ pm2 status
 sudo systemctl status nginx
 ```
 
+Smoke-boot opcional tras cada `npm run build` (PJ-06 — sin tocar la DB real):
+arranca `dist/server/index.js` con env dummy de formato válido y exige los
+fail-fast esperados (sin `JWT_SECRET` en producción → muere antes de listen;
+`DATABASE_URL` inalcanzable → muere en migraciones). Con `SMOKE_DATABASE_URL`
+apuntando a una Postgres efímera hace el boot feliz + `/api/health`.
+
+```bash
+node scripts/smoke-boot.mjs   # EXIT 0 = gates de boot correctos
+```
+
 Frontend: abrir `https://tudominio.com`.
 
 ---

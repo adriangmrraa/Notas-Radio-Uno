@@ -24,4 +24,11 @@ if (!existsSync(path.join(remotionDir, 'package.json'))) {
   process.exit(0);
 }
 
+// Opt-out explícito para CI/entornos donde remotion/ existe pero no se usa
+// (la suite de tests no ejerce remotion/). Ahorra un npm install anidado.
+if (process.env.PERIODISTAPP_SKIP_REMOTION_INSTALL === '1') {
+  console.log('[postinstall] PERIODISTAPP_SKIP_REMOTION_INSTALL=1 — se omite remotion/');
+  process.exit(0);
+}
+
 execSync('npm install', { cwd: remotionDir, stdio: 'inherit' });

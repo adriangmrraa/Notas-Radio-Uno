@@ -176,3 +176,8 @@ servicio una vez la DB responda. No hay fix de código: es infraestructura.
 - Migraciones — `src/server/db/migrate.ts`, journal `drizzle/meta/_journal.json`.
 - Seeds — `scripts/seed-plans.ts` (catálogo), `scripts/seed-demo.ts` (demo).
 - Deploy — `render.yaml`, `DEPLOYMENT_GUIDE.md`, `docs/DEPLOYMENT_EASYPANEL.md`.
+- Smoke-boot — `node scripts/smoke-boot.mjs` tras `npm run build` (PJ-06):
+  verifica fail-fast de `JWT_SECRET` y de migraciones sin tocar la DB real;
+  con `SMOKE_DATABASE_URL` hace el boot feliz + `/api/health`.
+- CI — `.github/workflows/ci.yml` (PJ-06): `tsc` → `vitest` → `build` →
+  `verify-migration-pglite` → `smoke-boot` en push a master y PRs.

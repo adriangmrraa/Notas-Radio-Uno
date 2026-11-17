@@ -1,0 +1,47 @@
+name: CI
+
+# Épica J / PJ-06 — pipeline de verificación del repo.
+# Corre en push a master/main y en todos los PRs. Mismo orden de gates que
+# el checklist de la épica: typecheck → tests → build → migración PGlite →
+# smoke-boot (boot path real contra una DATABASE_URL inalcanzable: prueba
+# que el fail-fast de migraciones y el guard de JWT_SECRET funcionan).
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # El postinstall instala remotion/ solo si existe (está trackeado en
+      # git) — en CI no hace falta: ningún gate lo ejerce.
+      - name: Install dependencies
+        run: npm ci
+        env:
+          PERIODISTAPP_SKIP_REMOTION_INSTALL: '1'
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: npx vitest run
+
+      - name: Build (client + server + drizzle generate)
+        run: npm run build
+
+      - name: Verify migrations on PGlite
+        run: node scripts/verify-migration-pglite.mjs
+
+      - name: Smoke boot (graceful-fail env/boot checks)
+        run: node scripts/smoke-boot.mjs
