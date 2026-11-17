@@ -72,6 +72,7 @@ import { fileURLToPath } from 'node:url';
 import { and, asc, count, eq, max, sql, sum } from 'drizzle-orm';
 
 import { db, type Database } from '../db/index.js';
+import { S3BackupStorage } from './s3BackupStorage.js';
 import { assetBackupEntries } from '../db/schema/assetBackup.js';
 import { clips } from '../db/schema/clips.js';
 import { publications } from '../db/schema/publications.js';
@@ -168,12 +169,21 @@ let cachedBackup: BackupStorage | null = null;
 let cachedSource: BackupStorage | null = null;
 
 /**
- * BackupStorage destino del espejo. Hoy siempre filesystem bajo
- * `BACKUP_ROOT`/`<repo>/data/backup`; el driver S3/R2 se selecciona acá
- * (p.ej. por `BACKUP_DRIVER`) implementando la misma interfaz.
+ * BackupStorage destino del espejo seleccionado por `BACKUP_DRIVER`:
+ *   - `fs`  (default): `BACKUP_ROOT`/`<repo>/data/backup`.
+ *   - `s3`: `S3BackupStorage` — S3/R2/MinIO vía `S3_BUCKET` + credenciales
+ *     (PJ-05; el destino del espejo es write-only — stat/write/delete).
  */
 export function getBackupStorage(): BackupStorage {
-  cachedBackup ??= new FilesystemBackupStorage(backupRoot());
+  if (cachedBackup) return cachedBackup;
+  const driver = (process.env.BACKUP_DRIVER ?? 'fs').trim().toLowerCase();
+  if (driver === 's3') {
+    cachedBackup = new S3BackupStorage();
+  } else if (driver && driver !== 'fs') {
+    throw new Error(`BACKUP_DRIVER="${driver}" desconocido (válidos: fs, s3)`);
+  } else {
+    cachedBackup = new FilesystemBackupStorage(backupRoot());
+  }
   return cachedBackup;
 }
 
