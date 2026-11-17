@@ -4,6 +4,16 @@
 >
 > Version: 2.0 | Ultima actualizacion: Marzo 2026
 
+> **Nota Épica J (deployability + unificación de motor):** este documento
+> mezcla la arquitectura actual con la del motor v6 ya retirado. Las
+> secciones que describen componentes eliminados (`AutoPipeline`/
+> `pipelineService.ts`, `/api/pipeline/*`, `/api/start-capture`,
+> `/api/get-transcriptions`, SQLite, Whisper en Python, `audio_capture.py`)
+> están marcadas con `⚠️ Sección legacy (motor v6 retirado en Épica J)` y se
+> conservan sólo como referencia histórica. El motor canónico es
+> **transmissions** (stream_recording + recording_segments +
+> analysisEngine + FSM).
+
 ---
 
 ## Tabla de Contenidos
@@ -79,68 +89,72 @@ PeriodistApp automatiza el ciclo completo de produccion periodistica para cualqu
 | **Runtime** | Node.js + TypeScript | ESM modules (`"type": "module"`) |
 | **Backend** | Express.js | Puerto 3001. Sirve API REST + archivos estaticos en produccion. |
 | **Frontend** | React 19 + Vite + TypeScript | Puerto 5173 en desarrollo. Vite hace proxy automatico de `/api/*` y `/socket.io` al backend. |
-| **Base de datos** | SQLite (better-sqlite3) | WAL mode habilitado. Archivo: `data/credentials.db` |
-| **Comunicacion real-time** | Socket.IO | Bidireccional. El backend emite eventos de progreso del pipeline. |
-| **IA - Texto** | DeepSeek (primario) + Gemini 2.5 Flash (fallback) | Analisis de temas, generacion de notas, extraccion de insights. |
+| **Base de datos** | **PostgreSQL via Drizzle ORM + Neon** | `drizzle-orm/neon-serverless` (WebSocket al proxy de Neon). Migraciones automáticas al boot desde `drizzle/`. Multi-tenant: TODA query de negocio filtra por `tenant_id`. |
+| **Comunicacion real-time** | Socket.IO | Bidireccional. El backend emite eventos de progreso (transmissions, live alerts, jobs). |
+| **Motor de pipeline** | **transmissions** (único desde Épica J) | `transmissions` + `stream_recordings` + `recording_segments` + `transmissionStateMachine` + `analysisEngineService`. El `AutoPipeline` legacy fue retirado. |
+| **IA - Texto/Análisis** | Gemini (principal) + DeepSeek/xAI vía `analysisEngineService`/`aiSdkService` | Análisis de segmentos, generación de notas, extracción de insights. |
 | **IA - Imagenes** | Nano Banana 2 (gemini-3.1-flash-image-preview) + xAI Grok | Generacion de fondos para placas cuando no hay imagen de articulo. Soporta image+prompt: envía fotos de referencia (personas, logos, eventos) junto con el prompt para generar imágenes contextualizadas. |
 | **IA - Busqueda** | Gemini Grounded Search | Investigacion web con fuentes verificables. |
-| **Audio** | ffmpeg + yt-dlp + Whisper | Captura de streams, conversion a formato compatible, transcripcion speech-to-text. |
+| **Audio/Video** | ffmpeg + yt-dlp + Whisper API / AssemblyAI | Ingesta de streams (`streamRecorderService`), transcripción por API (sin Python local). |
+| **Render de clips** | **ffmpeg** (`clip_render_jobs`: cut/reframe/subtitles) | Los renders productivos son puro ffmpeg. `clipService` (Remotion) es opt-in local (requiere Chromium). |
 | **Imagenes** | @napi-rs/canvas (overlay de texto, logo) + Sharp (resize) | Procesamiento de imagenes: resize, overlay de texto, composicion de placas. |
 | **Canvas** | @napi-rs/canvas | Generacion de placas: overlay de texto, gradiente, logo. Drop-in replacement de node-canvas sin compilacion nativa. |
 
 ### Estructura de carpetas
 
+Estructura actual (post-Épica J; el tree detallado legacy está más abajo como referencia):
+
 ```
 periodistapp/
 ├── src/
 │   ├── server/
-│   │   ├── index.ts                    # Entry point: Express + Socket.IO + middlewares
-│   │   ├── routes/                     # 6 modulos de rutas REST
-│   │   │   ├── pipeline.ts             # /api/pipeline/* (start, stop, status, options)
-│   │   │   ├── meta.ts                 # /api/meta/* (config, status, connect, disconnect, publish)
-│   │   │   ├── generate.ts             # /api/generate, /api/generate-from-url, /api/sendWebhook*
-│   │   │   ├── capture.ts              # /api/start-capture, /api/stop-capture
-│   │   │   ├── history.ts              # /api/history/* (publications, transcriptions CRUD)
-│   │   │   └── settings.ts             # /api/settings/* (webhooks GET/POST)
-│   │   ├── services/                   # 16 servicios de logica de negocio
-│   │   │   ├── pipelineService.ts      # Clase AutoPipeline - pipeline autonomo (~1100 lineas)
-│   │   │   ├── databaseService.ts      # SQLite CRUD + inicializacion + encriptacion
-│   │   │   ├── aiService.ts            # Wrapper para DeepSeek + Gemini (chatCompletion, extractJSON)
-│   │   │   ├── newsService.ts          # Generacion de notas periodisticas (tonos + estructuras)
-│   │   │   ├── topicService.ts         # Segmentacion de temas con sistema de 2 fases
-│   │   │   ├── insightService.ts       # Extraccion de insights (personas, datos, queries)
-│   │   │   ├── searchService.ts        # Investigacion web (Gemini Grounded, Google CSE, DDG)
-│   │   │   ├── imageService.ts         # Procesamiento de placas (Sharp: resize, overlay, composicion)
-│   │   │   ├── transcriptionService.ts # Captura audio (yt-dlp + ffmpeg) + Whisper
-│   │   │   ├── metaAuthService.ts      # OAuth Meta: exchange tokens, discover assets
-│   │   │   ├── metaPublishService.ts   # Publicacion en Facebook Pages + Instagram
-│   │   │   ├── twitterService.ts       # Publicacion en Twitter (OAuth 1.0a)
-│   │   │   ├── scraperService.ts       # Scraping de articulos web (extraccion titulo/imagen/contenido)
-│   │   │   ├── rateLimiter.ts          # Token bucket rate limiting para todas las APIs
-│   │   │   ├── deduplicationService.ts # Deteccion de duplicados (sesion + DB)
+│   │   ├── index.ts                    # Entry point: Express + Socket.IO + schedulers/workers
+│   │   ├── db/                         # Drizzle: index (pool Neon), schema/, migrate.ts
+│   │   ├── middleware/                 # auth, authz, requestId
+│   │   ├── lib/                        # logger, errors, binaries, FSM, helpers puros
+│   │   ├── routes/                     # ~35 módulos REST: transmissions, live, pipelineConfig
+│   │   │                               # (editor visual), meta, generate, clips, publishJobs,
+│   │   │                               # socialConnections, billing, admin, history, settings…
+│   │   └── services/                   # ~60 servicios con DI por dominio:
+│   │       # transmissions engine: transmissionSchedulerService, streamRecorderService,
+│   │       #   recordingSegmentsService, analysisEngineService, transmissionSegmentsService,
+│   │       #   liveAlertsService, noteFactoryService
+│   │       # workers: jobQueueWorker, clipRenderWorker, publishWorker, dossierScheduler
+│   │       # media: clipCutterService, clipReframeService, clipSubtitleService (ffmpeg),
+│   │       #   transcriptionService (API), clipService (Remotion — opt-in local)
+│   │       # publicación: publishService, metaPublishService, socialConnectionsService
+│   │       # plataforma: authService, membershipService, billingService, adminService…
+│   ├── client/                         # React 19 SPA (pages/, components/, hooks/)
+│   └── shared/                         # Tipos y contratos compartidos
+├── drizzle/                            # Migraciones SQL + journal (se aplican al boot)
+├── fonts/                              # TTF usadas por ffmpeg fontsdir= y placas
+├── remotion/                           # Proyecto Remotion propio (opt-in local)
+├── nginx/default.conf.template         # Template envsubst del contenedor frontend
+├── scripts/                            # utilidades + verificadores (verify-migration-pglite)
+└── tests/                              # vitest — unit/integration con stores in-memory
+```
+
+Tree legacy (v6, motor retirado — conservado como referencia):
+
+```
+│   │   ├── routes/                     # 6 modulos de rutas REST (v6)
+│   │   │   ├── pipeline.ts             # /api/pipeline/* (RETIRADO en Épica J)
+│   │   │   ├── meta.ts                 # /api/meta/*
+│   │   │   ├── generate.ts             # /api/generate, /api/sendWebhook*
+│   │   │   ├── capture.ts              # /api/start-capture (RETIRADO — no existía audio_capture.py)
+│   │   │   ├── history.ts              # /api/history/*
+│   │   │   └── settings.ts             # /api/settings/*
+│   │   ├── services/ (v6)
+│   │   │   ├── pipelineService.ts      # AutoPipeline (RETIRADO en Épica J)
+│   │   │   ├── databaseService.ts      # SQLite CRUD (RETIRADO — hoy Drizzle/Neon)
+│   │   │   ├── aiService.ts, newsService.ts, topicService.ts, insightService.ts
+│   │   │   ├── searchService.ts, imageService.ts, transcriptionService.ts
+│   │   │   ├── metaAuthService.ts, metaPublishService.ts, twitterService.ts
+│   │   │   ├── scraperService.ts, rateLimiter.ts, deduplicationService.ts
 │   │   │   └── encryptionService.ts    # AES-256-GCM para credenciales
-│   │   └── data/                       # Directorio auto-creado para la base de datos SQLite
-│   ├── client/
-│   │   ├── main.tsx                    # Entry point React
-│   │   ├── App.tsx                     # Componente principal (SPA, todo inline)
-│   │   ├── App.css                     # Estilos dark theme (#0b0d17)
-│   │   ├── hooks/
-│   │   │   └── useSocket.ts            # Hook custom para Socket.IO
-│   │   └── types/
-│   │       └── index.ts                # Tipos de UI
-│   └── shared/
-│       └── types.ts                    # Tipos compartidos entre server y client
-├── public/
-│   └── logo.png                        # Logo de la plataforma configurada (PLATFORM_NAME)
-├── output/                             # Imagenes generadas (auto-creado)
-├── uploads/                            # Archivos subidos temporalmente (multer)
-├── fonts/                              # BebasKai.ttf (tipografia opcional para placas)
+│   │   └── data/                       # (v6: SQLite; hoy: raw/uploads/backup)
 ├── scripts/
-│   └── audio_capture.py                # Script Python para captura manual de audio
-├── .env                                # Variables de entorno (no versionado)
-├── package.json                        # Dependencias y scripts npm
-├── tsconfig.json                       # Configuracion TypeScript
-└── vite.config.ts                      # Configuracion Vite (proxy, build)
+│   └── audio_capture.py                # (v6 — nunca estuvo versionado)
 ```
 
 ### Diagrama de dependencias entre servicios
@@ -171,6 +185,8 @@ pipelineService.ts (orquestador principal)
 ---
 
 ## 3. El Pipeline Autonomo
+
+> ⚠️ Sección legacy (motor v6 retirado en Épica J). `pipelineService.ts`/AutoPipeline ya no existe en runtime: el motor canónico es **transmissions**. Esta sección queda como referencia histórica del comportamiento original.
 
 ### Clase `AutoPipeline` (`pipelineService.ts`)
 
@@ -570,7 +586,7 @@ await axios.post(
 
 ## 4. Base de Datos
 
-PeriodistApp usa SQLite con better-sqlite3 y WAL mode habilitado para mejor performance de escritura concurrente. La base de datos se crea automaticamente en `data/credentials.db`.
+> ⚠️ Sección legacy (motor v6 retirado en Épica J). La base de datos real es **PostgreSQL vía Drizzle ORM sobre Neon** (`@neondatabase/serverless`, WebSocket). Las tablas actuales viven en `src/server/db/schema/` y las migraciones en `drizzle/` (aplicadas al boot por `runMigrations`). TODA query de negocio filtra por `tenant_id`. El contenido siguiente describe el schema SQLite de la v6 — referencia histórica.
 
 ### Tabla: `credentials`
 
@@ -704,7 +720,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 ## 5. Eventos Socket.IO
 
-El backend emite eventos en tiempo real para que el frontend muestre el progreso del pipeline y actualizaciones del historial.
+> ⚠️ Sección legacy (motor v6 retirado en Épica J). Los eventos `pipeline-update` descritos abajo pertenecían al AutoPipeline. El motor transmissions emite sus propios eventos vía `transmissionSocketService`/`liveAlertsService`. El backend emite eventos en tiempo real para que el frontend muestre el progreso y actualizaciones del historial.
 
 ### Evento principal: `pipeline-update`
 
@@ -781,7 +797,7 @@ Todos los endpoints estan prefijados con `/api/` (excepto uno legacy). El backen
 
 ### Pipeline (`/api/pipeline/*`)
 
-Registrados en `src/server/routes/pipeline.ts`.
+> ⚠️ Sección legacy (motor v6 retirado en Épica J). Estos endpoints fueron eliminados junto con `routes/pipeline.ts`; su equivalente actual es `/api/transmissions` + `/api/live`.
 
 ---
 
@@ -1187,7 +1203,7 @@ Se requiere al menos uno de los dos campos.
 
 ### Captura de Audio (`/api/start-capture`, `/api/stop-capture`)
 
-Registrados en `src/server/routes/capture.ts`.
+> ⚠️ Sección legacy (motor v6 retirado en Épica J). `routes/capture.ts` fue eliminado: invocaba `scripts/audio_capture.py` (nunca versionado) y `taskkill` de Windows. La captura real hoy es `streamRecorderService` + transmissions.
 
 ---
 
@@ -1375,6 +1391,8 @@ Todos los campos son opcionales. Solo se actualizan los que se envian.
 
 ### Endpoint Legacy
 
+> ⚠️ Retirado en Épica J junto con `output/transcripciones.json`.
+
 #### `GET /api/get-transcriptions`
 
 Lee y retorna el contenido del archivo JSON de transcripciones (`output/transcripciones.json`). Este es un endpoint legacy de la version anterior de la aplicacion.
@@ -1397,6 +1415,8 @@ Lee y retorna el contenido del archivo JSON de transcripciones (`output/transcri
 ---
 
 ## 7. Frontend - Que se ve en cada seccion
+
+> ⚠️ Sección parcialmente legacy (motor v6 retirado en Épica J): las subsecciones que describen el "Pipeline Autonomo" y la "Captura de Audio" manual corresponden al motor retirado; el frontend actual habla con `/api/transmissions` y `/api/live`. Las secciones Meta/webhooks/herramientas/historial siguen vigentes.
 
 ### Layout General
 
