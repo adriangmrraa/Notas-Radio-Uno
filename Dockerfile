@@ -8,6 +8,10 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig*.json ./
 COPY drizzle.config.ts ./
+# El postinstall instala remotion/ SOLO si el directorio existe
+# (scripts/postinstall-remotion.mjs). Acá no se copia → lo saltea.
+# NO usar --ignore-scripts: onnxruntime-node y sharp necesitan sus scripts.
+COPY scripts/postinstall-remotion.mjs scripts/
 
 RUN npm ci
 
@@ -29,6 +33,10 @@ RUN npx drizzle-kit generate
 FROM node:20-slim
 
 # System deps: ffmpeg + yt-dlp (no Python/Whisper needed — using OpenAI API)
+# Sin Chromium: los clip_render_jobs productivos (kinds cut/reframe/subtitles)
+# son puro ffmpeg. El render Remotion de clipService queda opt-in LOCAL
+# (`npm run remotion:studio` / `remotion:render`); soportarlo en contenedor
+# exigiría Chrome headless + libs X (~400MB extra) sin caller en runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
@@ -42,8 +50,9 @@ RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
 
 WORKDIR /app
 
-# Production deps only
+# Production deps only (postinstall no-ops: remotion/ no está en la imagen)
 COPY package*.json ./
+COPY scripts/postinstall-remotion.mjs scripts/
 RUN npm ci --omit=dev
 
 # Compiled output from builder
@@ -55,7 +64,13 @@ COPY --from=builder /app/drizzle/ drizzle/
 # Static assets
 COPY public/ public/
 
-RUN mkdir -p output uploads
+# Fuentes TTF: clipSubtitleService las referencia vía ffmpeg `fontsdir=`
+# y fontService las resuelve con <root>/fonts — REQUERIDAS en runtime.
+COPY fonts/ fonts/
+
+# NO se copia remotion/: render Remotion es opt-in local (ver nota arriba).
+
+RUN mkdir -p output uploads data/raw
 
 ENV NODE_ENV=production
 

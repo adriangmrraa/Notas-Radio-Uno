@@ -16,7 +16,7 @@
     "db:studio": "npx drizzle-kit studio",
     "test": "vitest run",
     "test:responsive": "node scripts/responsive-smoke.mjs",
-    "postinstall": "cd remotion && npm install",
+    "postinstall": "node scripts/postinstall-remotion.mjs",
     "remotion:studio": "cd remotion && npm run studio",
     "remotion:render": "cd remotion && npm run render"
   },
