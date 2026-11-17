@@ -23,8 +23,9 @@ import jwt from 'jsonwebtoken';
 import { impersonationSessions } from '../db/schema/index.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from './auditService.js';
 import { syncTenantFeaturesForTenant, setFeatureFlag, resetFeatureOverride } from './tenantFeaturesService.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const JWT_SECRET = jwtSecret();
 
 // ── KPIs de plataforma ────────────────────────────────────────────────────────
 

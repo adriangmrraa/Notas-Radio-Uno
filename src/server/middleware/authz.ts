@@ -26,8 +26,9 @@ import type { UserRole } from '../db/schema/enums.js';
 import type { AuthPayload } from './auth.js';
 import { getActiveMembership } from '../services/membershipService.js';
 import { setRequestContext } from '../lib/requestContext.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const JWT_SECRET = jwtSecret();
 
 export const ROLE_RANK: Record<UserRole, number> = {
   viewer: 1,

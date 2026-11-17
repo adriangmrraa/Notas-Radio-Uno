@@ -27,6 +27,7 @@ import type { Server, Socket } from 'socket.io';
 import { db } from '../db/index.js';
 import { transmissions } from '../db/schema/transmissions.js';
 import { getActiveMembership } from './membershipService.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 
 // ─── Tipos y dependencias ───────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ export interface TransmissionSocketDeps {
 function defaultVerifyToken(token: string): SocketTokenPayload | null {
     try {
         const secret =
-            process.env.JWT_SECRET || 'dev-secret-change-in-production';
+            jwtSecret();
         return jwt.verify(token, secret) as SocketTokenPayload;
     } catch {
         return null;

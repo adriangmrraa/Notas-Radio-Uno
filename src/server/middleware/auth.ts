@@ -7,8 +7,9 @@ import type { UserRole } from '../db/schema/enums.js';
 import { subscriptions, users } from '../db/schema/index.js';
 import { requireActiveMembership } from '../services/membershipService.js';
 import { recordAuditEvent, AUDIT_ACTIONS } from '../services/auditService.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const JWT_SECRET = jwtSecret();
 
 /**
  * Claims de sesión (T-37 / decisión B-2).

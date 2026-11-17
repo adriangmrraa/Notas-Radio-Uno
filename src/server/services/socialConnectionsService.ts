@@ -35,6 +35,7 @@ import { db, type Database } from '../db/index.js';
 import { socialConnections, zernioProfiles } from '../db/schema/socialConnections.js';
 import { plans, subscriptions, tenants } from '../db/schema/index.js';
 import { AppError } from '../lib/errors.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 import { loadTenantBranding } from './brandingService.js';
 import { createZernioApi, type ZernioAccount, type ZernioApi } from './zernioService.js';
 
@@ -87,8 +88,7 @@ export const CONNECT_STATE_TTL_SEC = 15 * 60;
 const resolveStateSecret = (deps?: SocialConnectionsDeps): string =>
     deps?.stateSecret ??
     process.env.ZERNIO_STATE_SECRET ??
-    process.env.JWT_SECRET ??
-    'dev-secret-change-in-production';
+    jwtSecret();
 
 const b64url = (buf: Buffer): string =>
     buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

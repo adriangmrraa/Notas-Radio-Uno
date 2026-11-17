@@ -17,10 +17,11 @@ import {
 } from './membershipService.js';
 import { signSessionToken } from '../middleware/auth.js';
 import { startTrial } from './subscriptionLifecycleService.js';
+import { jwtSecret } from '../lib/jwtSecret.js';
 import { eq, and, isNull } from 'drizzle-orm';
 
 const BCRYPT_ROUNDS = 12;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const JWT_SECRET = jwtSecret();
 const JWT_EXPIRES_IN = '7d';
 const VERIFICATION_TOKEN_TTL_HOURS = 48;
 const RESET_TOKEN_TTL_HOURS = 1;
