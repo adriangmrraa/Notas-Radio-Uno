@@ -15,14 +15,12 @@ import { dirname } from "path";
 dotenv.config();
 
 import { runMigrations } from "./db/migrate.js";
-import { registerPipelineRoutes } from "./routes/pipeline.js";
+
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerHistoryRoutes } from "./routes/history.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerGenerateRoutes } from "./routes/generate.js";
-import { registerCaptureRoutes } from "./routes/capture.js";
 import { registerAgentRoutes } from "./routes/agents.js";
-import { registerPipelineConfigRoutes } from "./routes/pipelineConfig.js";
 import { registerBrandingRoutes } from "./routes/branding.js";
 import { registerProgramRoutes } from "./routes/programs.js";
 import { registerConductorRoutes } from "./routes/conductors.js";
@@ -42,7 +40,6 @@ import { teamRouter } from "./routes/team.js";
 import { adminRouter } from "./routes/admin.js";
 import { featuresRouter } from "./routes/features.js";
 import { connectionsRouter } from "./routes/connections.js";
-import { jobsRouter } from "./routes/jobs.js";
 import { imageEditRouter } from "./routes/imageEdit.js";
 import { personsRouter } from "./routes/persons.js";
 import { onboardingRouter } from "./routes/onboarding.js";
@@ -87,7 +84,6 @@ const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 // Transcription file setup
 // ---------------------------------------------------------------------------
 const OUTPUT_DIR = path.join(PROJECT_ROOT, "output");
-const TRANSCRIPTION_FILE = path.join(OUTPUT_DIR, "transcripciones.json");
 
 // Ensure output directory exists
 if (!fs.existsSync(OUTPUT_DIR)) {
@@ -107,16 +103,6 @@ try {
 } catch (err) {
   log.error("Error al leer el directorio de output", { err });
 }
-
-// Reset transcription file
-if (fs.existsSync(TRANSCRIPTION_FILE)) {
-  fs.unlinkSync(TRANSCRIPTION_FILE);
-  log.info("Archivo de transcripciones eliminado.");
-}
-
-const initialData = { transcriptions: [] as unknown[] };
-fs.writeFileSync(TRANSCRIPTION_FILE, JSON.stringify(initialData, null, 4), "utf-8");
-log.info("Archivo JSON de transcripciones inicializado.");
 
 // ---------------------------------------------------------------------------
 // Express + Socket.IO setup
@@ -259,19 +245,6 @@ registerPublicPageRoutes(app);
 app.use("/api/health", healthRouter);
 
 // ---------------------------------------------------------------------------
-// API route to get transcription file content
-// ---------------------------------------------------------------------------
-app.get("/api/get-transcriptions", (_req, res) => {
-  try {
-    const transcriptionData = fs.readFileSync(TRANSCRIPTION_FILE, "utf-8");
-    res.json(JSON.parse(transcriptionData));
-  } catch (error) {
-    log.error("Error al leer el archivo de transcripciones", { err: error });
-    res.status(500).json({ transcriptions: [] });
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Auth routes
 // ---------------------------------------------------------------------------
 app.use("/api/auth", authRouter);
@@ -280,7 +253,6 @@ app.use("/api/team", teamRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/features", featuresRouter);
 app.use("/api/connections", connectionsRouter);
-app.use("/api/jobs", jobsRouter);
 app.use("/api/images", imageEditRouter);
 app.use("/api/persons", personsRouter);
 app.use("/api/onboarding", onboardingRouter);
@@ -337,17 +309,11 @@ initDossierScheduler();
 // ---------------------------------------------------------------------------
 // Register route modules
 // ---------------------------------------------------------------------------
-registerPipelineRoutes(app, io);
 registerMetaRoutes(app);
 registerHistoryRoutes(app, io);
 registerSettingsRoutes(app);
 registerGenerateRoutes(app, io, upload);
-registerCaptureRoutes(app, io, {
-  transcriptionFile: TRANSCRIPTION_FILE,
-  projectRoot: PROJECT_ROOT,
-});
 registerAgentRoutes(app);
-registerPipelineConfigRoutes(app);
 registerBrandingRoutes(app);
 registerProgramRoutes(app);
 registerConductorRoutes(app);
@@ -424,4 +390,4 @@ app.get("*", (_req, res) => {
   });
 })();
 
-export { app, io, httpServer, TRANSCRIPTION_FILE, OUTPUT_DIR, PROJECT_ROOT };
+export { app, io, httpServer, OUTPUT_DIR, PROJECT_ROOT };

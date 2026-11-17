@@ -16,7 +16,6 @@ import {
   transcriptions,
   businessAssets,
   customAgents,
-  pipelineConfigs,
 } from "../db/schema/index.js";
 import { eq, and, desc, sql, like } from "drizzle-orm";
 import { encrypt, decrypt } from "./encryptionService.js";
@@ -835,100 +834,7 @@ function mapAgent(row: typeof customAgents.$inferSelect): unknown {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline Config
+// Pipeline Config — retirada en Épica J (PJ-03): la tabla `pipeline_configs`
+// sólo la consumía el motor legacy. La superficie viva de configuración de
+// agentes pasa por las rutas de agents.
 // ---------------------------------------------------------------------------
-
-export async function getActivePipelineConfig(tenantId?: string): Promise<unknown> {
-  const tid = tenantId ?? getSystemTenantId();
-  const rows = await db
-    .select()
-    .from(pipelineConfigs)
-    .where(and(eq(pipelineConfigs.tenantId, tid), eq(pipelineConfigs.isActive, true)))
-    .limit(1);
-  return rows[0] ? mapPipelineConfig(rows[0]) : null;
-}
-
-export async function savePipelineConfig(
-  config: { id?: string; name?: string; node_order: string[] },
-  tenantId?: string,
-): Promise<unknown> {
-  const tid = tenantId ?? getSystemTenantId();
-  const name = config.name ?? "Default Pipeline";
-
-  await db
-    .insert(pipelineConfigs)
-    .values({
-      ...(config.id ? { id: config.id } : {}),
-      tenantId: tid,
-      name,
-      nodeOrder: config.node_order,
-      isActive: true,
-    })
-    .onConflictDoUpdate({
-      target: [pipelineConfigs.id],
-      set: { name, nodeOrder: config.node_order, updatedAt: new Date() },
-    });
-
-  return getActivePipelineConfig(tenantId);
-}
-
-export async function resetPipelineConfig(tenantId?: string): Promise<null> {
-  const tid = tenantId ?? getSystemTenantId();
-  await db
-    .delete(pipelineConfigs)
-    .where(and(eq(pipelineConfigs.tenantId, tid), eq(pipelineConfigs.name, "default")));
-  return null;
-}
-
-function mapPipelineConfig(row: typeof pipelineConfigs.$inferSelect): unknown {
-  return {
-    id: row.id,
-    name: row.name,
-    node_order: Array.isArray(row.nodeOrder) ? row.nodeOrder : [],
-    is_active: row.isActive,
-    created_at: row.createdAt?.toISOString(),
-    updated_at: row.updatedAt?.toISOString(),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Deduplication helper (replaces legacy getDb() raw query in deduplicationService)
-// ---------------------------------------------------------------------------
-
-interface RecentPublicationRow {
-  id: string;
-  title: string;
-  content: string | null;
-  created_at: string;
-}
-
-export async function findRecentPublications(
-  hoursBack: number = 24,
-  tenantId?: string,
-): Promise<RecentPublicationRow[]> {
-  const tid = tenantId ?? getSystemTenantId();
-  const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-
-  const rows = await db
-    .select({
-      id: publications.id,
-      title: publications.title,
-      content: publications.content,
-      createdAt: publications.createdAt,
-    })
-    .from(publications)
-    .where(
-      and(
-        eq(publications.tenantId, tid),
-        sql`${publications.createdAt} > ${cutoff.toISOString()}`,
-      ),
-    )
-    .orderBy(desc(publications.createdAt));
-
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title ?? "",
-    content: r.content ?? null,
-    created_at: r.createdAt?.toISOString() ?? "",
-  }));
-}

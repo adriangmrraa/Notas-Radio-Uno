@@ -26,6 +26,7 @@ import {
   tenants,
   usageCycles,
 } from '../db/schema/index.js';
+import { transmissions } from '../db/schema/transmissions.js';
 import { AppError } from '../lib/errors.js';
 import { computeRemaining, computePercentUsed } from '../lib/quotaMath.js';
 
@@ -66,14 +67,35 @@ export interface ReleaseResult {
 }
 
 /** Chequeo inyectable: ¿la transmisión referenciada sigue activa? */
-type ActiveChecker = (tenantId: string, transmissionRef: string | null) => boolean;
+type ActiveChecker = (tenantId: string, transmissionRef: string | null) => boolean | Promise<boolean>;
 
-let activeChecker: ActiveChecker = () => false;
+/** Statuses que retienen una reserva de cuota: la corrida existe y no terminó. */
+const ACTIVE_RUN_STATUSES = ['scheduled', 'waiting', 'live', 'processing'] as const;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Checker por defecto (Épica J / PJ-03): consulta la tabla `transmissions`.
+ * `transmissionRef` es el id de la corrida en el motor nuevo
+ * (`consumeTransmission` lo recibe como ref). Refs que no son UUID — URLs del
+ * pipeline legacy retirado — nunca vuelven a activarse: se tratan como stale.
+ */
+async function dbActiveChecker(tenantId: string, transmissionRef: string | null): Promise<boolean> {
+  if (!transmissionRef || !UUID_RE.test(transmissionRef)) return false;
+  const [run] = await db
+    .select({ status: transmissions.status })
+    .from(transmissions)
+    .where(and(eq(transmissions.id, transmissionRef), eq(transmissions.tenantId, tenantId)))
+    .limit(1);
+  if (!run) return false;
+  return (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status ?? '');
+}
+
+let activeChecker: ActiveChecker = dbActiveChecker;
 
 /**
  * Registra el chequeo de "sigue activa" que usa `releaseStaleOperations`.
- * Lo llama el módulo de pipeline al montar sus rutas: sólo él sabe qué
- * transmisiones tiene corriendo. NUNCA se usa para cortar pipelines.
+ * Por defecto consulta `transmissions` en DB; los tests pueden inyectar uno.
+ * NUNCA se usa para cortar transmisiones en curso.
  */
 export function registerActiveTransmissionChecker(checker: ActiveChecker): void {
   activeChecker = checker;
@@ -423,7 +445,7 @@ export async function releaseStaleOperations(input: {
 
   let released = 0;
   for (const op of stale) {
-    if (activeChecker(op.tenantId, op.transmissionRef)) continue;
+    if (await activeChecker(op.tenantId, op.transmissionRef)) continue;
     const result = await releaseTransmission({
       tenantId: op.tenantId,
       operationId: op.operationId,

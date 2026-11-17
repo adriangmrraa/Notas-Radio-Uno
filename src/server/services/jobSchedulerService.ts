@@ -1,326 +1,67 @@
 import type { Server } from 'socket.io';
-import { db } from '../db/index.js';
-import { detectLiveStream } from './liveDetectorService.js';
-import { AutoPipeline } from './pipelineService.js';
-import { jobNotify } from './notificationService.js';
-import { trackPipelineMinutes, trackPublication } from './usageTracker.js';
-import { scheduledJobs, jobExecutions } from '../db/schema/index.js';
 import { releaseStaleOperations } from './transmissionMeteringService.js';
 import { evaluateTransitions } from './subscriptionLifecycleService.js';
-import { eq } from 'drizzle-orm';
 
-const MAX_RETRY_ATTEMPTS = 15; // 15 x 2min = 30 min window
-const RETRY_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
-const MAX_CONCURRENT_JOBS = 5;
+/**
+ * jobSchedulerService — scheduler de mantenimiento (Épica J / PJ-03).
+ *
+ * Histórico: este módulo ejecutaba `scheduled_jobs` disparando instancias de
+ * AutoPipeline (motor legacy retirado en PJ-03). La agenda viva es
+ * `scheduled_transmissions`, atendida por `transmissionSchedulerService`.
+ *
+ * Lo que queda acá es el tick de mantenimiento que el scheduler viejo también
+ * hacía: liberación de reservas de cuota stale y ciclo de vida de
+ * suscripciones. Es infraestructura de billing — no toca transmisiones.
+ */
 
-/** Mantenimiento de billing cada N ticks (~15 min con tick de 60s). */
-const MAINTENANCE_EVERY_N_TICKS = 15;
+const MAINTENANCE_EVERY_N_TICKS = 15; // ~15 min con tick de 60s
 let maintenanceCounter = MAINTENANCE_EVERY_N_TICKS - 1; // primer tick ya corre mantenimiento
 
-// Active job pipelines — separate from manual pipeline instances
-const activeJobs: Map<string, { pipeline: AutoPipeline; executionId: string; startTime: Date; timeoutHandle: ReturnType<typeof setTimeout> }> = new Map();
-
-// Retry state per job
-const retryState: Map<string, { attempts: number; handle: ReturnType<typeof setTimeout> }> = new Map();
-
-let ioRef: Server;
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Initialize the job scheduler. Checks every 60 seconds for jobs to run.
+ * Initialize the maintenance scheduler. Checks every 60 seconds.
+ * `io` se mantiene en la firma por compatibilidad con el callsite de index.ts;
+ * el tick actual no emite eventos.
  */
-export function initJobScheduler(io: Server) {
-    ioRef = io;
-
+export function initJobScheduler(_io: Server) {
     if (schedulerInterval) clearInterval(schedulerInterval);
 
     // Barrido de ciclo de vida de suscripciones al arrancar (try/catch: una
     // falla nunca tumba el scheduler ni el boot del server).
     evaluateTransitions().catch((err) => {
-        console.error('[JobScheduler] Error en evaluateTransitions (startup):', err);
+        console.error('[MaintenanceScheduler] Error en evaluateTransitions (startup):', err);
     });
 
     schedulerInterval = setInterval(() => {
-        checkAndRunJobs().catch((err) => {
-            console.error('[JobScheduler] Error in check loop:', err);
+        runMaintenanceTick().catch((err) => {
+            console.error('[MaintenanceScheduler] Error in maintenance tick:', err);
         });
     }, 60_000); // Every minute
 
-    console.log('[JobScheduler] Initialized — checking jobs every 60s');
+    console.log('[MaintenanceScheduler] Initialized — maintenance every ~15min');
 }
 
 /**
- * Main loop: find jobs that should run NOW and start them.
+ * Tick de mantenimiento: cada MAINTENANCE_EVERY_N_TICKS ticks libera reservas
+ * de cuota stale y evalúa transiciones de ciclo de vida de suscripciones
+ * (trials vencidos, gracia agotada, cancelaciones a fin de período,
+ * pendingPlan de MP). Todo en try/catch: nunca tumba el scheduler ni toca
+ * transmisiones activas.
  */
-async function checkAndRunJobs() {
-    // Mantenimiento de cuota (~cada 15 min). Envuelto en try/catch: una falla
-    // de cuota NUNCA tumba el scheduler. Importante: sólo libera reservas
-    // stale — ninguna transmisión activa se corta ni se descuenta acá.
+async function runMaintenanceTick() {
     maintenanceCounter++;
-    if (maintenanceCounter >= MAINTENANCE_EVERY_N_TICKS) {
-        maintenanceCounter = 0;
-        try {
-            await releaseStaleOperations();
-        } catch (err) {
-            console.error('[JobScheduler] Error liberando reservas de cuota stale:', err);
-        }
-        // Ciclo de vida de suscripciones: trials vencidos, gracia agotada,
-        // cancelaciones a fin de período y pendingPlan de MP. Todo en
-        // try/catch: nunca tumba el scheduler ni toca pipelines activos.
-        try {
-            await evaluateTransitions();
-        } catch (err) {
-            console.error('[JobScheduler] Error en evaluateTransitions:', err);
-        }
-    }
-
-    const now = new Date();
-    const currentDay = now.getDay(); // 0=Sunday
-    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-    // Get active jobs that match current time and day
-    const jobs = await db.select().from(scheduledJobs)
-        .where(eq(scheduledJobs.isActive, true));
-
-    for (const job of jobs) {
-        // Skip if already running or retrying
-        if (activeJobs.has(job.id) || retryState.has(job.id)) continue;
-
-        // Skip if max concurrent reached
-        if (activeJobs.size >= MAX_CONCURRENT_JOBS) {
-            console.log(`[JobScheduler] Max concurrent jobs (${MAX_CONCURRENT_JOBS}) reached, skipping ${job.name}`);
-            break;
-        }
-
-        // Check day match
-        const daysOfWeek = (job.daysOfWeek as number[]) || [];
-        if (daysOfWeek.length > 0 && !daysOfWeek.includes(currentDay)) continue;
-
-        // Check time match (exact minute)
-        if (job.startTime !== currentTime) continue;
-
-        // Check if already ran today (prevent double-runs)
-        if (job.lastRunAt) {
-            const lastRun = new Date(job.lastRunAt);
-            if (lastRun.toDateString() === now.toDateString() && job.scheduleType === 'recurring') {
-                continue; // Already ran today
-            }
-        }
-
-        console.log(`[JobScheduler] Triggering job: ${job.name} (${job.id})`);
-        startJobDetection(job);
-    }
-}
-
-/**
- * Start the live detection + retry loop for a job.
- */
-async function startJobDetection(job: any) {
-    const tenantId = job.tenantId;
-
-    await jobNotify.detecting(tenantId, job.id, job.name);
-
-    // Create execution record
-    const [execution] = await db.insert(jobExecutions).values({
-        jobId: job.id,
-        tenantId,
-        status: 'pending',
-        scheduledFor: new Date(),
-    }).returning();
-
-    attemptDetection(job, execution.id, 1);
-}
-
-/**
- * Attempt to detect a live stream. Retry if not found.
- */
-async function attemptDetection(job: any, executionId: string, attempt: number) {
-    const tenantId = job.tenantId;
+    if (maintenanceCounter < MAINTENANCE_EVERY_N_TICKS) return;
+    maintenanceCounter = 0;
 
     try {
-        const result = await detectLiveStream(job.streamUrl);
-
-        if (result.found && result.liveUrl) {
-            // Live found! Clear retry state and start pipeline
-            retryState.delete(job.id);
-
-            await jobNotify.started(tenantId, job.id, job.name, result.title || undefined);
-
-            await db.update(jobExecutions)
-                .set({ status: 'running', startedAt: new Date() })
-                .where(eq(jobExecutions.id, executionId));
-
-            await db.update(scheduledJobs)
-                .set({ lastRunAt: new Date(), lastRunStatus: 'running' })
-                .where(eq(scheduledJobs.id, job.id));
-
-            startJobPipeline(job, executionId, result.liveUrl);
-        } else if (attempt < MAX_RETRY_ATTEMPTS) {
-            // Not found — retry
-            await jobNotify.retrying(tenantId, job.id, attempt, MAX_RETRY_ATTEMPTS);
-
-            const retryHandle = setTimeout(() => {
-                attemptDetection(job, executionId, attempt + 1);
-            }, RETRY_INTERVAL_MS);
-
-            retryState.set(job.id, { attempts: attempt, handle: retryHandle });
-        } else {
-            // Exhausted retries
-            retryState.delete(job.id);
-            await jobNotify.noLiveFound(tenantId, job.id, job.name);
-
-            await db.update(jobExecutions)
-                .set({
-                    status: 'failed',
-                    finishedAt: new Date(),
-                    errorMessage: 'No se encontro live despues de 30 minutos de reintentos',
-                })
-                .where(eq(jobExecutions.id, executionId));
-
-            await db.update(scheduledJobs)
-                .set({ lastRunStatus: 'failed' })
-                .where(eq(scheduledJobs.id, job.id));
-        }
+        await releaseStaleOperations();
     } catch (err) {
-        console.error(`[JobScheduler] Detection error for ${job.name}:`, err);
-        if (attempt < MAX_RETRY_ATTEMPTS) {
-            const retryHandle = setTimeout(() => attemptDetection(job, executionId, attempt + 1), RETRY_INTERVAL_MS);
-            retryState.set(job.id, { attempts: attempt, handle: retryHandle });
-        }
+        console.error('[MaintenanceScheduler] Error liberando reservas de cuota stale:', err);
     }
-}
-
-/**
- * Start the AutoPipeline for a job in background.
- * The manual pipeline (Dashboard) is unaffected — this creates a separate instance.
- */
-function startJobPipeline(job: any, executionId: string, liveUrl: string) {
-    const tenantId = job.tenantId;
-    const pipelineConfig = (job.pipelineConfig as Record<string, unknown>) || {};
-
-    // Create a SEPARATE pipeline instance for the job (does NOT interfere with manual pipeline)
-    const pipeline = new AutoPipeline(ioRef, tenantId);
-
-    // Auto-stop timeout based on job duration
-    const durationMs = (job.durationMinutes || 120) * 60 * 1000;
-    const timeoutHandle = setTimeout(async () => {
-        await stopJobPipeline(job.id, 'duration_limit');
-    }, durationMs);
-
-    activeJobs.set(job.id, { pipeline, executionId, startTime: new Date(), timeoutHandle });
-
-    // Intercept ALL pipeline events to generate notifications.
-    // Every visual canvas step becomes a notification — the user sees the full
-    // pipeline progress in their NotificationBell even for background jobs.
-    const originalEmit = (pipeline as any).emit.bind(pipeline);
-    (pipeline as any).emit = (event: string, data: Record<string, unknown>) => {
-        // Call original emit (sends to tenant Socket room — does NOT affect manual pipeline
-        // because this is a separate AutoPipeline instance with its own tenantId room events)
-        originalEmit(event, data);
-
-        // Map EVERY pipeline event to a notification
-        const handler: (() => Promise<unknown>) | undefined = ({
-            'step':          () => jobNotify.pipelineStep(tenantId, job.id, data),
-            'detail':        () => jobNotify.pipelineDetail(tenantId, job.id, data),
-            'transcription': () => jobNotify.pipelineTranscription(tenantId, job.id, data),
-            'note':          () => jobNotify.pipelineNote(tenantId, job.id, data),
-            'flyer':         () => jobNotify.pipelineFlyer(tenantId, job.id, data),
-            'published':     () => jobNotify.pipelinePublished(tenantId, job.id, data),
-            'error':         () => jobNotify.pipelineError(tenantId, job.id, data),
-        } as Record<string, () => Promise<unknown>>)[event];
-
-        if (handler) handler().catch(() => {});
-    };
-
-    // Start the pipeline
-    pipeline.start({
-        url: liveUrl,
-        tone: (pipelineConfig.tone as string) || 'formal',
-        structure: (pipelineConfig.structure as string) || 'completa',
-        imageModel: (pipelineConfig.imageModel as string) || 'gemini',
-        segmentDuration: (pipelineConfig.segmentDuration as number) || 120,
-        autoPublish: pipelineConfig.autoPublish !== false,
-    }).catch(async (err) => {
-        console.error(`[JobScheduler] Pipeline error for job ${job.name}:`, err);
-        await stopJobPipeline(job.id, 'error', err instanceof Error ? err.message : String(err));
-    });
-}
-
-/**
- * Stop a running job pipeline and record results.
- */
-async function stopJobPipeline(jobId: string, reason: 'duration_limit' | 'manual' | 'error' | 'live_ended', errorMsg?: string) {
-    const active = activeJobs.get(jobId);
-    if (!active) return;
-
-    const { pipeline, executionId, startTime, timeoutHandle } = active;
-    clearTimeout(timeoutHandle);
-
-    pipeline.stop();
-    activeJobs.delete(jobId);
-
-    const durationMin = Math.round((Date.now() - startTime.getTime()) / 60000);
-    const publications = pipeline.publishedNotes.length;
-    const status = reason === 'error' ? 'failed' : 'completed';
-
-    // Get job info for notification
-    const [job] = await db.select().from(scheduledJobs)
-        .where(eq(scheduledJobs.id, jobId))
-        .limit(1);
-    const tenantId = job?.tenantId || '';
-
-    await db.update(jobExecutions)
-        .set({
-            status,
-            finishedAt: new Date(),
-            publicationsGenerated: publications,
-            transcriptionMinutes: String(durationMin),
-            errorMessage: errorMsg,
-        })
-        .where(eq(jobExecutions.id, executionId));
-
-    await db.update(scheduledJobs)
-        .set({ lastRunStatus: status })
-        .where(eq(scheduledJobs.id, jobId));
-
-    // Track usage
-    if (tenantId) {
-        await trackPipelineMinutes(tenantId, durationMin);
-        for (let i = 0; i < publications; i++) {
-            await trackPublication(tenantId);
-        }
+    try {
+        await evaluateTransitions();
+    } catch (err) {
+        console.error('[MaintenanceScheduler] Error en evaluateTransitions:', err);
     }
-
-    // Final notification
-    if (job && tenantId) {
-        if (status === 'completed') {
-            await jobNotify.completed(tenantId, jobId, job.name, { publications, durationMin });
-        } else {
-            await jobNotify.failed(tenantId, jobId, job.name, errorMsg || 'Error desconocido');
-        }
-    }
-}
-
-/**
- * Manually stop a job (called from API).
- */
-export async function stopJob(jobId: string) {
-    await stopJobPipeline(jobId, 'manual');
-    // Also cancel retries
-    const retry = retryState.get(jobId);
-    if (retry) {
-        clearTimeout(retry.handle);
-        retryState.delete(jobId);
-    }
-}
-
-/**
- * Get status of active jobs.
- */
-export function getActiveJobIds(): string[] {
-    return Array.from(activeJobs.keys());
-}
-
-export function isJobRunning(jobId: string): boolean {
-    return activeJobs.has(jobId) || retryState.has(jobId);
 }
