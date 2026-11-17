@@ -1,3 +1,8 @@
+# Blueprint Render — PeriodistApp (API + frontend estático servido por Express).
+# NOTA Remotion: el render de clipService (Remotion) requiere Chromium, que el
+# runtime de Render no instala. Los clip_render_jobs productivos
+# (cut/reframe/subtitles) son puro ffmpeg — sí funcionan acá. El render
+# Remotion queda opt-in local (ver docs/EPICA-J.md).
 services:
   - type: web
     name: notas-radio-uno
@@ -13,6 +18,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Rol del proceso: all = API+WS+schedulers+workers en un solo proceso.
+      # Separar en api|worker requiere un segundo servicio Render y un
+      # adapter de sockets (hoy los eventos de workers no llegan a clientes).
+      - key: PROCESS_ROLE
+        value: all
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET

@@ -4,8 +4,15 @@ module.exports = {
       name: 'periodistapp-api',
       script: 'dist/server/index.js',
       cwd: '.',
-      instances: 'max', // Utiliza todos los cores disponibles
-      exec_mode: 'cluster',
+      // NUNCA cluster/'max': el proceso guarda estado en memoria que no se
+      // comparte entre workers — sesiones Socket.IO, schedulers (jobQueue,
+      // transmissions, retention, backup), workers en vuelo y el estado de
+      // capturas de stream. Con N instancias cada tick corre N veces y los
+      // clientes WS se conectan a un proceso distinto del que emite.
+      // Para aislar cómputo usar PROCESS_ROLE=api|worker (ver index.ts y
+      // .env.example), no instancias PM2.
+      instances: 1,
+      exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
         PORT: 3001,
