@@ -1,7 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { PipelineProvider } from './hooks/usePipelineState';
 import { AuthProvider } from './contexts/AuthContext';
 import { PrivateRoute } from './components/PrivateRoute';
 import { OnboardingGuard } from './components/OnboardingGuard';
@@ -16,7 +15,6 @@ import { PublishJobsPage } from './pages/PublishJobsPage';
 import { BillingPage } from './pages/BillingPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
-import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
 import { AgendaPage } from './pages/AgendaPage';
 import { ProgramsPage } from './pages/ProgramsPage';
 import { PersonsPage } from './pages/PersonsPage';
@@ -27,7 +25,6 @@ import { ClipsPage } from './pages/ClipsPage';
 import { LiveRoomPage } from './pages/LiveRoomPage';
 import { AssetsInboxPage } from './pages/AssetsInboxPage';
 import { Landing } from './pages/Landing';
-import PipelineEditor from './editor/PipelineEditor';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { AdminTenants } from './pages/admin/AdminTenants';
 import { AdminTenantDetail } from './pages/admin/AdminTenantDetail';
@@ -41,7 +38,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <PipelineProvider>
           <Routes>
             {/* Public routes */}
             <Route path="/login" element={<Login />} />
@@ -66,13 +62,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               <Route path="/assets" element={<AssetsInboxPage />} />
               <Route path="/en-vivo" element={<LiveRoomPage />} />
               <Route path="/en-vivo/:transmissionId" element={<LiveRoomPage />} />
-              <Route path="/editor" element={<PipelineEditor />} />
+              <Route path="/editor" element={<Navigate to="/dashboard" replace />} />
               <Route path="/programs" element={<ProgramsPage />} />
               <Route path="/persons" element={<PersonsPage />} />
               <Route path="/editorial" element={<EditorialPage />} />
               <Route path="/connections/*" element={<ConnectionsPage />} />
               <Route path="/publish" element={<PublishJobsPage />} />
-              <Route path="/scheduled" element={<ScheduledJobsPage />} />
+              <Route path="/scheduled" element={<Navigate to="/agenda" replace />} />
               <Route path="/agenda" element={<AgendaPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -99,7 +95,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/" element={<Landing />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
-        </PipelineProvider>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>

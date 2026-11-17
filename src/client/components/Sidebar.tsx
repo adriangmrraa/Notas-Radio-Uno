@@ -2,12 +2,10 @@ import { NavLink } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
-  Workflow,
   Share2,
   Settings,
   CreditCard,
   BarChart3,
-  CalendarClock,
   CalendarDays,
   LogOut,
   Newspaper,
@@ -39,7 +37,6 @@ const NAV_SECTIONS = [
     items: [
       { to: '/review', icon: ClipboardCheck, label: 'Revisión' },
       { to: '/clips', icon: Film, label: 'Clips', feature: 'clips' },
-      { to: '/editor', icon: Workflow, label: 'Pipeline', feature: 'pipeline_editor' },
       { to: '/programs', icon: Mic, label: 'Programas' },
       { to: '/persons', icon: Users, label: 'Personas' },
       { to: '/editorial', icon: PenLine, label: 'Línea editorial' },
@@ -56,7 +53,6 @@ const NAV_SECTIONS = [
   {
     label: 'Programación',
     items: [
-      { to: '/scheduled', icon: CalendarClock, label: 'Automatizaciones' },
       { to: '/agenda', icon: CalendarDays, label: 'Agenda' },
     ],
   },
